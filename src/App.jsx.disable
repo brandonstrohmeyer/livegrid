@@ -1,0 +1,592 @@
+import React, { useEffect, useState, useMemo, useRef } from 'react'
+import Papa from 'papaparse'
+
+function parseTimeToToday(timeStr) {
+  if (!timeStr) return null
+  // Normalize common unicode dashes
+  timeStr = timeStr.replace('\u2013', '-').replace('\u2014', '-').trim()
+  // If range like "7am-7pm" or "7:00AM – 7:00PM", don't parse here
+  if (timeStr.includes('-') && /[ap]m/i.test(timeStr)) {
+    const parts = timeStr.split(/[-–—]/).map(s => s.trim())
+    // return the first part's Date
+    timeStr = parts[0]
+  }
+  // Try parsing formats like '8:00 AM', '7am', '12:05 PM'
+  const m = timeStr.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM|am|pm)?/) 
+  if (!m) return null
+  let hh = parseInt(m[1], 10)
+  const mm = m[2] ? parseInt(m[2], 10) : 0
+  const ampm = m[3]
+  if (ampm) {
+    const ap = ampm.toLowerCase()
+    if (ap === 'pm' && hh !== 12) hh += 12
+    if (ap === 'am' && hh === 12) hh = 0
+  }
+  const d = new Date()
+  d.setHours(hh, mm, 0, 0)
+  return d
+}
+
+function addMinutes(date, minutes) {
+  if (!date || typeof minutes !== 'number') return null
+  return new Date(date.getTime() + minutes * 60000)
+}
+
+function isTimeRow(row) {
+  // row[0] should look like a time: e.g., '8:00 AM' or '12:00 PM'
+  if (!row || row.length === 0) return false
+  const s = (row[0] || '').toString().trim()
+  return /\d{1,2}(:\d{2})?\s*(AM|PM|am|pm)?/.test(s)
+}
+
+export default function App() {
+  const [rows, setRows] = useState([])
+  const [allRows, setAllRows] = useState([])
+  const [clockOffset, setClockOffset] = useState(0) // in minutes
+  const [dayOffset, setDayOffset] = useState(0) // in days
+  const [now, setNow] = useState(new Date())
+  const [selectedGroups, setSelectedGroups] = useState(['All'])
+  const [selectedDay, setSelectedDay] = useState(null)
+  const [lastFetch, setLastFetch] = useState(null)
+  const [currentDay, setCurrentDay] = useState(null)
+  const [availableDays, setAvailableDays] = useState([])
+  const [debugMode, setDebugMode] = useState(false)
+  const [runGroupsExpanded, setRunGroupsExpanded] = useState(false)
+  const listRef = useRef(null)
+  const itemRefs = useRef({})
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  // Compute the effective time with offset
+  const nowWithOffset = useMemo(() => {
+    const d = new Date(now.getTime() + clockOffset * 60000 + dayOffset * 86400000);
+    return d;
+  }, [now, clockOffset, dayOffset]);
+
+  async function fetchSchedule() {
+    try {
+      const res = await fetch('/schedule.csv')
+      const text = await res.text()
+      const parsed = Papa.parse(text, { skipEmptyLines: true })
+      const data = parsed.data
+      const allRows = []
+      let currentDay = null
+      
+      data.forEach((r, idx) => {
+        const firstCol = (r[0] || '').toString().trim().toLowerCase()
+        // Detect day headers
+        if (firstCol.includes('friday')) currentDay = 'Friday'
+        else if (firstCol.includes('saturday')) currentDay = 'Saturday'
+        else if (firstCol.includes('sunday')) currentDay = 'Sunday'
+        
+        if (isTimeRow(r)) {
+          const start = parseTimeToToday(r[0])
+          const duration = r[1] && /\d+/.test(r[1]) ? parseInt(r[1], 10) : null
+          const sessionCell = (r[2] || '').toString().trim()
+          const classroomCell = (r[3] || '').toString().trim()
+          const toyotaCell = (r[4] || '').toString().trim()
+          const noteCell = (r[5] || '').toString().trim()
+          const note = noteCell
+          const end = duration ? addMinutes(start, duration) : null
+          allRows.push({ raw: r, start, duration, end, session: sessionCell, note, classroomCell, day: currentDay })
+        }
+      })
+      // sort by start time
+      allRows.sort((a, b) => (a.start && b.start ? a.start - b.start : 0))
+      
+      // Get unique days and set as available
+      const daysSet = new Set(allRows.filter(r => r.day).map(r => r.day))
+      const days = Array.from(daysSet)
+      setAvailableDays(days)
+      
+      // Determine today's day name for default selection
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+      const todayName = dayNames[nowWithOffset.getDay()]
+      const defaultDay = days.includes(todayName) ? todayName : days[0]
+      setSelectedDay(defaultDay)
+      
+      // Filter to only selected day's sessions
+      const dayRows = allRows.filter(r => r.day === defaultDay)
+      
+      // filter to only on-track sessions for display
+      const onTrackRows = dayRows.filter(r => {
+        // Lunch is special: include it even if it has classroom info
+        if (/Lunch/i.test(r.session)) return true
+        if (r.classroomCell) return false
+        // include rows explicitly marked 'On Track' or that are key on-track session types
+        return r.note.includes('On Track') || /HPDE|Intro|Race|Drills|Warmup|TT|Lightning|Thunder/i.test(r.session)
+      })
+      // For each unique start time, keep only the best session
+      const timeMap = new Map()
+      onTrackRows.forEach(r => {
+        if (!r.start) return
+        const timeKey = r.start.getTime()
+        if (!timeMap.has(timeKey)) {
+          timeMap.set(timeKey, r)
+        } else {
+          const existing = timeMap.get(timeKey)
+          // Priority: Lunch > numbered HPDE > plain HPDE > other
+          const priority = s => {
+            if (/Lunch/i.test(s.session)) return 0
+            if (/HPDE\s*\d+/i.test(s.session)) return 1
+            if (/^HPDE\s*$/i.test(s.session)) return 2
+            if (/TT|Race|Lightning|Thunder|Warmup|Drills|Intro/i.test(s.session)) return 3
+            return 4
+          }
+          if (priority(r) < priority(existing)) {
+            timeMap.set(timeKey, r)
+          }
+        }
+      })
+      const filteredRows = Array.from(timeMap.values()).sort((a, b) => a.start - b.start)
+      setAllRows(allRows)
+      setRows(filteredRows)
+      setCurrentDay(filteredRows.length > 0 ? filteredRows[0].day : null)
+      setLastFetch(new Date())
+    } catch (e) {
+      console.error('Failed to fetch or parse schedule', e)
+    }
+  }
+
+  useEffect(() => {
+    fetchSchedule()
+    const id = setInterval(fetchSchedule, 30000)
+    return () => clearInterval(id)
+  }, [dayOffset])
+
+  useEffect(() => {
+    if (!selectedDay || allRows.length === 0) return
+    // Filter to selected day
+    const dayRows = allRows.filter(r => r.day === selectedDay)
+    const onTrackRows = dayRows.filter(r => {
+      // Lunch is special: include it even if it has classroom info
+      if (/Lunch/i.test(r.session)) return true
+      if (r.classroomCell) return false
+      return r.note.includes('On Track') || /HPDE|Intro|Race|Drills|Warmup|TT|Lightning|Thunder/i.test(r.session)
+    })
+    // Deduplicate by time
+    const timeMap = new Map()
+    onTrackRows.forEach(r => {
+      if (!r.start) return
+      const timeKey = r.start.getTime()
+      if (!timeMap.has(timeKey)) {
+        timeMap.set(timeKey, r)
+      } else {
+        const existing = timeMap.get(timeKey)
+        const priority = s => {
+          if (/Lunch/i.test(s.session)) return 0
+          if (/HPDE\s*\d+/i.test(s.session)) return 1
+          if (/^HPDE\s*$/i.test(s.session)) return 2
+          if (/TT|Race|Lightning|Thunder|Warmup|Drills|Intro/i.test(s.session)) return 3
+          return 4
+        }
+        if (priority(r) < priority(existing)) {
+          timeMap.set(timeKey, r)
+        }
+      }
+    })
+    const filteredRows = Array.from(timeMap.values()).sort((a, b) => a.start - b.start)
+    setRows(filteredRows)
+    setCurrentDay(selectedDay)
+  }, [selectedDay, allRows])
+
+  const groups = useMemo(() => {
+    const set = new Set(['All'])
+    rows.forEach(r => {
+      const s = (r.session || '')
+      if (!s || /Lunch/i.test(s)) return  // skip Lunch
+      // skip ALL RACERS WARMUP and HPDE Meeting - they're not run groups
+      if (/ALL\s+RACERS\s+WARMUP/i.test(s)) return
+      if (/HPDE\s+MEETING/i.test(s)) return
+      // extract HPDE patterns (HPDE 1, HPDE 2, etc.)
+      const hpdes = [...s.matchAll(/HPDE\s*\d/ig)].map(m => m[0].toUpperCase())
+      if (hpdes.length) {
+        hpdes.forEach(h => set.add(h))
+        return
+      }
+      // normalize race names: "Thunder Race #1" -> "Thunder Race", etc.
+      let normalized = s
+      if (s.includes('Thunder')) normalized = 'Thunder Race'
+      else if (s.includes('Lightning')) normalized = 'Lightning Race'
+      else if (s.includes('Mock Race')) normalized = 'Mock Race'
+      else if (/TT.*Alpha|TTU\/a/i.test(s)) normalized = 'TT Alpha'
+      else if (/TT.*Omega|TTU\/b/i.test(s)) normalized = 'TT Omega'
+      else normalized = s
+      set.add(normalized)
+    })
+    // sort alphabetically, keeping 'All' first
+    const sorted = Array.from(set).sort((a, b) => {
+      if (a === 'All') return -1
+      if (b === 'All') return 1
+      return a.localeCompare(b)
+    })
+    return sorted
+  }, [rows])
+
+  // show the on-track session list on the left (already filtered in parser)
+  const displayedRows = rows
+
+  function currentSession(allRows = rows) {
+    for (const r of allRows) {
+      if (!r.start) continue
+      const start = r.start
+      const end = r.end || addMinutes(r.start, r.duration || 20)
+      if (nowWithOffset >= start && nowWithOffset < end) return r
+    }
+    return null
+  }
+
+  function nextSessionForGroup(groups) {
+    // groups is an array; if 'All' is selected, show next session regardless
+    if (groups.includes('All')) {
+      for (const r of rows) {
+        if (!r.start) continue
+        if (r.start > nowWithOffset) return r
+      }
+      return null
+    }
+    // Filter by any selected group
+    const list = rows.filter(r => {
+      return groups.some(group => (r.session||'').toLowerCase().includes(group.toLowerCase()))
+    })
+    for (const r of list) {
+      if (!r.start) continue
+      if (r.start > nowWithOffset) return r
+    }
+    return null
+  }
+
+  function nextSessionForEachGroup(groups) {
+    // Returns an object mapping each group to its next session
+    if (groups.includes('All')) {
+      const nextSession = nextSessionForGroup(['All'])
+      // When 'All' is selected, use the session name as the key instead of 'All'
+      if (nextSession) {
+        return { [nextSession.session]: nextSession }
+      }
+      return {}
+    }
+    const result = {}
+    for (const group of groups) {
+      const next = nextSessionForGroup([group])
+      if (next) result[group] = next
+    }
+    return result
+  }
+
+  const current = currentSession()
+
+  // auto-scroll the current session into the center of the list
+  useEffect(() => {
+    if (!current) return
+    // find index in displayedRows
+    const idx = displayedRows.findIndex(r => r.start && current.start && r.start.getTime() === current.start.getTime())
+    if (idx === -1) return
+    const el = itemRefs.current[idx]
+    if (el && listRef.current) {
+      // smooth scroll and center
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+    
+    // Re-center after 30 seconds of idle time
+    const timer = setTimeout(() => {
+      if (el && listRef.current) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }, 30000)
+    
+    return () => clearTimeout(timer)
+  }, [current, displayedRows])
+
+  function formatTimeWithAmPm(date) {
+    if (!date) return '';
+    const hours = date.getHours() % 12 || 12;
+    const mins = String(date.getMinutes()).padStart(2, '0');
+    const ampm = date.getHours() >= 12 ? 'PM' : 'AM';
+    return <>{hours}:{mins}<span style={{fontSize: '0.55em', verticalAlign: 'baseline', marginLeft: '0.1em'}}>{ampm}</span></>;
+  }
+
+  function formatTimeUntil(ms, session) {
+    // ms = session.start - nowWithOffset
+    if (ms <= 0 && session) {
+      // Only show 'now' if we are within the session window
+      const end = session.end || addMinutes(session.start, session.duration || 20);
+      if (nowWithOffset >= session.start && nowWithOffset < end) {
+        return 'now';
+      }
+      // If not in session, show '0m' (already started but not in window)
+      return '0m';
+    }
+    const totalMin = Math.ceil(ms / 60000);
+    const hrs = Math.floor(totalMin / 60);
+    const mins = totalMin % 60;
+    if (hrs > 0) return `${hrs}h ${mins}m`;
+    return `${mins}m`;
+  }
+
+  function getRelevantMeetings(groups) {
+    if (groups.includes('All') || groups.length === 0) return [];
+    const meetings = [];
+
+    // Check if any selected group is an HPDE group
+    const hasHPDE = groups.some(g => g.includes('HPDE'));
+    if (hasHPDE) {
+      for (const r of allRows) {
+        if (r.day !== selectedDay) continue;
+        const sessionText = (r.session || '').toLowerCase();
+        if (sessionText.includes('hpde meeting')) {
+          const start = r.start;
+          const session = r.session;
+          meetings.push({ session, start });
+          break;
+        }
+      }
+    }
+
+    // Check if any selected group is a TT group
+    const hasTT = groups.some(g => g.includes('TT'));
+    if (hasTT) {
+      for (const r of allRows) {
+        if (r.day !== selectedDay) continue;
+        const noteText = (r.note || '');
+        if (noteText.toLowerCase().includes('tt drivers')) {
+          const timeMatch = noteText.match(/^(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)/i);
+          const timeStr = timeMatch ? timeMatch[1].trim() : null;
+          const start = timeStr ? parseTimeToToday(timeStr) : null;
+          meetings.push({ session: 'TT Drivers Meeting', customTime: timeStr, start });
+          break;
+        }
+      }
+    }
+
+    // Check if any selected group is a race group
+    const hasRace = groups.some(g => ['Thunder Race', 'Lightning Race', 'Mock Race'].includes(g));
+    if (hasRace) {
+      for (const r of allRows) {
+        if (r.day !== selectedDay) continue;
+        const noteText = (r.note || '');
+        if (noteText.toLowerCase().includes('all racers meeting')) {
+          const timeMatch = noteText.match(/^(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)/i);
+          const timeStr = timeMatch ? timeMatch[1].trim() : null;
+          const start = timeStr ? parseTimeToToday(timeStr) : null;
+          meetings.push({ session: 'All Racers Meeting', customTime: timeStr, start });
+          break;
+        }
+      }
+    }
+
+    return meetings;
+  }
+  const relevantMeetings = getRelevantMeetings(selectedGroups)
+  const nextSessionsByGroup = nextSessionForEachGroup(selectedGroups)
+  return (
+    <div className="container">
+      <h1 className="clock" style={{margin: '0 0 20px 0'}}>
+        {(() => {
+          const hours = nowWithOffset.getHours() % 12 || 12;
+          const mins = String(nowWithOffset.getMinutes()).padStart(2, '0');
+          const secs = String(nowWithOffset.getSeconds()).padStart(2, '0');
+          const ampm = nowWithOffset.getHours() >= 12 ? 'PM' : 'AM';
+          return <>{hours}:{mins}:{secs}<span className="clock-ampm">{ampm}</span></>;
+        })()}
+      </h1>
+      {debugMode && (
+        <div className="debug-controls">
+          <div style={{marginBottom: '12px', fontSize: '0.9rem', background: '#fffbea', padding: '8px', borderRadius: '4px', border: '1px solid #f0e68c'}}>
+            <strong>Debug Info:</strong><br/>
+            Real time: {now.toLocaleString()}<br/>
+            Real day: {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()]}<br/>
+            Mocked time: {nowWithOffset.toLocaleString()}<br/>
+            Mocked day: {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][nowWithOffset.getDay()]}<br/>
+            Selected day: {selectedDay || 'None'}<br/>
+            Day offset: {dayOffset} days<br/>
+            Current session: {current ? current.session : 'None'}<br/>
+            First session date: {rows.length > 0 && rows[0].start ? rows[0].start.toLocaleString() : 'None'}<br/>
+            First session day: {rows.length > 0 && rows[0].start ? ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][rows[0].start.getDay()] : 'None'}
+          </div>
+          <label htmlFor="clock-offset">Clock Offset (min):</label>
+          <input
+            id="clock-offset"
+            type="number"
+            min={-720}
+            max={720}
+            step={1}
+            value={clockOffset}
+            onChange={e => setClockOffset(Number(e.target.value))}
+          />
+          <button
+            type="button"
+            onClick={() => setClockOffset(0)}
+            disabled={clockOffset === 0}
+          >
+            Reset
+          </button>
+          <label htmlFor="day-offset" style={{marginLeft: '16px'}}>Day Offset (days):</label>
+          <input
+            id="day-offset"
+            type="number"
+            min={-7}
+            max={7}
+            step={1}
+            value={dayOffset}
+            onChange={e => setDayOffset(Number(e.target.value))}
+          />
+          <button
+            type="button"
+            onClick={() => setDayOffset(0)}
+            disabled={dayOffset === 0}
+          >
+            Reset
+          </button>
+        </div>
+      )}
+
+      <div className="content">
+        <aside className="left">
+          <h2 style={{margin: 0, marginBottom: '8px'}}>Sessions</h2>
+          <div style={{display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '12px'}}>
+            <label style={{fontWeight: 600}}>Day:</label>
+            <select value={selectedDay || ''} onChange={e => setSelectedDay(e.target.value)} style={{padding: '6px 8px', fontSize: '1rem'}}>
+              {availableDays.map(d => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+            </select>
+          </div>
+          <div className="session-list" ref={listRef}>
+            {displayedRows.map((r, idx) => {
+              const isNow = current && r.start && current.start && r.start.getTime() === current.start.getTime()
+              const end = r.end || addMinutes(r.start, r.duration || 20)
+              const status = r.start && end && end < nowWithOffset ? 'past' : isNow ? 'now' : 'future'
+              return (
+                <div
+                  key={idx}
+                  ref={el => (itemRefs.current[idx] = el)}
+                  className={`session ${status}`}
+                >
+                  <div className="time">{r.start ? formatTimeWithAmPm(r.start) : ''}</div>
+                  <div className="title">{r.session}</div>
+                  <div className="dur">{r.duration ? `${r.duration}m` : ''}</div>
+                </div>
+              )
+            })}
+          </div>
+        </aside>
+
+        <section className="right">
+          <div style={{marginBottom: '12px'}}>
+            <label 
+              onClick={() => setRunGroupsExpanded(!runGroupsExpanded)}
+              style={{cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.8rem', fontWeight: 700, margin: 0}}
+            >
+              <span style={{fontSize: '0.7rem'}}>{runGroupsExpanded ? '▼' : '▶'}</span>
+              Run Groups
+            </label>
+            {!runGroupsExpanded && selectedGroups.length > 0 && (
+              <div style={{marginTop: '8px', fontSize: '0.95rem', color: '#666', fontWeight: 500}}>
+                {selectedGroups.join(', ')}
+              </div>
+            )}
+          </div>
+          {runGroupsExpanded && (
+            <div className="controls" style={{padding: '12px 16px', marginBottom: '12px'}}>
+              <div className="checkbox-group">
+                {groups.map(g => (
+                  <label key={g} className="checkbox-label" style={{fontSize: '1rem', padding: '4px 8px'}}>
+                    <input
+                      type="checkbox"
+                      checked={selectedGroups.includes(g)}
+                      onChange={() => {
+                        if (g === 'All') {
+                          if (selectedGroups.length === 1 && selectedGroups[0] === 'All') {
+                            setSelectedGroups([]);
+                          } else {
+                            setSelectedGroups(['All']);
+                          }
+                        } else {
+                          setSelectedGroups(prev => {
+                            const next = prev.filter(sg => sg !== 'All');
+                            if (next.includes(g)) {
+                              return next.filter(sg => sg !== g);
+                            } else {
+                              return [...next, g];
+                            }
+                          });
+                        }
+                      }}
+                    />
+                    {g}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+          {relevantMeetings.map((meeting, idx) => {
+            const isFuture = meeting.start && nowWithOffset <= addMinutes(meeting.start, 10);
+            return isFuture ? (
+              <div key={idx} className="meeting" style={{
+                padding: Object.entries(nextSessionsByGroup).length > 3 ? '6px 8px' : undefined,
+                fontSize: Object.entries(nextSessionsByGroup).length > 3 ? '0.85rem' : undefined,
+                marginTop: Object.entries(nextSessionsByGroup).length > 3 ? '4px' : undefined
+              }}>
+                <div style={{fontSize: Object.entries(nextSessionsByGroup).length > 3 ? '0.9rem' : undefined}}>
+                  {meeting.session} — {meeting.start ? formatTimeWithAmPm(meeting.start) : meeting.customTime}
+                </div>
+                <div className="countdown" style={{
+                  fontSize: Object.entries(nextSessionsByGroup).length > 3 ? '0.8rem' : undefined,
+                  marginTop: Object.entries(nextSessionsByGroup).length > 3 ? '2px' : undefined
+                }}>
+                  Starts in {formatTimeUntil(meeting.start - nowWithOffset, meeting)}
+                </div>
+              </div>
+            ) : null;
+          })}
+          {Object.entries(nextSessionsByGroup).length > 0 && (
+            <>
+              <h3 style={{
+                marginTop: Object.entries(nextSessionsByGroup).length > 3 ? '12px' : '20px',
+                marginBottom: Object.entries(nextSessionsByGroup).length > 3 ? '6px' : '10px',
+                fontSize: Object.entries(nextSessionsByGroup).length > 3 ? '1.1rem' : '1.3rem'
+              }}>Upcoming</h3>
+              <div className="next-group-container">
+                {Object.entries(nextSessionsByGroup)
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([group, session]) => {
+                    const count = Object.entries(nextSessionsByGroup).length;
+                    const padding = count === 1 ? '1.4rem 1.8rem' : count === 2 ? '1.1rem 1.4rem' : count === 3 ? '0.9rem 1.1rem' : '0.7rem 0.9rem';
+                    const fontSize = count === 1 ? '1.1rem' : count === 2 ? '1.05rem' : count === 3 ? '1rem' : '0.95rem';
+                    const strongSize = count === 1 ? '1.2rem' : count === 2 ? '1.15rem' : count === 3 ? '1.1rem' : '1.05rem';
+                    
+                    return (
+                      <div key={group} className="next-for-block" style={{padding, fontSize}}>
+                        {session ? (
+                          <>
+                            <div><strong style={{fontSize: strongSize}}>{group}</strong> — {formatTimeWithAmPm(session.start)}</div>
+                            <div className="countdown">Starts in {formatTimeUntil(session.start - nowWithOffset, session)}</div>
+                          </>
+                        ) : (
+                          <div><strong style={{fontSize: strongSize}}>{group}</strong>: None scheduled</div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            </>
+          )}
+        </section>
+      </div>
+
+      <footer>
+        <div>Last fetch: {lastFetch ? lastFetch.toLocaleTimeString() : '—'}</div>
+        <button 
+          type="button" 
+          onClick={() => setDebugMode(!debugMode)}
+        >
+          {debugMode ? 'Hide' : 'Show'} Debug
+        </button>
+      </footer>
+    </div>
+  )
+}

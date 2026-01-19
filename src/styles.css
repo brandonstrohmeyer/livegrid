@@ -1,11 +1,17 @@
 :root{--accent:#0b74de}
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial; margin:0; padding:16px; background:#f5f7fb; color:#0b2336; font-size:18px}
-.container{max-width:1200px;margin:0 auto}
+
+/* SCROLL STRATEGY:
+   - Default (no debug): body overflow:hidden prevents page scroll, internal sections scroll independently
+   - Debug mode: body overflow:auto allows page-level scrolling for long debug panels */
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial; margin:0; padding:0; background:#f5f7fb; color:#0b2336; font-size:18px; height:100vh; box-sizing:border-box; overflow:hidden}
+body.debug-mode{overflow:auto}
+.container{max-width:1200px;margin:0 auto; height:100vh; display:flex; flex-direction:column}
+.container.debug-mode{height:auto; min-height:100vh}
 
 /* two-column content layout */
-.content{display:flex;gap:20px;align-items:flex-start}
-.left{width:42%;}
-.right{flex:1;display:flex;flex-direction:column;gap:14px}
+.content{display:flex;gap:20px;align-items:stretch; flex:1; min-height:0}
+.left{width:42%; display:flex; flex-direction:column; min-height:0}
+.right{flex:1;display:flex;flex-direction:column;gap:8px; min-height:0}
 
 .right-top{display:flex;flex-direction:column;gap:10px;padding:10px}
 .right-bottom{padding:10px}
@@ -31,8 +37,8 @@ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;
 }
 
 /* session list styles */
-.session-list{height:65vh;overflow:auto;padding:8px;background:transparent;border-radius:8px}
-.session{display:grid;grid-template-columns:120px 1fr 70px;gap:8px;padding:14px;border-radius:8px;background:white;margin-bottom:8px;align-items:center;transition:transform 200ms ease, box-shadow 200ms ease;font-size:1.05rem}
+.session-list{flex:1; overflow-y:auto; overflow-x:hidden; padding:8px;background:transparent;border-radius:8px; min-height:0; scroll-snap-type: y proximity}
+.session{display:grid;grid-template-columns:120px 1fr 60px;gap:12px;padding:14px 12px;border-radius:8px;background:white;margin-bottom:8px;align-items:center;transition:transform 200ms ease, box-shadow 200ms ease;font-size:1.05rem; scroll-snap-align: center; scroll-margin: 40vh 0}
 .session.past{opacity:0.45;color:#666}
 .session.future{opacity:1}
 .session.now{transform:scale(1.06);border:2px solid var(--accent);box-shadow:0 6px 20px rgba(11,116,222,0.15);background:linear-gradient(180deg, #fff 0%, #f7fbff 100%)}
@@ -43,7 +49,7 @@ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;
 
 .countdown{margin-top:4px;font-weight:600;color:#0b557f;font-size:0.95rem}
 
-.meeting{margin-top:6px;padding:8px 10px;background:#f0f6ff;border-left:4px solid var(--accent);border-radius:4px;font-size:0.95rem}
+.meeting{margin-top:6px;padding:12px 14px;background:#f0f6ff;border-left:4px solid var(--accent);border-radius:4px;font-size:0.95rem}
 .meeting strong{display:block;margin-bottom:4px;font-size:1rem}
 .meeting-time{font-weight:600;color:var(--accent);margin-top:4px;font-size:0.95rem}
 .meeting .countdown{margin-top:2px;font-size:0.9rem;font-weight:600;color:#0b557f}
@@ -53,7 +59,7 @@ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial;
 .time-large{font-size:2.2rem;font-weight:700;color:var(--accent)}
 .title-large{font-size:1.2rem;margin-top:6px}
 
-footer{margin-top:12px;color:#666}
+footer{margin-top:24px;padding:16px 0;color:#666}
 footer{display:flex;justify-content:space-between;align-items:center;}
 footer button{background:rgba(0,0,0,0.05);border:1px solid rgba(0,0,0,0.1);color:#333;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:0.8rem;}
 footer button:hover{background:rgba(0,0,0,0.08);}

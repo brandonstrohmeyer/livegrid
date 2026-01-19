@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react'
 import version from './version.js'
 import Papa from 'papaparse'
+import { XMLParser } from 'fast-xml-parser'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
 import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning } from 'react-icons/md'
 import { FaInstagram } from 'react-icons/fa'
@@ -18,6 +19,25 @@ import {
 
 const DEFAULT_STALE_THRESHOLD_MINUTES = 5
 
+function useBreakpoint(maxWidth = 900) {
+  const getInitial = () => {
+    if (typeof window === 'undefined') return false
+    return window.innerWidth <= maxWidth
+  }
+
+  const [isBelowBreakpoint, setIsBelowBreakpoint] = useState(getInitial)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+    const handleResize = () => setIsBelowBreakpoint(window.innerWidth <= maxWidth)
+    handleResize()
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [maxWidth])
+
+  return isBelowBreakpoint
+}
+
 function getDateWithOffsets(date, clockOffset = 0, dayOffset = 0) {
   if (!date) return null
   const offsetMs = clockOffset * 60000 + dayOffset * 86400000
@@ -27,7 +47,6 @@ function getDateWithOffsets(date, clockOffset = 0, dayOffset = 0) {
 // ============================================================================
 // MEETING EXTRACTION - Find relevant meetings for selected groups
 // ============================================================================
-
 /**
  * Find meetings relevant to the selected run groups
  */
@@ -192,30 +211,22 @@ function formatTimeWithAmPm(date) {
   const hours = date.getHours() % 12 || 12
   const mins = String(date.getMinutes()).padStart(2, '0')
   const ampm = date.getHours() >= 12 ? 'PM' : 'AM'
-  return (
-    <>
-      {hours}:{mins}
-      <span style={{fontSize: '0.55em', verticalAlign: 'baseline', marginLeft: '0.1em'}}>
-        {ampm}
-      </span>
-    </>
-  )
+  return `${hours}:${mins} ${ampm}`
 }
 
 /**
- * Format countdown timer (e.g., "2h 15m" or "45m")
- * Shows "now" if session is currently active
+ * Format a remaining duration in ms as a short label like "now", "5m", or "1h 10m".
+ * Expects a positive milliseconds value; callers should clamp at 0.
  */
 function formatTimeUntil(milliseconds, session, nowWithOffset) {
-  if (milliseconds <= 0 && session) {
-    // Check if we're within the session window
-    const end = session.end || addMinutes(session.start, session.duration || 20)
-    if (nowWithOffset >= session.start && nowWithOffset < end) {
-      return 'now'
-    }
-    return '0m'
+  if (!session || !session.start) return ''
+
+  const end = session.end || addMinutes(session.start, session.duration || 20)
+  if (nowWithOffset >= session.start && nowWithOffset < end) {
+    return 'now'
   }
-  
+  if (milliseconds <= 0) return '0m'
+
   const totalMinutes = Math.ceil(milliseconds / 60000)
   const hours = Math.floor(totalMinutes / 60)
   const minutes = totalMinutes % 60
@@ -284,6 +295,11 @@ export default function App() {
   const [connectionStatus, setConnectionStatus] = useState('online') // 'online', 'offline', 'error'
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState(null)
   const [fetchError, setFetchError] = useState(null)
+  const [rssEvents, setRssEvents] = useState([])
+  const [rssLoading, setRssLoading] = useState(false)
+  const [rssError, setRssError] = useState(null)
+  const [selectedRssEventId, setSelectedRssEventId] = useState('')
+  const rssFetchStartedRef = useRef(false)
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(() => {
     const saved = localStorage.getItem('nasaAutoScroll')
     return saved !== null ? saved === 'true' : true
@@ -300,10 +316,19 @@ export default function App() {
     staleThresholdMinutes === 1 ? '1 minute' : `${staleThresholdMinutes} minutes`
   ), [staleThresholdMinutes])
 
+  const hasActiveSchedule = useMemo(() => {
+    if (customUrl) return true
+    if (debugMode && selectedCsvFile) return true
+    return false
+  }, [customUrl, debugMode, selectedCsvFile])
+
   const isDataStale = useMemo(() => {
+    if (!hasActiveSchedule) return false
     if (!lastSuccessfulFetch) return false
     return now.getTime() - lastSuccessfulFetch.getTime() > staleThresholdMs
-  }, [lastSuccessfulFetch, now, staleThresholdMs])
+  }, [hasActiveSchedule, lastSuccessfulFetch, now, staleThresholdMs])
+
+  const isMobile = useBreakpoint(900)
   
   // Refs for scrolling
   const listRef = useRef(null)
@@ -318,6 +343,12 @@ export default function App() {
   // Monitor network connection status
   useEffect(() => {
     const handleOnline = () => {
+      if (!hasActiveSchedule) {
+        setConnectionStatus('idle')
+        setFetchError(null)
+        return
+      }
+
       setConnectionStatus('online')
       setFetchError(null)
       // Retry fetch immediately when connection returns
@@ -332,13 +363,17 @@ export default function App() {
     window.addEventListener('offline', handleOffline)
     
     // Set initial status
-    setConnectionStatus(navigator.onLine ? 'online' : 'offline')
+    if (!navigator.onLine) {
+      setConnectionStatus('offline')
+    } else {
+      setConnectionStatus(hasActiveSchedule ? 'online' : 'idle')
+    }
     
     return () => {
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
     }
-  }, [])
+  }, [hasActiveSchedule])
   
   // Reset sheet name when URL changes
   useEffect(() => {
@@ -350,6 +385,16 @@ export default function App() {
       localStorage.removeItem('nasaScheduleUrl')
     }
   }, [customUrl])
+
+  // Keep selected RSS event in sync with the current custom URL
+  useEffect(() => {
+    if (!rssEvents.length || !customUrl) {
+      setSelectedRssEventId('')
+      return
+    }
+    const match = rssEvents.find(ev => ev.sheetUrl === customUrl)
+    setSelectedRssEventId(match ? match.id : '')
+  }, [rssEvents, customUrl])
   
   // Save auto-scroll preference to localStorage
   useEffect(() => {
@@ -360,6 +405,15 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('nasaStaleThresholdMinutes', Math.max(1, staleThresholdMinutes).toString())
   }, [staleThresholdMinutes])
+
+  // Lazy-load NASA-SE RSS events when options panel is opened
+  useEffect(() => {
+    if (!optionsExpanded) return
+    if (rssFetchStartedRef.current) return
+    if (typeof window === 'undefined' || typeof DOMParser === 'undefined') return
+    rssFetchStartedRef.current = true
+    fetchRssEvents()
+  }, [optionsExpanded])
   
   // Toggle body class for debug mode overflow handling and disable auto-scroll
   useEffect(() => {
@@ -378,27 +432,190 @@ export default function App() {
   }, [now, clockOffset, dayOffset])
 
   const lastFetchAdjusted = useMemo(() => {
+    if (!hasActiveSchedule) return null
     if (!lastSuccessfulFetch) return null
     return getDateWithOffsets(lastSuccessfulFetch, clockOffset, dayOffset)
-  }, [lastSuccessfulFetch, clockOffset, dayOffset])
+  }, [hasActiveSchedule, lastSuccessfulFetch, clockOffset, dayOffset])
 
   const lastFetchTimeDisplay = lastFetchAdjusted ? lastFetchAdjusted.toLocaleTimeString() : 'Never'
   const lastFetchDateTimeDisplay = lastFetchAdjusted ? lastFetchAdjusted.toLocaleString() : 'Never'
+
+  const renderInfoPanel = () => (
+    <div style={{
+      background: '#ffffff',
+      border: '1px solid #e5e7eb',
+      borderRadius: '8px',
+      padding: '12px 14px',
+      fontSize: '0.85rem',
+      boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
+      minWidth: '220px',
+      maxWidth: '280px'
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        marginBottom: '10px',
+        paddingBottom: '10px',
+        borderBottom: '1px solid #f3f4f6'
+      }}>
+        <span style={{
+          display: 'inline-block',
+          width: '8px',
+          height: '8px',
+          borderRadius: '50%',
+          backgroundColor: !hasActiveSchedule
+            ? '#9ca3af'
+            : isDataStale
+              ? '#ff6b6b'
+              : connectionStatus === 'online'
+                ? '#4caf50'
+                : connectionStatus === 'offline'
+                  ? '#ff6b6b'
+                  : '#ffa500',
+          flexShrink: 0
+        }} />
+        <div style={{flex: 1}}>
+          <div style={{color: '#374151', fontWeight: 500, fontSize: '0.8rem'}}>
+            {!hasActiveSchedule
+              ? 'No Schedule Selected'
+              : isDataStale
+                ? 'Data Stale'
+                : connectionStatus === 'online'
+                  ? 'Connected'
+                  : connectionStatus === 'offline'
+                    ? 'Disconnected'
+                    : 'Connecting...'}
+          </div>
+          <div style={{color: '#6b7280', fontSize: '0.7rem', marginTop: '2px'}}>
+            {!hasActiveSchedule
+              ? 'Enter a Google Sheets URL to begin'
+              : (
+                <>
+                  Last fetch: {lastFetchTimeDisplay}
+                  {connectionStatus !== 'online' && lastSuccessfulFetch && ' (retrying...)'}
+                </>
+              )}
+          </div>
+        </div>
+      </div>
+
+      {hasActiveSchedule && sheetName && (
+        <div>
+          <div style={{
+            color: '#6b7280',
+            fontSize: '0.7rem',
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+            marginBottom: '4px'
+          }}>
+            Schedule
+          </div>
+          <div style={{color: '#1f2937', fontSize: '0.8rem', lineHeight: '1.3'}}>
+            {sheetName}
+          </div>
+        </div>
+      )}
+    </div>
+  )
   
+  // Fetch NASA-SE RSS feed and extract LIVE Weekend Schedule Google Sheets URLs
+  async function fetchRssEvents() {
+    try {
+      setRssLoading(true)
+      setRssError(null)
+      // Use local emulator endpoint if running locally, otherwise use production rewrite
+      let rssUrl
+      if (window.location.hostname === 'localhost') {
+        // Functions emulator: http://localhost:5001/[project]/us-central1/nasaFeed
+        rssUrl = 'http://localhost:5001/livegrid-c33c6/us-central1/nasaFeed'
+      } else {
+        // Production rewrite
+        rssUrl = '/api/nasa-se-feed'
+      }
+      const response = await fetch(rssUrl)
+      if (!response.ok) {
+        throw new Error(`Feed request failed (${response.status})`)
+      }
+      const xmlText = await response.text()
+      const xmlParser = new XMLParser({ ignoreAttributes: false })
+      const feed = xmlParser.parse(xmlText)
+      const channel = feed && feed.rss && feed.rss.channel ? feed.rss.channel : null
+      if (!channel) {
+        throw new Error('Invalid RSS feed structure')
+      }
+      const rawItems = Array.isArray(channel.item) ? channel.item : (channel.item ? [channel.item] : [])
+      const items = rawItems || []
+      const events = []
+
+      const now = Date.now()
+      const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000
+      items.forEach((item, index) => {
+        // Filter out events older than 1 week
+        const pubDateStr = item.pubDate || item.date || null
+        let pubDate = pubDateStr ? new Date(pubDateStr) : null
+        if (!pubDate || (now - pubDate.getTime() > sixtyDaysMs)) return
+
+        // Decode HTML entities in the title (e.g., apostrophes)
+        let title = (item.title || '').toString().trim() || `Event ${index + 1}`;
+        const titleDoc = new DOMParser().parseFromString(title, 'text/html');
+        title = titleDoc.documentElement.textContent || title;
+
+        const html = (item['content:encoded'] || item.content || item.description || '').toString();
+        if (!html) return;
+
+        const htmlDoc = new DOMParser().parseFromString(html, 'text/html');
+        const links = Array.from(htmlDoc.getElementsByTagName('a'));
+        let sheetUrl = null;
+
+        for (const link of links) {
+          const text = (link.textContent || '').toLowerCase();
+          const href = link.getAttribute('href') || '';
+          if (!href) continue;
+          if (!href.includes('docs.google.com/spreadsheets/d/')) continue;
+          if (text.includes('live') && text.includes('schedule')) {
+            sheetUrl = href;
+            break;
+          }
+        }
+
+        if (!sheetUrl) return;
+
+        events.push({
+          id: `${title}-${index}`,
+          title,
+          sheetUrl
+        });
+      });
+
+      setRssEvents(events)
+      setRssLoading(false)
+    } catch (err) {
+      console.error('Failed to load RSS events', err)
+      setRssError('Could not load events from nasa-se.com feed. You can still paste a Google Sheets URL manually.')
+      setRssLoading(false)
+    }
+  }
+
   // Fetch and parse schedule
   async function fetchSchedule() {
+    // No schedule selected: do not fetch and do not surface stale/errors
+    if (!hasActiveSchedule) {
+      setFetchError(null)
+      setRows([])
+      setAllRows([])
+      if (!navigator.onLine) {
+        setConnectionStatus('offline')
+      } else {
+        setConnectionStatus('idle')
+      }
+      return
+    }
+
     // Skip fetch if offline
     if (!navigator.onLine) {
       setConnectionStatus('offline')
       setFetchError('No internet connection')
-      return
-    }
-    
-    // Skip fetch if no custom URL provided and not in debug mode
-    if (!customUrl && !debugMode) {
-      // Clear data when no URL is provided
-      setRows([])
-      setAllRows([])
       return
     }
     
@@ -579,10 +796,11 @@ export default function App() {
   
   // Auto-refresh schedule every 30 seconds
   useEffect(() => {
+    if (!hasActiveSchedule) return undefined
     fetchSchedule()
     const timer = setInterval(fetchSchedule, 30000)
     return () => clearInterval(timer)
-  }, [dayOffset, selectedCsvFile, customUrl, debugMode])
+  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasActiveSchedule])
   
   // Update displayed rows when selected day changes
   useEffect(() => {
@@ -609,10 +827,19 @@ export default function App() {
     findNextSessionsPerGroup(rows, selectedGroups, nowWithOffset),
     [rows, selectedGroups, nowWithOffset]
   )
+
+  const mobilePrimarySession = current
+  const mobileSessionEndsIn = useMemo(() => {
+    if (!mobilePrimarySession || !mobilePrimarySession.start) return null
+    const end = mobilePrimarySession.end || addMinutes(mobilePrimarySession.start, mobilePrimarySession.duration || 20)
+    const diff = end.getTime() - nowWithOffset.getTime()
+    if (diff <= 0) return '0m'
+    return formatTimeUntil(diff, mobilePrimarySession, nowWithOffset)
+  }, [mobilePrimarySession, nowWithOffset])
   
   // Auto-scroll to current session
   useEffect(() => {
-    if (!current || !autoScrollEnabled) return
+    if (isMobile || !current || !autoScrollEnabled) return
     
     const idx = rows.findIndex(r => 
       r.start && current.start && r.start.getTime() === current.start.getTime()
@@ -632,7 +859,7 @@ export default function App() {
     }, 30000)
     
     return () => clearTimeout(timer)
-  }, [current, rows, autoScrollEnabled])
+  }, [current, rows, autoScrollEnabled, isMobile])
   
   // Handle run group selection
   function handleGroupToggle(group) {
@@ -650,17 +877,43 @@ export default function App() {
     }
   }
   
+  // Handle selection of an event from the NASA-SE RSS feed
+  function handleRssEventSelect(event) {
+    const eventId = event.target.value
+    setSelectedRssEventId(eventId)
+    const found = rssEvents.find(ev => ev.id === eventId)
+    if (!found) return
+
+    setCustomUrl(found.sheetUrl)
+
+    // Exit demo/debug mode and reset offsets when switching to a live sheet
+    if (debugMode) {
+      setDebugMode(false)
+      setClockOffset(0)
+      setDayOffset(0)
+    }
+  }
+  
   // Dynamic sizing based on content density
   const upcomingCount = Object.entries(nextSessionsByGroup).length
   const isCompactMode = upcomingCount > 3
+
+  const sidebarFullWidth = isMobile ? '240px' : '280px'
+  const sidebarCollapsedWidth = isMobile ? '0px' : '60px'
+  const mainPadding = isMobile
+    ? '12px 16px 24px'
+    : sidebarOpen
+      ? '16px 48px'
+      : '16px 48px 24px 64px'
+  const panelPadding = isMobile ? '16px' : '24px'
   
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
       {/* React Pro Sidebar */}
       <Sidebar
         collapsed={!sidebarOpen}
-        width="280px"
-        collapsedWidth="60px"
+        width={sidebarFullWidth}
+        collapsedWidth={sidebarCollapsedWidth}
         backgroundColor="#f8f9fa"
         style={{
           position: 'fixed',
@@ -669,7 +922,9 @@ export default function App() {
           zIndex: 1000,
           border: 'none',
           borderRight: '1px solid #e5e7eb',
-          height: '100vh'
+          height: '100vh',
+          transform: isMobile && !sidebarOpen ? 'translateX(-100%)' : 'translateX(0)',
+          transition: 'transform 0.3s ease'
         }}
       >
         <div style={{
@@ -794,18 +1049,9 @@ export default function App() {
           </MenuItem>
         </Menu>
 
-        {/* Active Sheet Info */}
-        {sidebarOpen && sheetName && (
-          <div style={{
-            margin: '24px 8px 16px 8px',
-            padding: '12px',
-            background: '#ffffff',
-            borderRadius: '8px',
-            border: '1px solid #e5e7eb',
-            borderLeft: '3px solid #3b82f6'
-          }}>
-            <div style={{color: '#6b7280', fontSize: '0.75rem', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.05em'}}>Active Sheet</div>
-            <div style={{color: '#1f2937', fontSize: '0.9rem', wordBreak: 'break-word'}}>{sheetName}</div>
+        {isMobile && sidebarOpen && (
+          <div style={{margin: '16px 8px'}}>
+            {renderInfoPanel()}
           </div>
         )}
 
@@ -884,10 +1130,10 @@ export default function App() {
 
       {/* Main Content Wrapper - Controls viewport filling */}
       <div style={{
-        marginLeft: sidebarOpen ? '280px' : '60px',
+        marginLeft: isMobile ? '0px' : (sidebarOpen ? sidebarFullWidth : sidebarCollapsedWidth),
         transition: 'margin-left 0.3s ease',
         flex: 1,
-        padding: sidebarOpen ? '16px 48px' : '16px 48px 24px 64px',
+        padding: mainPadding,
         backgroundColor: '#ffffff',
         minHeight: '100vh',
         height: showDebugPanel ? 'auto' : '100vh', // Auto height when debug panel is open
@@ -896,117 +1142,64 @@ export default function App() {
         flexDirection: 'column',
         boxSizing: 'border-box'
       }}>
+      {isMobile && !sidebarOpen && (
+        <button
+          className="mobile-menu-button"
+          type="button"
+          onClick={() => setSidebarOpen(true)}
+          aria-label="Open menu"
+        >
+          <span style={{fontSize: '1.2rem', lineHeight: 1}}>☰</span>
+        </button>
+      )}
+
       {/* Header with Clock and Info Panel */}
-      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px', gap: '20px', width: '100%'}}>
-        {/* Clock Display */}
-        <div style={{flex: '0 0 42%', display: 'flex', justifyContent: 'center', alignItems: 'center'}}>
-          <h1 className="clock" style={{margin: 0, whiteSpace: 'nowrap'}}>
-            {(() => {
-              const hours = nowWithOffset.getHours() % 12 || 12
-              const mins = String(nowWithOffset.getMinutes()).padStart(2, '0')
-              const secs = String(nowWithOffset.getSeconds()).padStart(2, '0')
-              const ampm = nowWithOffset.getHours() >= 12 ? 'PM' : 'AM'
-              return <>{hours}:{mins}:{secs}<span className="clock-ampm">{ampm}</span></>
-            })()}
-          </h1>
-        </div>
-        
-        {/* Info Panel */}
+      <div style={{
+        display: 'flex',
+        flexWrap: isMobile ? 'wrap' : 'nowrap',
+        justifyContent: isMobile ? 'center' : 'space-between',
+        alignItems: isMobile ? 'center' : 'flex-start',
+        textAlign: isMobile ? 'center' : 'left',
+        marginBottom: isMobile ? '12px' : '16px',
+        gap: isMobile ? '12px' : '20px',
+        width: '100%'
+      }}>
         <div style={{
-          flex: 1,
           display: 'flex',
-          justifyContent: 'flex-end'
+          alignItems: 'center',
+          justifyContent: isMobile ? 'center' : 'flex-start',
+          gap: isMobile ? '12px' : '24px',
+          flex: isMobile ? '1 1 100%' : '1 1 auto'
         }}>
           <div style={{
-            width: '20%',
-            minWidth: '220px',
-            maxWidth: '260px',
-            background: '#ffffff',
-            border: '1px solid #e5e7eb',
-            borderRadius: '8px',
-            padding: '12px 14px',
-            fontSize: '0.85rem',
-            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)'
-          }}>
-          {/* Connection Status */}
-          <div style={{
+            flex: 'none',
             display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            marginBottom: '10px',
-            paddingBottom: '10px',
-            borderBottom: '1px solid #f3f4f6'
+            justifyContent: 'center',
+            alignItems: 'center'
           }}>
-            <span style={{
-              display: 'inline-block',
-              width: '8px',
-              height: '8px',
-              borderRadius: '50%',
-              backgroundColor: isDataStale
-                ? '#ff6b6b'
-                : connectionStatus === 'online'
-                  ? '#4caf50'
-                  : connectionStatus === 'offline'
-                    ? '#ff6b6b'
-                    : '#ffa500',
-              flexShrink: 0
-            }} />
-            <div style={{flex: 1}}>
-              <div style={{color: '#374151', fontWeight: 500, fontSize: '0.8rem'}}>
-                {isDataStale
-                  ? 'Data Stale'
-                  : connectionStatus === 'online'
-                    ? 'Connected'
-                    : connectionStatus === 'offline'
-                      ? 'Disconnected'
-                      : 'Connecting...'}
-              </div>
-              <div style={{color: '#6b7280', fontSize: '0.7rem', marginTop: '2px'}}>
-                Last fetch: {lastFetchTimeDisplay}
-                {connectionStatus !== 'online' && lastSuccessfulFetch && ' (retrying...)'}
-              </div>
-            </div>
+            <h1 className="clock" style={{margin: 0, whiteSpace: 'nowrap', fontSize: isMobile ? '3.2rem' : undefined}}>
+              {(() => {
+                const hours = nowWithOffset.getHours() % 12 || 12
+                const mins = String(nowWithOffset.getMinutes()).padStart(2, '0')
+                const secs = String(nowWithOffset.getSeconds()).padStart(2, '0')
+                const ampm = nowWithOffset.getHours() >= 12 ? 'PM' : 'AM'
+                return <>{hours}:{mins}:{secs}<span className="clock-ampm">{ampm}</span></>
+              })()}
+            </h1>
           </div>
-          
-          {/* Active Schedule */}
-          {sheetName && (
-            <div>
-              <div style={{color: '#6b7280', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px'}}>Schedule</div>
-              <div style={{color: '#1f2937', fontSize: '0.8rem', lineHeight: '1.3'}}>{sheetName}</div>
+
+          {!isMobile && (
+            <div style={{
+              flex: 1,
+              display: 'flex',
+              justifyContent: 'flex-end'
+            }}>
+              {renderInfoPanel()}
             </div>
           )}
-          </div>
         </div>
       </div>
       
-      {/* Stale Data Warning Banner */}
-      {(() => {
-        if (!isDataStale && !forceShowStaleBanner) return null
-
-        return (
-          <div style={{
-            margin: '0 20px 20px 20px',
-            padding: '10px 16px',
-            background: '#ffebee',
-            border: '1px solid #ef5350',
-            borderRadius: '6px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            boxShadow: '0 2px 4px rgba(239, 83, 80, 0.1)'
-          }}>
-            <MdWarning size={24} style={{color: '#ef5350', flexShrink: 0}} />
-            <div style={{flex: 1}}>
-              <div style={{color: '#c62828', fontWeight: 600, fontSize: '0.95rem'}}>
-                Data Refresh Failed
-              </div>
-              <div style={{color: '#d32f2f', fontSize: '0.85rem', marginTop: '2px'}}>
-                Unable to refresh data for more than {staleThresholdLabel}. Last update: {lastFetchDateTimeDisplay}
-              </div>
-            </div>
-          </div>
-        )
-      })()}
       
       {/* Debug Controls */}
       {showDebugPanel && (
@@ -1130,50 +1323,96 @@ export default function App() {
         <div style={{marginBottom: '24px', padding: '20px', background: '#f8f9fa', borderRadius: '12px', border: '1px solid #e5e7eb', boxShadow: '0 1px 3px rgba(0,0,0,0.1)'}}>
           <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
             <div>
-              {!customUrl && (
-                <div style={{
-                  padding: '12px',
-                  background: '#e3f2fd',
-                  border: '2px solid #2196f3',
-                  borderRadius: '6px',
-                  marginBottom: '12px',
-                  fontSize: '0.95rem',
-                  color: '#1565c0'
-                }}>
-                  <strong>Getting Started:</strong> Enter the NASA SE Live Schedule link below to load the weekend schedule.
-                </div>
-              )}
+              <div style={{marginBottom: '12px'}}>
+                <label style={{display: 'block', marginBottom: '6px', fontWeight: 500}}>
+                  Events
+                </label>
+                {rssLoading && (
+                  <div style={{fontSize: '0.85rem', color: '#666'}}>
+                    Loading events from nasa-se.com...
+                  </div>
+                )}
+                {!rssLoading && rssError && (
+                  <div style={{
+                    fontSize: '0.8rem',
+                    color: '#c62828',
+                    background: '#ffebee',
+                    border: '1px solid #ef5350',
+                    borderRadius: '4px',
+                    padding: '8px'
+                  }}>
+                    {rssError}
+                  </div>
+                )}
+                {!rssLoading && !rssError && rssEvents.length > 0 && (
+                  <>
+                    <select
+                      value={selectedRssEventId}
+                      onChange={handleRssEventSelect}
+                      style={{width: '100%', padding: '8px', fontSize: '0.9rem', marginBottom: '4px'}}
+                    >
+                      <option value="">Select an event...</option>
+                      {rssEvents.map(ev => (
+                        <option key={ev.id} value={ev.id}>{ev.title}</option>
+                      ))}
+                    </select>
+                    <div style={{fontSize: '0.8rem', color: '#666'}}>
+                    </div>
+                  </>
+                )}
+              </div>
               
               <label style={{display: 'block', marginBottom: '8px', fontWeight: 500}}>
                 Google Sheets URL:
               </label>
               
-              <input
-                type="text"
-                value={customUrl}
-                onChange={e => {
-                  setCustomUrl(e.target.value)
-                  // Exit demo mode and reset offsets when URL is changed
-                  if (e.target.value && debugMode) {
-                    setDebugMode(false)
-                    setClockOffset(0)
-                    setDayOffset(0)
-                  }
-                }}
-                placeholder="https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
-                style={{
-                  width: '100%',
-                  padding: '8px',
-                  fontSize: '0.9rem',
-                  fontFamily: 'monospace',
-                  backgroundColor: '#fff',
-                  border: '1px solid #ccc',
-                  borderRadius: '4px',
-                  boxSizing: 'border-box'
-                }}
-              />
+              <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+                <input
+                  type="text"
+                  value={customUrl}
+                  onChange={e => {
+                    setCustomUrl(e.target.value)
+                    // Exit demo mode and reset offsets when URL is changed
+                    if (e.target.value && debugMode) {
+                      setDebugMode(false)
+                      setClockOffset(0)
+                      setDayOffset(0)
+                    }
+                  }}
+                  placeholder="https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
+                  style={{
+                    width: '100%',
+                    padding: '8px',
+                    fontSize: '0.9rem',
+                    fontFamily: 'monospace',
+                    backgroundColor: '#fff',
+                    border: '1px solid #ccc',
+                    borderRadius: '4px',
+                    boxSizing: 'border-box'
+                  }}
+                />
+                <button
+                  type="button"
+                  title="Reset active sheet"
+                  onClick={() => {
+                    setCustomUrl('')
+                    setSheetName('')
+                    setSelectedRssEventId('')
+                  }}
+                  style={{
+                    padding: '8px 12px',
+                    fontSize: '0.9rem',
+                    border: '2px solid #d32f2f',
+                    borderRadius: '4px',
+                    background: '#fff',
+                    color: '#d32f2f',
+                    cursor: 'pointer',
+                    marginLeft: '4px'
+                  }}
+                >Reset</button>
+              </div>
               <div style={{marginTop: '4px', fontSize: '0.8rem', color: '#666', fontStyle: 'italic'}}>
-                Tip: Paste any Google Sheets URL - it will automatically convert to CSV format
+                Event not found above? Paste the Google Sheets URL directly.
               </div>
               
               {customUrl && (
@@ -1262,73 +1501,114 @@ export default function App() {
       <div className="content" style={{
         flex: showDebugPanel ? 'none' : 1, // Don't flex-fill when debug panel is open
         minHeight: showDebugPanel ? '600px' : 0, // Fixed min height when debug panel is open
-        overflow: showDebugPanel ? 'visible' : 'hidden' // Allow overflow when debug panel is open
+        overflow: showDebugPanel ? 'visible' : 'hidden', // Allow overflow when debug panel is open
+        flexDirection: isMobile ? 'column' : undefined,
+        gap: isMobile ? '16px' : undefined
       }}>
-        {/* Left Side: Session List */}
-        <aside className="left" style={{
-          background: '#ffffff',
-          borderRadius: '12px',
-          border: '1px solid #e5e7eb',
-          padding: '24px',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-          boxSizing: 'border-box',
-          overflow: 'hidden',
-          display: 'flex',
-          flexDirection: 'column'
-        }}>
-          <h2 style={{margin: 0, marginBottom: '16px', fontSize: '1.8rem', color: '#1f2937'}}>Sessions</h2>
-          
-          <div style={{display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px'}}>
-            <label style={{fontWeight: 600, color: '#4b5563'}}>Day:</label>
-            <select 
-              value={selectedDay || ''} 
-              onChange={e => setSelectedDay(e.target.value)} 
-              style={{padding: '6px 8px', fontSize: '1rem'}}
-            >
-              {availableDays.map(d => (
-                <option key={d} value={d}>{d}</option>
-              ))}
-            </select>
-          </div>
-          
-          <div className="session-list" ref={listRef}>
-            {rows.map((r, idx) => {
-              const isNow = current && r.start && current.start && 
-                           r.start.getTime() === current.start.getTime()
-              const end = r.end || addMinutes(r.start, r.duration || 20)
-              const status = r.start && end && end < nowWithOffset ? 'past' : 
-                            isNow ? 'now' : 'future'
-              
-              return (
-                <div
-                  key={idx}
-                  ref={el => (itemRefs.current[idx] = el)}
-                  className={`session ${status}`}
-                >
-                  <div className="time">{r.start ? formatTimeWithAmPm(r.start) : ''}</div>
-                  <div className="title">{r.session}</div>
-                  <div className="dur">{r.duration ? `${r.duration}m` : ''}</div>
+        {isMobile ? (
+          <section className="mobile-current-card" style={{alignSelf: 'stretch'}}>
+            <div className="mobile-card-header">
+              <div className="mobile-card-label">Current Session</div>
+            </div>
+
+            {mobilePrimarySession ? (
+              <div className="mobile-card-body">
+                <div className="mobile-card-line" title={mobilePrimarySession.session}>
+                  <span className="mobile-card-title">{mobilePrimarySession.session}</span>
+                  <span className="mobile-card-time">
+                    &nbsp;—&nbsp;
+                    {mobilePrimarySession.start ? formatTimeWithAmPm(mobilePrimarySession.start) : 'TBD'}
+                  </span>
                 </div>
-              )
-            })}
-          </div>
-        </aside>
+                {mobileSessionEndsIn && (
+                  <div className="mobile-session-status">Ends in {mobileSessionEndsIn}</div>
+                )}
+              </div>
+            ) : (
+              <div className="mobile-card-body">
+                <div className="mobile-card-title">No session on track</div>
+                <div className="mobile-session-status">Check back soon</div>
+              </div>
+            )}
+          </section>
+        ) : (
+          <aside className="left" style={{
+            background: '#ffffff',
+            borderRadius: '12px',
+            border: '1px solid #e5e7eb',
+            padding: panelPadding,
+            boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+            boxSizing: 'border-box',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}>
+            <h2 style={{margin: 0, marginBottom: '16px', fontSize: '1.8rem', color: '#1f2937'}}>Sessions</h2>
+
+            <div style={{display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px'}}>
+              <label style={{fontWeight: 600, color: '#4b5563'}}>Day:</label>
+              <select
+                value={selectedDay || ''}
+                onChange={e => setSelectedDay(e.target.value)}
+                style={{padding: '6px 8px', fontSize: '1rem'}}
+              >
+                {availableDays.map(d => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="session-list" ref={listRef}>
+              {rows.map((r, idx) => {
+                const isNow = current && r.start && current.start &&
+                             r.start.getTime() === current.start.getTime()
+                const end = r.end || addMinutes(r.start, r.duration || 20)
+                const status = r.start && end && end < nowWithOffset ? 'past' :
+                              isNow ? 'now' : 'future'
+
+                return (
+                  <div
+                    key={idx}
+                    ref={el => (itemRefs.current[idx] = el)}
+                    className={`session ${status}`}
+                  >
+                    <div className="time">{r.start ? formatTimeWithAmPm(r.start) : ''}</div>
+                    <div className="title">{r.session}</div>
+                    <div className="dur">{r.duration ? `${r.duration}m` : ''}</div>
+                  </div>
+                )
+              })}
+            </div>
+          </aside>
+        )}
         
         {/* Right Side: Run Groups, Meetings, Upcoming */}
         <section className="right" style={{
           background: '#ffffff',
           borderRadius: '12px',
           border: '1px solid #e5e7eb',
-          padding: '24px',
+          padding: panelPadding,
           boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
           boxSizing: 'border-box',
-          overflow: 'auto'
+          overflow: isMobile ? 'visible' : 'auto',
+          width: isMobile ? '100%' : undefined,
+          flex: isMobile ? '1 1 auto' : undefined,
+          minHeight: isMobile ? '65vh' : undefined
         }}>
           {/* Run Groups Selector */}
           <div style={{marginBottom: '0px'}}>
             <label 
               onClick={() => setRunGroupsExpanded(!runGroupsExpanded)}
-              style={{cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.8rem', fontWeight: 700, margin: 0, color: '#1f2937'}}
+              style={{
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: isMobile ? '0.9rem' : '1.8rem',
+                fontWeight: 700,
+                margin: 0,
+                color: '#1f2937'
+              }}
             >
               <span style={{fontSize: '0.7rem'}}>{runGroupsExpanded ? '▼' : '▶'}</span>
               Run Groups
@@ -1361,10 +1641,10 @@ export default function App() {
           {upcomingCount > 0 && (
             <>
               <h3 style={{
-                marginTop: '12px',
-                paddingTop: '0px',
-                marginBottom: '0px',
-                fontSize: isCompactMode ? '1.1rem' : '1.3rem',
+                marginTop: isMobile ? '4px' : '12px',
+                paddingTop: 0,
+                marginBottom: 0,
+                fontSize: isMobile ? '0.9rem' : isCompactMode ? '1.1rem' : '1.3rem',
                 paddingBottom: '12px',
                 borderBottom: '1px solid #e5e7eb'
               }}>

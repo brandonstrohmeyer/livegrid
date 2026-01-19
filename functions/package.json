@@ -1,0 +1,14 @@
+{
+  "name": "nasa-session-dashboard-functions",
+  "main": "index.js",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "deploy": "firebase deploy --only functions",
+    "serve": "firebase emulators:start --only functions,hosting"
+  },
+  "dependencies": {
+    "firebase-functions": "^5.0.0"
+  }
+}

@@ -69,3 +69,78 @@ footer button:hover{background:rgba(0,0,0,0.08);}
 .debug-controls input{padding:6px 8px;border:1px solid #ddd;border-radius:4px;}
 .debug-controls button{background:#0b74de;border:none;color:#fff;padding:6px 12px;border-radius:4px;cursor:pointer;margin-left:8px;}
 .debug-controls button:disabled{opacity:0.5;cursor:not-allowed;}
+
+.mobile-menu-button{
+	position: fixed;
+	top: 12px;
+	left: 12px;
+	z-index: 1200;
+	width: 44px;
+	height: 44px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 10px;
+	border: 1px solid #e5e7eb;
+	background: rgba(248, 249, 250, 0.92);
+	color: #111827;
+	box-shadow: 0 6px 16px rgba(2,6,23,0.12);
+}
+
+.mobile-current-card{
+	background: #ffffff;
+	border: 1px solid #e5e7eb;
+	border-radius: 12px;
+	box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+	overflow: hidden;
+}
+
+.mobile-card-header{
+	padding: 12px 14px;
+	background: linear-gradient(180deg, #f7fbff 0%, #ffffff 100%);
+	border-bottom: 1px solid #eef2f7;
+}
+
+.mobile-card-label{
+	font-size: 0.78rem;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: #6b7280;
+}
+
+.mobile-card-body{
+	padding: 12px 14px;
+}
+
+.mobile-card-line{
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+.mobile-card-title{
+	font-weight: 800;
+	color: #0b2336;
+	font-size: 1.05rem;
+	line-height: 1.2;
+}
+
+.mobile-card-time{
+	font-weight: 700;
+	color: #0b74de;
+	font-size: 0.98rem;
+}
+
+.mobile-session-status{
+	margin-top: 8px;
+	font-size: 0.9rem;
+	font-weight: 700;
+	color: #0b557f;
+}
+
+@media (max-width: 900px){
+	body{font-size:16px}
+	.content{gap:16px}
+}

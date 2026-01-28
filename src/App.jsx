@@ -445,12 +445,12 @@ export default function App() {
 
   const renderInfoPanel = () => (
     <div style={{
-      background: '#ffffff',
-      border: '1px solid #e5e7eb',
+      background: '#eceff4', // Nord Snow Storm 2
+      border: '1px solid #d8dee9',
       borderRadius: '8px',
       padding: '12px 14px',
       fontSize: '0.85rem',
-      boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
+      boxShadow: '0 1px 3px rgba(46, 52, 64, 0.05)',
       minWidth: '220px',
       maxWidth: '280px'
     }}>
@@ -927,22 +927,22 @@ export default function App() {
   const panelPadding = isMobile ? '16px' : '24px'
   
   return (
-    <div style={{ display: 'flex', height: '100vh', background: '#23272f' }}>
+    <div style={{ display: 'flex', height: '100vh' }}>
       {/* React Pro Sidebar */}
       <Sidebar
         collapsed={!sidebarOpen}
         width={sidebarFullWidth}
         collapsedWidth={sidebarCollapsedWidth}
-        backgroundColor="#181c23"
+        backgroundColor="#2e3440"
         style={{
           position: 'fixed',
           left: 0,
           top: 0,
           zIndex: 1000,
           border: 'none',
-          borderRight: '1px solid #23272f',
+          borderRight: '1px solid #3b4252',
           height: '100vh',
-          background: '#181c23',
+          background: '#2e3440',
           boxShadow: '2px 0 12px 0 rgba(0,0,0,0.12)',
           transform: isMobile && !sidebarOpen ? 'translateX(-100%)' : 'translateX(0)',
           transition: 'transform 0.3s ease'
@@ -994,8 +994,8 @@ export default function App() {
             menuItemStyles={{
               button: {
                 '&:hover': {
-                  backgroundColor: '#e0e7ff',
-                  color: '#3730a3'
+                  backgroundColor: '#88c0d0', // Nord Frost blue
+                  color: '#2e3440'
                 },
                 padding: '12px 16px',
                 margin: '8px',
@@ -1003,7 +1003,7 @@ export default function App() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: sidebarOpen ? 'flex-start' : 'center',
-                color: '#6b7280'
+                color: '#5e81ac' // Nord Frost blue
               },
               icon: {
                 display: 'flex',
@@ -1150,7 +1150,7 @@ export default function App() {
                     onClick={() => setShowDebugPanel(v => !v)}
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: 2,
-                      background: '#fff', color: '#222', border: '1px solid #000', borderRadius: 3,
+                      background: '#5e81ac', color: '#eceff4', border: '1px solid #5e81ac', borderRadius: 3,
                       padding: '0 6px', fontWeight: 500, fontSize: '0.75rem', cursor: 'pointer',
                       transition: 'background 0.2s, color 0.2s',
                       height: 22,
@@ -1188,7 +1188,7 @@ export default function App() {
                     }}
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: 2,
-                      background: '#fff', color: '#222', border: '1px solid #000', borderRadius: 3,
+                      background: '#5e81ac', color: '#eceff4', border: '1px solid #5e81ac', borderRadius: 3,
                       padding: '0 6px', fontWeight: 500, fontSize: '0.75rem', cursor: 'pointer',
                       transition: 'background 0.2s, color 0.2s',
                       height: 22,
@@ -1247,7 +1247,7 @@ export default function App() {
         transition: 'margin-left 0.3s ease',
         flex: 1,
         padding: mainPadding,
-        backgroundColor: '#23272f',
+        // backgroundColor: '#2e3440',
         minHeight: '100vh',
         height: showDebugPanel ? 'auto' : '100vh', // Auto height when debug panel is open
         overflow: showDebugPanel ? 'visible' : 'hidden', // Allow overflow when debug panel is open
@@ -1649,11 +1649,11 @@ export default function App() {
           </section>
         ) : (
           <aside className="left" style={{
-            background: '#23272f',
+            background: '#eceff4', // Nord Snow Storm 2
             borderRadius: '12px',
-            border: '1px solid #23272f',
+            border: '2px solid #5e81ac', // Nord Frost blue
             padding: panelPadding,
-            boxShadow: '0 1px 3px rgba(0,0,0,0.18)',
+            boxShadow: '0 1px 3px rgba(46, 52, 64, 0.08)',
             boxSizing: 'border-box',
             overflow: 'hidden',
             display: 'flex',
@@ -1700,11 +1700,11 @@ export default function App() {
         
         {/* Right Side: Run Groups, Meetings, Upcoming */}
         <section className="right" style={{
-          background: '#ffffff',
+          background: '#eceff4', // Nord Snow Storm 2
           borderRadius: '12px',
-          border: '1px solid #e5e7eb',
+          border: '2px solid #5e81ac', // Nord Frost blue
           padding: panelPadding,
-          boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+          boxShadow: '0 1px 3px rgba(46, 52, 64, 0.08)',
           boxSizing: 'border-box',
           overflow: isMobile ? 'visible' : 'auto',
           width: isMobile ? '100%' : undefined,

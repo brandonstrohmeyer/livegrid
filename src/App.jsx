@@ -3,7 +3,7 @@ import version from './version.js'
 import Papa from 'papaparse'
 import { XMLParser } from 'fast-xml-parser'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
-import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning } from 'react-icons/md'
+import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink } from 'react-icons/md'
 import { FaInstagram } from 'react-icons/fa'
 import {
   parseTimeToToday,
@@ -511,8 +511,24 @@ export default function App() {
           }}>
             Schedule
           </div>
-          <div style={{color: '#1f2937', fontSize: '0.8rem', lineHeight: '1.3'}}>
-            {sheetName}
+          <div style={{display: 'flex', alignItems: 'center', gap: '6px'}}>
+            <a
+              href={customUrl || '#'}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                color: '#1f2937',
+                fontSize: '0.8rem',
+                lineHeight: '1.3',
+                textDecoration: customUrl ? 'underline' : 'none',
+                cursor: customUrl ? 'pointer' : 'default'
+              }}
+            >
+              {sheetName}
+            </a>
+            {customUrl && (
+              <MdLink style={{ fontSize: '1.1rem', color: '#4b5563', marginLeft: '2px' }} aria-label="Open Google Sheet" />
+            )}
           </div>
         </div>
       )}

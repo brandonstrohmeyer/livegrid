@@ -3,8 +3,10 @@ import version from './version.js'
 import Papa from 'papaparse'
 import { XMLParser } from 'fast-xml-parser'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
-import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink } from 'react-icons/md'
+import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline } from 'react-icons/md'
 import { FaInstagram } from 'react-icons/fa'
+import { FaEnvelope } from 'react-icons/fa'
+import { FaDiscord } from 'react-icons/fa'
 import {
   parseTimeToToday,
   addMinutes,
@@ -279,6 +281,7 @@ export default function App() {
   const [debugMode, setDebugMode] = useState(isDemoMode)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showDebugPanel, setShowDebugPanel] = useState(false)
+  const [showHelpSection, setShowHelpSection] = useState(false)
   const [runGroupsExpanded, setRunGroupsExpanded] = useState(false)
   const [selectedCsvFile, setSelectedCsvFile] = useState(isDemoMode ? '2026 New Year, New Gear - Schedule.csv' : 'schedule.csv')
   const [optionsExpanded, setOptionsExpanded] = useState(() => {
@@ -924,21 +927,23 @@ export default function App() {
   const panelPadding = isMobile ? '16px' : '24px'
   
   return (
-    <div style={{ display: 'flex', height: '100vh' }}>
+    <div style={{ display: 'flex', height: '100vh', background: '#23272f' }}>
       {/* React Pro Sidebar */}
       <Sidebar
         collapsed={!sidebarOpen}
         width={sidebarFullWidth}
         collapsedWidth={sidebarCollapsedWidth}
-        backgroundColor="#f8f9fa"
+        backgroundColor="#181c23"
         style={{
           position: 'fixed',
           left: 0,
           top: 0,
           zIndex: 1000,
           border: 'none',
-          borderRight: '1px solid #e5e7eb',
+          borderRight: '1px solid #23272f',
           height: '100vh',
+          background: '#181c23',
+          boxShadow: '2px 0 12px 0 rgba(0,0,0,0.12)',
           transform: isMobile && !sidebarOpen ? 'translateX(-100%)' : 'translateX(0)',
           transition: 'transform 0.3s ease'
         }}
@@ -948,199 +953,291 @@ export default function App() {
           display: 'flex',
           flexDirection: 'column'
         }}>
-        {/* Sidebar Header */}
-        <div style={{
-          padding: '20px 16px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: sidebarOpen ? 'space-between' : 'center',
-          borderBottom: '1px solid #e5e7eb',
-          background: '#ffffff'
-        }}>
-          {sidebarOpen && (
-            <span style={{color: '#1f2937', fontWeight: 600, fontSize: '1.1rem'}}>Menu</span>
-          )}
-          <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            style={{
-              background: '#f8f9fa',
-              border: '1px solid #e5e7eb',
-              color: '#1f2937',
-              padding: '8px',
-              cursor: 'pointer',
-              borderRadius: '8px',
-              fontSize: '1.2rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: '40px',
-              height: '40px',
-              transition: 'all 0.2s'
-            }}
-            onMouseEnter={(e) => { e.target.style.background = '#e5e7eb'; e.target.style.transform = 'scale(1.05)'; }}
-            onMouseLeave={(e) => { e.target.style.background = '#f8f9fa'; e.target.style.transform = 'scale(1)'; }}
-          >
-            {sidebarOpen ? '✕' : '☰'}
-          </button>
-        </div>
-
-        {/* Menu Items */}
-        <Menu
-          menuItemStyles={{
-            button: {
-              '&:hover': {
-                backgroundColor: '#e0e7ff',
-                color: '#3730a3'
-              },
-              padding: '12px 16px',
-              margin: '8px',
-              transition: 'background 0.2s',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: sidebarOpen ? 'flex-start' : 'center',
-              color: '#6b7280'
-            },
-            icon: {
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              minWidth: '24px',
-              margin: sidebarOpen ? '0' : '0 auto',
-              color: '#6b7280'
-            }
-          }}
-        >
-          {/* Fullscreen */}
-          <MenuItem
-            icon={document.fullscreenElement ? <MdFullscreenExit size={20} /> : <MdFullscreen size={20} />}
-            onClick={() => {
-              if (!document.fullscreenElement) {
-                document.documentElement.requestFullscreen()
-              } else {
-                document.exitFullscreen()
-              }
-            }}
-          >
-            Fullscreen
-          </MenuItem>
-
-          {/* Settings */}
-          <MenuItem
-            icon={<MdSettings size={20} />}
-            onClick={() => setOptionsExpanded(!optionsExpanded)}
-          >
-            Settings
-          </MenuItem>
-
-          {/* Demo */}
-          <MenuItem
-            icon={<MdPlayArrow size={20} />}
-            onClick={() => {
-              const now = new Date()
-              const currentDay = now.getDay()
-              let daysUntilSaturday = (6 - currentDay + 7) % 7
-              if (daysUntilSaturday === 0 && currentDay === 6) {
-                daysUntilSaturday = 0
-              }
-              const target = new Date(now)
-              target.setDate(target.getDate() + daysUntilSaturday)
-              target.setHours(10, 30, 0, 0)
-              const nowDayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-              const targetDayStart = new Date(target.getFullYear(), target.getMonth(), target.getDate())
-              const dayDiff = Math.round((targetDayStart - nowDayStart) / 86400000)
-              const nowTimeMs = now.getTime() - nowDayStart.getTime()
-              const targetTimeMs = target.getTime() - targetDayStart.getTime()
-              const clockMinutes = Math.round((targetTimeMs - nowTimeMs) / 60000)
-              setDayOffset(dayDiff)
-              setClockOffset(clockMinutes)
-              if (!debugMode) setDebugMode(true)
-              setSelectedCsvFile('2026 New Year, New Gear - Schedule.csv')
-              setCustomUrl('')
-              setSelectedDay('Saturday')
-              setSelectedGroups(['HPDE 1', 'TT Omega'])
-              setOptionsExpanded(false)
-            }}
-          >
-            Demo
-          </MenuItem>
-        </Menu>
-
-        {isMobile && sidebarOpen && (
-          <div style={{margin: '16px 8px'}}>
-            {renderInfoPanel()}
-          </div>
-        )}
-
-        {/* Spacer to push Debug to bottom */}
-        <div style={{flex: 1}} />
-
-        {/* Debug at bottom */}
-        <Menu
-          menuItemStyles={{
-            button: {
-              '&:hover': {
-                backgroundColor: '#e0e7ff',
-                color: '#3730a3'
-              },
-              padding: '12px 16px',
-              margin: '8px',
-              transition: 'background 0.2s',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: sidebarOpen ? 'flex-start' : 'center',
-              color: '#6b7280'
-            },
-            icon: {
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              minWidth: '24px',
-              margin: sidebarOpen ? '0' : '0 auto',
-              color: '#6b7280'
-            }
-          }}
-        >
-          <MenuItem
-            icon={<MdBuild size={20} />}
-            onClick={() => setShowDebugPanel(!showDebugPanel)}
-          >
-            Debug
-          </MenuItem>
-        </Menu>
-
-        {/* Build Number & Instagram */}
-        <div style={{
-          padding: '10px 16px',
-          borderTop: '1px solid #e5e7eb',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: sidebarOpen ? 'space-between' : 'center',
-          fontSize: '0.75rem',
-          color: '#999'
-        }}>
-          <span>v{version}</span>
-          {sidebarOpen && (
-            <a 
-              href="https://www.instagram.com/stro38x" 
-              target="_blank" 
-              rel="noopener noreferrer"
+          {/* Sidebar Header */}
+          <div style={{
+            padding: '20px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: sidebarOpen ? 'space-between' : 'center',
+            borderBottom: '1px solid #e5e7eb',
+            background: '#ffffff'
+          }}>
+            {sidebarOpen && (
+              <span style={{color: '#1f2937', fontWeight: 600, fontSize: '1.1rem'}}>Menu</span>
+            )}
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
               style={{
+                background: '#f8f9fa',
+                border: '1px solid #e5e7eb',
+                color: '#1f2937',
+                padding: '8px',
+                cursor: 'pointer',
+                borderRadius: '8px',
+                fontSize: '1.2rem',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '6px',
-                color: '#999',
-                textDecoration: 'none',
-                transition: 'color 0.2s',
-                fontSize: '0.75rem'
+                justifyContent: 'center',
+                width: '40px',
+                height: '40px',
+                transition: 'all 0.2s'
               }}
-              onMouseEnter={(e) => e.currentTarget.style.color = '#0b74de'}
-              onMouseLeave={(e) => e.currentTarget.style.color = '#999'}
+              onMouseEnter={(e) => { e.target.style.background = '#e5e7eb'; e.target.style.transform = 'scale(1.05)'; }}
+              onMouseLeave={(e) => { e.target.style.background = '#f8f9fa'; e.target.style.transform = 'scale(1)'; }}
             >
-              <FaInstagram size={16} />
-              <span>stro38x</span>
-            </a>
-          )}
-        </div>
+              {sidebarOpen ? '✕' : '☰'}
+            </button>
+          </div>
+
+          {/* Menu Items */}
+          <Menu
+            menuItemStyles={{
+              button: {
+                '&:hover': {
+                  backgroundColor: '#e0e7ff',
+                  color: '#3730a3'
+                },
+                padding: '12px 16px',
+                margin: '8px',
+                transition: 'background 0.2s',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: sidebarOpen ? 'flex-start' : 'center',
+                color: '#6b7280'
+              },
+              icon: {
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minWidth: '24px',
+                margin: sidebarOpen ? '0' : '0 auto',
+                color: '#6b7280'
+              }
+            }}
+          >
+            {/* Fullscreen */}
+            <MenuItem
+              icon={document.fullscreenElement ? <MdFullscreenExit size={20} /> : <MdFullscreen size={20} />}
+              onClick={() => {
+                if (!document.fullscreenElement) {
+                  document.documentElement.requestFullscreen()
+                } else {
+                  document.exitFullscreen()
+                }
+              }}
+            >
+              Fullscreen
+            </MenuItem>
+
+            {/* Settings */}
+            <MenuItem
+              icon={<MdSettings size={20} />}
+              onClick={() => setOptionsExpanded(!optionsExpanded)}
+            >
+              Settings
+            </MenuItem>
+
+            {/* Demo */}
+
+
+            {/* Help Menu Item */}
+            <MenuItem
+              icon={<MdHelpOutline size={20} />}
+              onClick={() => setShowHelpSection(v => !v)}
+            >
+              Help
+            </MenuItem>
+          </Menu>
+          <div
+            style={{
+              margin: '0 16px 16px 16px',
+              padding: showHelpSection && sidebarOpen ? '28px 20px 20px 20px' : '0 16px',
+              background: '#f1f5f9',
+              borderRadius: '14px',
+              color: '#334155',
+              fontSize: '0.95rem',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+              border: '1px solid #e5e7eb',
+              maxHeight: showHelpSection && sidebarOpen ? 420 : 0,
+              overflow: 'hidden',
+              transition: 'max-height 0.4s cubic-bezier(.4,0,.2,1), padding 0.3s cubic-bezier(.4,0,.2,1)',
+              display: sidebarOpen ? 'block' : 'none',
+            }}
+          >
+            {showHelpSection && sidebarOpen && (
+              <>
+                <div style={{marginBottom: 4, fontWeight: 500, color: '#334155'}}>Having issues?</div>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'flex-start',
+                  gap: 10,
+                  marginBottom: 4,
+                  paddingTop: '0.75em',
+                  paddingBottom: '0.75em'
+                }}>
+                  <a
+                    href="mailto:brandon@stro.io?subject=LiveGrid%20Issue"
+                    style={{
+                      color: '#000',
+                      background: '#fff',
+                      border: '1.5px solid #000',
+                      textDecoration: 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 32,
+                      height: 32,
+                      borderRadius: 6,
+                      transition: 'background 0.2s, color 0.2s',
+                      boxSizing: 'border-box',
+                    }}
+                    title="Email brandon@stro.io"
+                  >
+                    <FaEnvelope size={18} color="#000" />
+                  </a>
+                  <a
+                    href="https://discord.com/users/362053962637246464"
+                    style={{
+                      color: '#000',
+                      background: '#fff',
+                      border: '1.5px solid #000',
+                      textDecoration: 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 32,
+                      height: 32,
+                      borderRadius: 6,
+                      transition: 'background 0.2s, color 0.2s',
+                      boxSizing: 'border-box',
+                    }}
+                    title="DM on Discord"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <FaDiscord size={18} color="#000" />
+                  </a>
+                  <a
+                    href="https://ig.me/m/stro38x"
+                    style={{
+                      color: '#000',
+                      background: '#fff',
+                      border: '1.5px solid #000',
+                      textDecoration: 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 32,
+                      height: 32,
+                      borderRadius: 6,
+                      transition: 'background 0.2s, color 0.2s',
+                      boxSizing: 'border-box',
+                    }}
+                    title="DM on Instagram"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <FaInstagram size={18} color="#000" />
+                  </a>
+                </div>
+                <div style={{color: '#334155', fontSize: '0.97em', marginLeft: 2, marginBottom: 12}}>
+                  ...or come find me in the paddock
+                </div>
+                <hr style={{border: 0, borderTop: '1px solid #e5e7eb', margin: '12px 0 10px 0'}} />
+                <div style={{display: 'flex', gap: 12, marginBottom: 8, justifyContent: 'flex-start'}}>
+                  <button
+                    onClick={() => setShowDebugPanel(v => !v)}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 2,
+                      background: '#fff', color: '#222', border: '1px solid #000', borderRadius: 3,
+                      padding: '0 6px', fontWeight: 500, fontSize: '0.75rem', cursor: 'pointer',
+                      transition: 'background 0.2s, color 0.2s',
+                      height: 22,
+                      minWidth: 0,
+                    }}
+                  >
+                    <MdBuild size={11} style={{marginRight: 1}} />
+                    Debug
+                  </button>
+                  <button
+                    onClick={() => {
+                      const now = new Date();
+                      const currentDay = now.getDay();
+                      let daysUntilSaturday = (6 - currentDay + 7) % 7;
+                      if (daysUntilSaturday === 0 && currentDay === 6) {
+                        daysUntilSaturday = 0;
+                      }
+                      const target = new Date(now);
+                      target.setDate(target.getDate() + daysUntilSaturday);
+                      target.setHours(10, 30, 0, 0);
+                      const nowDayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                      const targetDayStart = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+                      const dayDiff = Math.round((targetDayStart - nowDayStart) / 86400000);
+                      const nowTimeMs = now.getTime() - nowDayStart.getTime();
+                      const targetTimeMs = target.getTime() - targetDayStart.getTime();
+                      const clockMinutes = Math.round((targetTimeMs - nowTimeMs) / 60000);
+                      setDayOffset(dayDiff);
+                      setClockOffset(clockMinutes);
+                      if (!debugMode) setDebugMode(true);
+                      setSelectedCsvFile('2026 New Year, New Gear - Schedule.csv');
+                      setCustomUrl('');
+                      setSelectedDay('Saturday');
+                      setSelectedGroups(['HPDE 1', 'TT Omega']);
+                      setOptionsExpanded(false);
+                    }}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 2,
+                      background: '#fff', color: '#222', border: '1px solid #000', borderRadius: 3,
+                      padding: '0 6px', fontWeight: 500, fontSize: '0.75rem', cursor: 'pointer',
+                      transition: 'background 0.2s, color 0.2s',
+                      height: 22,
+                      minWidth: 0,
+                    }}
+                  >
+                    <MdPlayArrow size={11} style={{marginRight: 1}} />
+                    Demo
+                  </button>
+                </div>
+                <hr style={{border: 0, borderTop: '1px solid #e5e7eb', margin: '10px 0 0 0'}} />
+              </>
+            )}
+          </div>
+          {/* Spacer to push Debug to bottom */}
+          <div style={{flex: 1}} />
+          {/* Build Number & Instagram */}
+          <div style={{
+            padding: '10px 16px',
+            borderTop: '1px solid #e5e7eb',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: sidebarOpen ? 'space-between' : 'center',
+            fontSize: '0.75rem',
+            color: '#999'
+          }}>
+            <span>v{version}</span>
+            {sidebarOpen && (
+              <a 
+                href="https://www.instagram.com/stro38x" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  color: '#999',
+                  textDecoration: 'none',
+                  transition: 'color 0.2s',
+                  fontSize: '0.75rem'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.color = '#0b74de'}
+                onMouseLeave={(e) => e.currentTarget.style.color = '#999'}
+              >
+                <FaInstagram size={16} />
+                <span>stro38x</span>
+              </a>
+            )}
+          </div>
         </div>
       </Sidebar>
 
@@ -1150,7 +1247,7 @@ export default function App() {
         transition: 'margin-left 0.3s ease',
         flex: 1,
         padding: mainPadding,
-        backgroundColor: '#ffffff',
+        backgroundColor: '#23272f',
         minHeight: '100vh',
         height: showDebugPanel ? 'auto' : '100vh', // Auto height when debug panel is open
         overflow: showDebugPanel ? 'visible' : 'hidden', // Allow overflow when debug panel is open
@@ -1337,6 +1434,9 @@ export default function App() {
       {/* Options Controls */}
       {optionsExpanded && (
         <div style={{marginBottom: '24px', padding: '20px', background: '#f8f9fa', borderRadius: '12px', border: '1px solid #e5e7eb', boxShadow: '0 1px 3px rgba(0,0,0,0.1)'}}>
+          <div style={{marginBottom: '18px', color: '#334155', fontSize: '0.98rem', lineHeight: 1.5}}>
+             This application is in beta and does not replace the official schedule published by the event organizers. Always refer to the official event schedule.
+          </div>
           <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
             <div>
               <div style={{marginBottom: '12px'}}>
@@ -1549,11 +1649,11 @@ export default function App() {
           </section>
         ) : (
           <aside className="left" style={{
-            background: '#ffffff',
+            background: '#23272f',
             borderRadius: '12px',
-            border: '1px solid #e5e7eb',
+            border: '1px solid #23272f',
             padding: panelPadding,
-            boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.18)',
             boxSizing: 'border-box',
             overflow: 'hidden',
             display: 'flex',
@@ -1656,50 +1756,37 @@ export default function App() {
           {/* Upcoming Sessions */}
           {upcomingCount > 0 && (
             <>
-              <h3 style={{
-                marginTop: isMobile ? '4px' : '12px',
-                paddingTop: 0,
-                marginBottom: 0,
-                fontSize: isMobile ? '0.9rem' : isCompactMode ? '1.1rem' : '1.3rem',
-                paddingBottom: '12px',
-                borderBottom: '1px solid #e5e7eb'
-              }}>
-                Upcoming
-              </h3>
-              
               {/* Meetings */}
               <div style={{marginBottom: '16px'}}>
-              {relevantMeetings.map((meeting, idx) => {
-                const isFuture = meeting.start && nowWithOffset <= addMinutes(meeting.start, 10)
-                if (!isFuture) return null
-                
-                return (
-                  <div 
-                    key={idx} 
-                    className="meeting" 
-                    style={{
-                      padding: isCompactMode ? '6px 8px' : undefined,
-                      fontSize: isCompactMode ? '0.85rem' : undefined,
-                      marginTop: isCompactMode ? '4px' : undefined
-                    }}
-                  >
-                    <div style={{fontSize: isCompactMode ? '0.9rem' : undefined}}>
-                      {meeting.session} — {meeting.start ? formatTimeWithAmPm(meeting.start) : meeting.customTime}
-                    </div>
+                {relevantMeetings.map((meeting, idx) => {
+                  const isFuture = meeting.start && nowWithOffset <= addMinutes(meeting.start, 10)
+                  if (!isFuture) return null
+                  return (
                     <div 
-                      className="countdown" 
+                      key={idx}
+                      className="meeting"
                       style={{
-                        fontSize: isCompactMode ? '0.8rem' : undefined,
-                        marginTop: isCompactMode ? '2px' : undefined
+                        padding: isCompactMode ? '6px 8px' : undefined,
+                        fontSize: isCompactMode ? '0.85rem' : undefined,
+                        marginTop: isCompactMode ? '4px' : undefined
                       }}
                     >
-                      Starts in {formatTimeUntil(meeting.start - nowWithOffset, meeting, nowWithOffset)}
+                      <div style={{fontSize: isCompactMode ? '0.9rem' : undefined}}>
+                        {meeting.session} — {meeting.start ? formatTimeWithAmPm(meeting.start) : meeting.customTime}
+                      </div>
+                      <div 
+                        className="countdown" 
+                        style={{
+                          fontSize: isCompactMode ? '0.8rem' : undefined,
+                          marginTop: isCompactMode ? '2px' : undefined
+                        }}
+                      >
+                        Starts in {formatTimeUntil(meeting.start - nowWithOffset, meeting, nowWithOffset)}
+                      </div>
                     </div>
-                  </div>
-                )
-              })}
+                  )
+                })}
               </div>
-              
               <div className="next-group-container">
                 {Object.entries(nextSessionsByGroup)
                   .sort(([a], [b]) => a.localeCompare(b))
@@ -1713,7 +1800,6 @@ export default function App() {
                     const strongSize = upcomingCount === 1 ? '1.2rem' : 
                                       upcomingCount === 2 ? '1.15rem' : 
                                       upcomingCount === 3 ? '1.1rem' : '1.05rem'
-                    
                     return (
                       <div key={group} className="next-for-block" style={{padding, fontSize}}>
                         {session ? (

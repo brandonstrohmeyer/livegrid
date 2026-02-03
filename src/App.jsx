@@ -1651,9 +1651,9 @@ export default function App() {
           <aside className="left" style={{
             background: '#eceff4', // Nord Snow Storm 2
             borderRadius: '12px',
-            border: '2px solid #5e81ac', // Nord Frost blue
+            border: 'none',
             padding: panelPadding,
-            boxShadow: '0 1px 3px rgba(46, 52, 64, 0.08)',
+            boxShadow: '0 8px 32px 0 rgba(46,52,64,0.12), 0 1.5px 4px 0 rgba(46,52,64,0.08)',
             boxSizing: 'border-box',
             overflow: 'hidden',
             display: 'flex',
@@ -1702,9 +1702,9 @@ export default function App() {
         <section className="right" style={{
           background: '#eceff4', // Nord Snow Storm 2
           borderRadius: '12px',
-          border: '2px solid #5e81ac', // Nord Frost blue
+          border: 'none',
           padding: panelPadding,
-          boxShadow: '0 1px 3px rgba(46, 52, 64, 0.08)',
+          boxShadow: '0 8px 32px 0 rgba(46,52,64,0.12), 0 1.5px 4px 0 rgba(46,52,64,0.08)',
           boxSizing: 'border-box',
           overflow: isMobile ? 'visible' : 'auto',
           width: isMobile ? '100%' : undefined,

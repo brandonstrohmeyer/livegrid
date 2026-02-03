@@ -4,14 +4,14 @@
    - Default (no debug): body overflow:hidden prevents page scroll, internal sections scroll independently
    - Debug mode: body overflow:auto allows page-level scrolling for long debug panels */
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial; margin:0; padding:0; 
-	background: linear-gradient(180deg, #eceff4 0%, #d8dee9 60%, #e5e9f0 100%);
+	background: #e5e9f0;
 	color:#0b2336; font-size:18px; height:100vh; box-sizing:border-box; overflow:hidden}
 body.debug-mode{overflow:auto}
-.container{max-width:1200px;margin:0 auto; height:100vh; display:flex; flex-direction:column}
+.container{max-width:1200px;margin:0 auto; height:100vh; display:flex; flex-direction:column; background:transparent;}
 .container.debug-mode{height:auto; min-height:100vh}
 
 /* two-column content layout */
-.content{display:flex;gap:20px;align-items:stretch; flex:1; min-height:0}
+.content{display:flex;gap:20px;align-items:stretch; flex:1; min-height:0; background:transparent; border-radius:0;}
 .left{width:42%; display:flex; flex-direction:column; min-height:0}
 .right{flex:1;display:flex;flex-direction:column;gap:8px; min-height:0}
 
@@ -33,17 +33,25 @@ body.debug-mode{overflow:auto}
 	border: 2px solid #5e81ac;
 	border-radius: 8px;
 	padding: 0.8rem 1rem;
-	background: #f7faff;
+	background: transparent;
 	box-shadow: 0 2px 8px rgba(25, 118, 210, 0.07);
 	font-size: 0.95rem;
 }
 
 /* session list styles */
 .session-list{flex:1; overflow-y:auto; overflow-x:hidden; padding:8px;background:transparent;border-radius:8px; min-height:0; scroll-snap-type: y proximity}
-.session{display:grid;grid-template-columns:120px 1fr 60px;gap:12px;padding:14px 12px;border-radius:8px;background:white;margin-bottom:8px;align-items:center;transition:transform 200ms ease, box-shadow 200ms ease;font-size:1.05rem; scroll-snap-align: center; scroll-margin: 40vh 0; border:2px solid #5e81ac}
+.session{display:grid;grid-template-columns:120px 1fr 60px;gap:12px;padding:14px 12px;border-radius:8px;background:white;margin-bottom:8px;align-items:center;transition:transform 200ms ease, box-shadow 200ms ease;font-size:1.05rem; scroll-snap-align: center; scroll-margin: 40vh 0; box-shadow:0 8px 32px 0 rgba(46,52,64,0.12), 0 1.5px 4px 0 rgba(46,52,64,0.08);}
 .session.past{opacity:0.45;color:#666}
 .session.future{opacity:1}
-.session.now{transform:scale(1.06);border:2px solid #5e81ac;box-shadow:0 6px 20px rgba(94,129,172,0.15);background:linear-gradient(180deg, #fff 0%, #f7fbff 100%)}
+.session.now{
+	transform:scale(1.06);
+	box-shadow:0 10px 26px rgba(94,129,172,0.3);
+	background:white;
+	border-left:6px solid #ebcb8b;
+	border-top:3px solid #ebcb8b;
+	border-bottom:3px solid #ebcb8b;
+	padding-left:calc(12px + 6px);
+}
 .time{font-weight:700;font-size:1.1rem}
 .title{font-size:1.1rem}
 .dur{color:#666;font-size:1rem}
@@ -99,7 +107,7 @@ footer button:hover{background:rgba(0,0,0,0.08);}
 
 .mobile-card-header{
 	padding: 12px 14px;
-	background: linear-gradient(180deg, #f7fbff 0%, #ffffff 100%);
+	background: #fff;
 	border-bottom: 1px solid #eef2f7;
 }
 

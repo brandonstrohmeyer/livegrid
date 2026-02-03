@@ -1,9 +1,9 @@
-import React, { useEffect, useState, useMemo, useRef } from 'react'
+import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import version from './version.js'
 import Papa from 'papaparse'
 import { XMLParser } from 'fast-xml-parser'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
-import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive } from 'react-icons/md'
+import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused } from 'react-icons/md'
 import { GiFullMotorcycleHelmet } from 'react-icons/gi'
 import { FaInstagram } from 'react-icons/fa'
 import { FaEnvelope } from 'react-icons/fa'
@@ -309,6 +309,8 @@ export default function App() {
   const [selectedRssEventId, setSelectedRssEventId] = useState('')
   const rssFetchStartedRef = useRef(false)
   const [forceShowStaleBanner, setForceShowStaleBanner] = useState(false)
+  const upcomingNotificationTrackerRef = useRef(new Map())
+  const [notificationLeadMinutes, setNotificationLeadMinutes] = useSyncedPreference('notificationLeadMinutes', () => 15)
   const supportsNotifications = typeof window !== 'undefined' && 'Notification' in window
   const supportsServiceWorkers = typeof navigator !== 'undefined' && 'serviceWorker' in navigator
   const [notificationPermission, setNotificationPermission] = useState(() => {
@@ -500,6 +502,17 @@ export default function App() {
   const lastFetchTimeDisplay = lastFetchAdjusted ? lastFetchAdjusted.toLocaleTimeString() : 'Never'
   const lastFetchDateTimeDisplay = lastFetchAdjusted ? lastFetchAdjusted.toLocaleString() : 'Never'
 
+  const showTimedNotification = useCallback(payload => {
+    const id = `${Date.now()}-${Math.random()}`
+    setNotificationStatus({ ...payload, id, fading: false })
+    setTimeout(() => {
+      setNotificationStatus(prev => (prev && prev.id === id ? { ...prev, fading: true } : prev))
+    }, 1000)
+    setTimeout(() => {
+      setNotificationStatus(prev => (prev && prev.id === id ? null : prev))
+    }, 2000)
+  }, [setNotificationStatus])
+
   const requestNotificationPermission = async () => {
     if (!supportsNotifications) {
       setNotificationStatus({ type: 'error', message: 'Notifications are not supported in this browser.' })
@@ -513,65 +526,13 @@ export default function App() {
       const resolved = result || (supportsNotifications ? Notification.permission : 'default')
       setNotificationPermission(resolved)
       if (resolved === 'granted') {
-        setNotificationStatus({ type: 'success', message: 'Notifications enabled. Use the test button below to preview the toast.' })
-      } else if (resolved === 'denied') {
-        setNotificationStatus({ type: 'error', message: 'Permission denied. Update your browser\'s site settings to retry.' })
-      } else {
-        setNotificationStatus({ type: 'info', message: 'Permission dismissed. Click Enable again to retry.' })
+        showTimedNotification({ type: 'success', message: 'Notifications enabled' })
       }
+      // No message for denied/dismissed
     } catch (error) {
       setNotificationStatus({ type: 'error', message: `Failed to request permission: ${error.message}` })
     } finally {
       setNotificationPrompting(false)
-    }
-  }
-
-  const sendTestNotification = async () => {
-    if (!supportsNotifications) {
-      setNotificationStatus({ type: 'error', message: 'Notifications are not supported in this browser.' })
-      return
-    }
-    if (notificationPermission !== 'granted') {
-      setNotificationStatus({ type: 'error', message: 'Enable notifications before sending a test.' })
-      return
-    }
-    if (notificationTesting) return
-    setNotificationStatus(null)
-    setNotificationTesting(true)
-    try {
-      const options = {
-        body: 'LiveGrid will ping you when your run group is on deck.',
-        tag: 'livegrid-debug-test',
-        renotify: true,
-        icon: '/livegrid-icon.png',
-        badge: '/livegrid-icon-maskable.png',
-        timestamp: Date.now(),
-        data: { source: 'debug-test' },
-        actions: [
-          { action: 'open', title: 'Open LiveGrid' }
-        ]
-      }
-      let delivered = false
-      if (supportsServiceWorkers && navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
-        try {
-          const registration = await navigator.serviceWorker.getRegistration()
-          if (registration && registration.showNotification) {
-            await registration.showNotification('LiveGrid test notification', options)
-            delivered = true
-          }
-        } catch (error) {
-          // Fall back to direct Notification constructor if SW lookup fails
-        }
-      }
-      if (!delivered) {
-        // eslint-disable-next-line no-new
-        new Notification('LiveGrid test notification', options)
-      }
-      setNotificationStatus({ type: 'success', message: 'Test notification sent. Check your system notification tray.' })
-    } catch (error) {
-      setNotificationStatus({ type: 'error', message: `Unable to show notification: ${error.message}` })
-    } finally {
-      setNotificationTesting(false)
     }
   }
 
@@ -964,6 +925,10 @@ export default function App() {
     setRows(filteredRows)
     setCurrentDay(selectedDay)
   }, [selectedDay, allRows])
+
+  useEffect(() => {
+    upcomingNotificationTrackerRef.current.clear()
+  }, [selectedDay, selectedGroups, selectedCsvFile, customUrl])
   
   // Extract run groups from current sessions
   const groups = useMemo(() => extractRunGroups(rows), [rows])
@@ -987,6 +952,125 @@ export default function App() {
     if (diff <= 0) return '0m'
     return formatTimeUntil(diff, mobilePrimarySession, nowWithOffset)
   }, [mobilePrimarySession, nowWithOffset])
+
+  const getPrimaryNextSessionEntry = () => {
+    const entries = Object.entries(nextSessionsByGroup)
+    if (!entries.length) return null
+    const withStarts = entries.filter(([, session]) => session && session.start)
+    const sorted = (withStarts.length ? withStarts : entries).sort(([, a], [, b]) => {
+      const aTime = a?.start ? a.start.getTime() : Infinity
+      const bTime = b?.start ? b.start.getTime() : Infinity
+      return aTime - bTime
+    })
+    return sorted.length ? sorted[0] : null
+  }
+
+  const formatMinutesUntil = minutes => {
+    if (minutes == null || Number.isNaN(minutes)) return 'unknown'
+    if (minutes <= 0) return 'now'
+    if (minutes < 1) return '<1m'
+    return `${Math.round(minutes)}m`
+  }
+
+  const notifyUpcomingSession = async ({ session, group, minutesUntil, reason = 'auto' }) => {
+    const etaMinutes = minutesUntil != null
+      ? minutesUntil
+      : (session.start ? (session.start.getTime() - nowWithOffset.getTime()) / 60000 : null)
+    if (!supportsNotifications || notificationPermission !== 'granted') {
+      if (reason === 'test') {
+        setNotificationStatus({ type: 'info', message: 'Browser is blocking LiveGrid notifications.' })
+      }
+      return
+    }
+    const minutesLabel = formatMinutesUntil(etaMinutes)
+    const startLabel = session.start ? formatTimeWithAmPm(session.start) : 'TBD'
+    const title = `${group} ${minutesLabel === 'now' ? 'is up' : `in ${minutesLabel}`}`
+    const body = `${session.session || 'Session'} starts at ${startLabel}`
+    const options = {
+      body,
+      tag: `livegrid-${group}-${session.start ? session.start.getTime() : Date.now()}`,
+      renotify: true,
+      icon: '/livegrid-icon.png',
+      badge: '/livegrid-icon-maskable.png',
+      timestamp: Date.now(),
+      data: { group, session: session.session, reason }
+    }
+    try {
+      let delivered = false
+      if (supportsServiceWorkers && navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+        const registration = await navigator.serviceWorker.getRegistration()
+        if (registration && registration.showNotification) {
+          await registration.showNotification(title, options)
+          delivered = true
+        }
+      }
+      if (!delivered) {
+        // eslint-disable-next-line no-new
+        new Notification(title, options)
+      }
+      if (reason !== 'auto') {
+        showTimedNotification({ type: 'success', message: `${group} notification sent (${minutesLabel}).` })
+      }
+    } catch (error) {
+      if (reason !== 'auto') {
+        setNotificationStatus({ type: 'error', message: `Unable to show notification: ${error.message}` })
+      } else {
+        console.error('LiveGrid notification failed', error)
+      }
+    }
+  }
+
+  const sendTestNotification = async () => {
+    if (notificationTesting) return
+    setNotificationStatus(null)
+    setNotificationTesting(true)
+    try {
+      const candidate = getPrimaryNextSessionEntry()
+      if (candidate) {
+        const [group, session] = candidate
+        const minutesUntil = session.start ? (session.start.getTime() - nowWithOffset.getTime()) / 60000 : null
+        await notifyUpcomingSession({ session, group, minutesUntil, reason: 'test' })
+      } else {
+        if (!supportsNotifications) {
+          setNotificationStatus({ type: 'error', message: 'Notifications are not supported in this browser.' })
+          return
+        }
+        if (notificationPermission !== 'granted') {
+            setNotificationStatus({ type: 'info', message: 'Notifications disabled' })
+          return
+        }
+        const options = {
+          body: 'LiveGrid will ping you when your run group is on deck.',
+          tag: 'livegrid-debug-test-generic',
+          renotify: true,
+          icon: '/livegrid-icon.png',
+          badge: '/livegrid-icon-maskable.png',
+          timestamp: Date.now(),
+          data: { source: 'debug-test-generic' },
+          actions: [
+            { action: 'open', title: 'Open LiveGrid' }
+          ]
+        }
+        let delivered = false
+        if (supportsServiceWorkers && navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+          const registration = await navigator.serviceWorker.getRegistration()
+          if (registration && registration.showNotification) {
+            await registration.showNotification('LiveGrid test notification', options)
+            delivered = true
+          }
+        }
+        if (!delivered) {
+          // eslint-disable-next-line no-new
+          new Notification('LiveGrid test notification', options)
+        }
+        showTimedNotification({ type: 'success', message: 'Generic test notification sent.' })
+      }
+    } catch (error) {
+      setNotificationStatus({ type: 'error', message: `Unable to show notification: ${error.message}` })
+    } finally {
+      setNotificationTesting(false)
+    }
+  }
   
   // Auto-scroll to current session
   useEffect(() => {
@@ -1011,6 +1095,26 @@ export default function App() {
     
     return () => clearTimeout(timer)
   }, [current, rows, autoScrollEnabled, isMobile])
+
+  useEffect(() => {
+    const canNotify = supportsNotifications && notificationPermission === 'granted'
+    if (!canNotify) return
+    const entries = Object.entries(nextSessionsByGroup)
+    if (!entries.length) return
+    entries.forEach(([group, session]) => {
+      if (!session || !session.start) return
+      const diffMs = session.start.getTime() - nowWithOffset.getTime()
+      const minutesUntil = diffMs / 60000
+      if (minutesUntil < 0) return
+      if (minutesUntil > notificationLeadMinutes) return
+      const key = `${group}-${session.start.toISOString()}`
+      if (upcomingNotificationTrackerRef.current.has(key)) return
+      upcomingNotificationTrackerRef.current.set(key, Date.now())
+      notifyUpcomingSession({ session, group, minutesUntil, reason: 'auto' }).catch(error => {
+        console.error('LiveGrid notification failed', error)
+      })
+    })
+  }, [nextSessionsByGroup, nowWithOffset, notificationPermission, notificationLeadMinutes, notifyUpcomingSession, supportsNotifications])
   
   // Handle run group selection
   function handleGroupToggle(group) {
@@ -1057,6 +1161,7 @@ export default function App() {
       ? '16px 48px'
       : '16px 48px 24px 64px'
   const panelPadding = isMobile ? '16px' : '24px'
+  const notificationsExpanded = showNotificationsSection && sidebarOpen
   const sidebarMenuItemStyles = useMemo(() => ({
     button: {
       '&:hover': {
@@ -1173,7 +1278,7 @@ export default function App() {
 
             {/* Notifications */}
             <MenuItem
-              icon={<MdNotificationsActive size={20} />}
+              icon={notificationPermission === 'granted' ? <MdNotificationsActive size={20} /> : <MdNotificationsPaused size={20} />}
               onClick={() => {
                 if (!sidebarOpen) {
                   setSidebarOpen(true)
@@ -1199,44 +1304,51 @@ export default function App() {
           <div
             style={{
               margin: '0 16px 12px 16px',
-              padding: showNotificationsSection && sidebarOpen ? '24px 20px 20px 20px' : '0 16px',
+              padding: notificationsExpanded ? '24px 20px 20px 20px' : '0 16px',
               borderRadius: '14px',
               border: '1px solid rgba(255,255,255,0.08)',
               background: '#1f2630',
               color: '#e5e9f0',
               boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-              maxHeight: showNotificationsSection && sidebarOpen ? 360 : 0,
-              overflow: 'hidden',
+              maxHeight: notificationsExpanded ? '70vh' : 0,
+              overflowX: 'hidden',
+              overflowY: notificationsExpanded ? 'auto' : 'hidden',
               transition: 'max-height 0.4s cubic-bezier(.4,0,.2,1), padding 0.3s cubic-bezier(.4,0,.2,1)',
               display: sidebarOpen ? 'block' : 'none'
             }}
           >
-            {showNotificationsSection && sidebarOpen && (
+            {notificationsExpanded && (
               <>
-                <div style={{fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7}}>
-                  Notifications
-                </div>
-                <div style={{fontWeight: 600, margin: '6px 0 12px 0'}}>
-                  Stay alert for your run group
-                </div>
-                {notificationStatus && (
-                  <div style={{
-                    background: notificationStatus.type === 'error' ? 'rgba(248,113,113,0.18)' : notificationStatus.type === 'success' ? 'rgba(16,185,129,0.18)' : 'rgba(59,130,246,0.18)',
-                    border: notificationStatus.type === 'error' ? '1px solid rgba(248,113,113,0.5)' : notificationStatus.type === 'success' ? '1px solid rgba(16,185,129,0.45)' : '1px solid rgba(59,130,246,0.45)',
-                    color: notificationStatus.type === 'error' ? '#fecaca' : notificationStatus.type === 'success' ? '#bbf7d0' : '#bfdbfe',
-                    borderRadius: '8px',
-                    padding: '10px',
-                    fontSize: '0.85rem',
-                    marginBottom: '12px'
-                  }}>
+                {notificationStatus && notificationStatus.message && (
+                  <div
+                    style={{
+                      background: notificationStatus.type === 'error' ? 'rgba(248,113,113,0.18)' : notificationStatus.type === 'success' ? 'rgba(16,185,129,0.18)' : 'rgba(59,130,246,0.18)',
+                      border: notificationStatus.type === 'error' ? '1px solid rgba(248,113,113,0.5)' : notificationStatus.type === 'success' ? '1px solid rgba(16,185,129,0.45)' : '1px solid rgba(59,130,246,0.45)',
+                      color: notificationStatus.type === 'error' ? '#fecaca' : notificationStatus.type === 'success' ? '#bbf7d0' : '#bfdbfe',
+                      borderRadius: '8px',
+                      padding: '10px',
+                      fontSize: '0.85rem',
+                      marginBottom: '12px',
+                      opacity: notificationStatus.fading ? 0 : 1,
+                      transition: 'opacity 1s ease'
+                    }}
+                  >
                     {notificationStatus.message}
                   </div>
                 )}
                 <div style={{display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '12px'}}>
                   <button
                     type="button"
-                    onClick={requestNotificationPermission}
-                    disabled={!supportsNotifications || notificationPermission === 'granted' || notificationPrompting}
+                    onClick={() => {
+                      if (notificationPermission === 'granted') {
+                        // Simulate disabling by setting permission to 'default' (cannot revoke via API)
+                        setNotificationPermission('default')
+                        showTimedNotification({ type: 'info', message: 'Notifications disabled' })
+                      } else {
+                        requestNotificationPermission()
+                      }
+                    }}
+                    disabled={!supportsNotifications || notificationPrompting}
                     style={{
                       flex: '1 1 140px',
                       padding: '10px 14px',
@@ -1245,10 +1357,10 @@ export default function App() {
                       background: notificationPermission === 'granted' ? '#2f3a4c' : '#5e81ac',
                       color: '#f0f4ff',
                       fontWeight: 600,
-                      cursor: notificationPermission === 'granted' ? 'default' : (notificationPrompting ? 'wait' : 'pointer')
+                      cursor: notificationPrompting ? 'wait' : 'pointer'
                     }}
                   >
-                    {notificationPermission === 'granted' ? 'Notifications enabled' : (notificationPrompting ? 'Requesting...' : 'Enable notifications')}
+                    {notificationPermission === 'granted' ? 'Disable notifications' : (notificationPrompting ? 'Requesting...' : 'Enable notifications')}
                   </button>
                   <button
                     type="button"
@@ -1267,6 +1379,26 @@ export default function App() {
                   >
                     {notificationTesting ? 'Sending...' : 'Test notification'}
                   </button>
+                </div>
+                <div style={{marginBottom: '10px'}}>
+                  <label htmlFor="notification-lead" style={{fontWeight: 500, fontSize: '0.97em', display: 'block', marginBottom: '2px'}}>Notify me</label>
+                  <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+                    <input
+                      id="notification-lead"
+                      type="number"
+                      min={1}
+                      max={120}
+                      value={notificationLeadMinutes}
+                      onChange={e => {
+                        const raw = Number(e.target.value)
+                        if (Number.isNaN(raw)) return
+                        const clamped = Math.max(1, Math.min(120, Math.round(raw)))
+                        setNotificationLeadMinutes(clamped)
+                      }}
+                      style={{width: '56px', padding: '4px 6px', borderRadius: '5px', border: '1px solid #444', background: '#181c23', color: '#e5e9f0', fontSize: '0.97em'}}
+                    />
+                    <span style={{color: '#a0aec0', fontSize: '0.97em'}}>minutes before session</span>
+                  </div>
                 </div>
               </>
             )}
@@ -1403,17 +1535,22 @@ export default function App() {
                 justifyContent: sidebarOpen ? 'flex-start' : 'center',
                 gap: sidebarOpen ? 10 : 0,
                 padding: sidebarOpen ? '12px 16px' : 0,
-                margin: '0 auto',
-                marginBottom: sidebarOpen ? '8px' : '8px',
-                borderRadius: sidebarOpen ? '10px' : '50%',
+                margin: '8px',
+                borderRadius: 0,
                 border: 'none',
-                background: '#2b303b',
+                background: 'transparent',
                 color: '#b4c6dd',
                 cursor: 'pointer',
-                transition: 'background 0.2s, transform 0.2s'
+                transition: 'background 0.2s, color 0.2s'
               }}
-              onMouseEnter={e => { e.currentTarget.style.background = '#3b4252' }}
-              onMouseLeave={e => { e.currentTarget.style.background = '#2b303b' }}
+              onMouseEnter={e => {
+                e.currentTarget.style.background = '#88c0d0'
+                e.currentTarget.style.color = '#2e3440'
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = 'transparent'
+                e.currentTarget.style.color = '#b4c6dd'
+              }}
             >
               <MdHelpOutline size={20} />
               {sidebarOpen && <span style={{fontSize: '0.95rem', fontWeight: 500}}>Help</span>}
@@ -1801,7 +1938,8 @@ export default function App() {
             <div style={{fontSize: '0.9rem', marginBottom: '10px', color: '#1e3a8a'}}>
               Support: {supportsNotifications ? 'Available' : 'Not supported'}<br/>
               Permission: {supportsNotifications ? notificationPermission : 'unsupported'}<br/>
-              Service Worker: {serviceWorkerRegistrationState}
+              Service Worker: {serviceWorkerRegistrationState}<br/>
+              Lead time: {notificationLeadMinutes}m<br/>
             </div>
             <div style={{fontSize: '0.82rem', color: '#334155'}}>
               Last status: {notificationStatus ? notificationStatus.message : 'None'}<br/>
@@ -1979,7 +2117,7 @@ export default function App() {
                 </span>
               </div>
             </div>
-            
+
             <div style={{paddingTop: '12px', borderTop: '1px solid #ddd'}}>
               <label style={{display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer'}}>
                 <input

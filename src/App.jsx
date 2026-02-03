@@ -3,7 +3,7 @@ import version from './version.js'
 import Papa from 'papaparse'
 import { XMLParser } from 'fast-xml-parser'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
-import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline } from 'react-icons/md'
+import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive } from 'react-icons/md'
 import { GiFullMotorcycleHelmet } from 'react-icons/gi'
 import { FaInstagram } from 'react-icons/fa'
 import { FaEnvelope } from 'react-icons/fa'
@@ -296,6 +296,7 @@ export default function App() {
   const [showDebugPanel, setShowDebugPanel] = useState(false)
   const [showHelpSection, setShowHelpSection] = useState(false)
   const [showAccountSection, setShowAccountSection] = useState(false)
+  const [showNotificationsSection, setShowNotificationsSection] = useState(false)
   const [runGroupsExpanded, setRunGroupsExpanded] = useState(false)
   const [optionsExpanded, setOptionsExpanded] = useState(() => (isDemoMode ? false : !customUrl))
   const [sheetName, setSheetName] = useState('')
@@ -308,11 +309,25 @@ export default function App() {
   const [selectedRssEventId, setSelectedRssEventId] = useState('')
   const rssFetchStartedRef = useRef(false)
   const [forceShowStaleBanner, setForceShowStaleBanner] = useState(false)
+  const supportsNotifications = typeof window !== 'undefined' && 'Notification' in window
+  const supportsServiceWorkers = typeof navigator !== 'undefined' && 'serviceWorker' in navigator
+  const [notificationPermission, setNotificationPermission] = useState(() => {
+    if (!supportsNotifications) return 'unsupported'
+    return Notification.permission
+  })
+  const [notificationPrompting, setNotificationPrompting] = useState(false)
+  const [notificationTesting, setNotificationTesting] = useState(false)
+  const [notificationStatus, setNotificationStatus] = useState(null)
+  const [serviceWorkerRegistrationState, setServiceWorkerRegistrationState] = useState(() => {
+    if (!supportsServiceWorkers) return 'unsupported'
+    return 'checking'
+  })
 
   useEffect(() => {
     if (!sidebarOpen) {
       setShowHelpSection(false)
       setShowAccountSection(false)
+      setShowNotificationsSection(false)
     }
   }, [sidebarOpen])
 
@@ -394,6 +409,60 @@ export default function App() {
     const match = rssEvents.find(ev => ev.sheetUrl === customUrl)
     setSelectedRssEventId(match ? match.id : '')
   }, [rssEvents, customUrl])
+
+  useEffect(() => {
+    if (!supportsNotifications) return undefined
+    if (typeof navigator === 'undefined' || !navigator.permissions || !navigator.permissions.query) return undefined
+    let permissionStatus
+    let cancelled = false
+    const handlePermissionChange = () => {
+      if (!cancelled && permissionStatus) {
+        setNotificationPermission(permissionStatus.state)
+      }
+    }
+    navigator.permissions.query({ name: 'notifications' }).then(status => {
+      if (cancelled) return
+      permissionStatus = status
+      setNotificationPermission(status.state)
+      if (status.addEventListener) {
+        status.addEventListener('change', handlePermissionChange)
+      } else {
+        status.onchange = handlePermissionChange
+      }
+    }).catch(() => {})
+    return () => {
+      cancelled = true
+      if (permissionStatus) {
+        if (permissionStatus.removeEventListener) {
+          permissionStatus.removeEventListener('change', handlePermissionChange)
+        } else if (permissionStatus.onchange === handlePermissionChange) {
+          permissionStatus.onchange = null
+        }
+      }
+    }
+  }, [supportsNotifications])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!supportsServiceWorkers || !navigator.serviceWorker) {
+      setServiceWorkerRegistrationState(supportsServiceWorkers ? 'unavailable' : 'unsupported')
+      return () => { cancelled = true }
+    }
+    Promise.race([
+      navigator.serviceWorker.getRegistration(),
+      new Promise(resolve => setTimeout(() => resolve(null), 3000))
+    ]).then(reg => {
+      if (cancelled) return
+      if (reg) {
+        setServiceWorkerRegistrationState('registered')
+      } else {
+        setServiceWorkerRegistrationState('not-registered')
+      }
+    }).catch(() => {
+      if (!cancelled) setServiceWorkerRegistrationState('error')
+    })
+    return () => { cancelled = true }
+  }, [supportsServiceWorkers])
   
   // Preferences sync is handled via context
 
@@ -430,6 +499,81 @@ export default function App() {
 
   const lastFetchTimeDisplay = lastFetchAdjusted ? lastFetchAdjusted.toLocaleTimeString() : 'Never'
   const lastFetchDateTimeDisplay = lastFetchAdjusted ? lastFetchAdjusted.toLocaleString() : 'Never'
+
+  const requestNotificationPermission = async () => {
+    if (!supportsNotifications) {
+      setNotificationStatus({ type: 'error', message: 'Notifications are not supported in this browser.' })
+      return
+    }
+    if (notificationPrompting) return
+    setNotificationStatus(null)
+    setNotificationPrompting(true)
+    try {
+      const result = await Notification.requestPermission()
+      const resolved = result || (supportsNotifications ? Notification.permission : 'default')
+      setNotificationPermission(resolved)
+      if (resolved === 'granted') {
+        setNotificationStatus({ type: 'success', message: 'Notifications enabled. Use the test button below to preview the toast.' })
+      } else if (resolved === 'denied') {
+        setNotificationStatus({ type: 'error', message: 'Permission denied. Update your browser\'s site settings to retry.' })
+      } else {
+        setNotificationStatus({ type: 'info', message: 'Permission dismissed. Click Enable again to retry.' })
+      }
+    } catch (error) {
+      setNotificationStatus({ type: 'error', message: `Failed to request permission: ${error.message}` })
+    } finally {
+      setNotificationPrompting(false)
+    }
+  }
+
+  const sendTestNotification = async () => {
+    if (!supportsNotifications) {
+      setNotificationStatus({ type: 'error', message: 'Notifications are not supported in this browser.' })
+      return
+    }
+    if (notificationPermission !== 'granted') {
+      setNotificationStatus({ type: 'error', message: 'Enable notifications before sending a test.' })
+      return
+    }
+    if (notificationTesting) return
+    setNotificationStatus(null)
+    setNotificationTesting(true)
+    try {
+      const options = {
+        body: 'LiveGrid will ping you when your run group is on deck.',
+        tag: 'livegrid-debug-test',
+        renotify: true,
+        icon: '/livegrid-icon.png',
+        badge: '/livegrid-icon-maskable.png',
+        timestamp: Date.now(),
+        data: { source: 'debug-test' },
+        actions: [
+          { action: 'open', title: 'Open LiveGrid' }
+        ]
+      }
+      let delivered = false
+      if (supportsServiceWorkers && navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+        try {
+          const registration = await navigator.serviceWorker.getRegistration()
+          if (registration && registration.showNotification) {
+            await registration.showNotification('LiveGrid test notification', options)
+            delivered = true
+          }
+        } catch (error) {
+          // Fall back to direct Notification constructor if SW lookup fails
+        }
+      }
+      if (!delivered) {
+        // eslint-disable-next-line no-new
+        new Notification('LiveGrid test notification', options)
+      }
+      setNotificationStatus({ type: 'success', message: 'Test notification sent. Check your system notification tray.' })
+    } catch (error) {
+      setNotificationStatus({ type: 'error', message: `Unable to show notification: ${error.message}` })
+    } finally {
+      setNotificationTesting(false)
+    }
+  }
 
   const renderInfoPanel = () => (
     <div style={{
@@ -913,6 +1057,29 @@ export default function App() {
       ? '16px 48px'
       : '16px 48px 24px 64px'
   const panelPadding = isMobile ? '16px' : '24px'
+  const sidebarMenuItemStyles = useMemo(() => ({
+    button: {
+      '&:hover': {
+        backgroundColor: '#88c0d0',
+        color: '#2e3440'
+      },
+      padding: '12px 16px',
+      margin: '8px',
+      transition: 'background 0.2s',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: sidebarOpen ? 'flex-start' : 'center',
+      color: '#b4c6dd'
+    },
+    icon: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      minWidth: '24px',
+      margin: sidebarOpen ? '0' : '0 auto',
+      color: '#b4c6dd'
+    }
+  }), [sidebarOpen])
   
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
@@ -978,31 +1145,7 @@ export default function App() {
           </div>
 
           {/* Menu Items */}
-          <Menu
-            menuItemStyles={{
-              button: {
-                '&:hover': {
-                  backgroundColor: '#88c0d0', // Nord Frost blue
-                  color: '#2e3440'
-                },
-                padding: '12px 16px',
-                margin: '8px',
-                transition: 'background 0.2s',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: sidebarOpen ? 'flex-start' : 'center',
-                color: '#b4c6dd' // Lighter blue-gray
-              },
-              icon: {
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                minWidth: '24px',
-                margin: sidebarOpen ? '0' : '0 auto',
-                color: '#b4c6dd' // Lighter blue-gray
-              }
-            }}
-          >
+          <Menu menuItemStyles={sidebarMenuItemStyles}>
             {/* Fullscreen */}
             <MenuItem
               icon={document.fullscreenElement ? <MdFullscreenExit size={20} /> : <MdFullscreen size={20} />}
@@ -1028,6 +1171,107 @@ export default function App() {
             {/* Demo */}
 
 
+            {/* Notifications */}
+            <MenuItem
+              icon={<MdNotificationsActive size={20} />}
+              onClick={() => {
+                if (!sidebarOpen) {
+                  setSidebarOpen(true)
+                  setShowNotificationsSection(true)
+                  setShowAccountSection(false)
+                  setShowHelpSection(false)
+                  return
+                }
+                setShowNotificationsSection(prev => {
+                  const next = !prev
+                  if (next) {
+                    if (showAccountSection) setShowAccountSection(false)
+                    if (showHelpSection) setShowHelpSection(false)
+                  }
+                  return next
+                })
+              }}
+            >
+              Notifications
+            </MenuItem>
+          </Menu>
+          {/* Notifications Slide-Out */}
+          <div
+            style={{
+              margin: '0 16px 12px 16px',
+              padding: showNotificationsSection && sidebarOpen ? '24px 20px 20px 20px' : '0 16px',
+              borderRadius: '14px',
+              border: '1px solid rgba(255,255,255,0.08)',
+              background: '#1f2630',
+              color: '#e5e9f0',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              maxHeight: showNotificationsSection && sidebarOpen ? 360 : 0,
+              overflow: 'hidden',
+              transition: 'max-height 0.4s cubic-bezier(.4,0,.2,1), padding 0.3s cubic-bezier(.4,0,.2,1)',
+              display: sidebarOpen ? 'block' : 'none'
+            }}
+          >
+            {showNotificationsSection && sidebarOpen && (
+              <>
+                <div style={{fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7}}>
+                  Notifications
+                </div>
+                <div style={{fontWeight: 600, margin: '6px 0 12px 0'}}>
+                  Stay alert for your run group
+                </div>
+                {notificationStatus && (
+                  <div style={{
+                    background: notificationStatus.type === 'error' ? 'rgba(248,113,113,0.18)' : notificationStatus.type === 'success' ? 'rgba(16,185,129,0.18)' : 'rgba(59,130,246,0.18)',
+                    border: notificationStatus.type === 'error' ? '1px solid rgba(248,113,113,0.5)' : notificationStatus.type === 'success' ? '1px solid rgba(16,185,129,0.45)' : '1px solid rgba(59,130,246,0.45)',
+                    color: notificationStatus.type === 'error' ? '#fecaca' : notificationStatus.type === 'success' ? '#bbf7d0' : '#bfdbfe',
+                    borderRadius: '8px',
+                    padding: '10px',
+                    fontSize: '0.85rem',
+                    marginBottom: '12px'
+                  }}>
+                    {notificationStatus.message}
+                  </div>
+                )}
+                <div style={{display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '12px'}}>
+                  <button
+                    type="button"
+                    onClick={requestNotificationPermission}
+                    disabled={!supportsNotifications || notificationPermission === 'granted' || notificationPrompting}
+                    style={{
+                      flex: '1 1 140px',
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      background: notificationPermission === 'granted' ? '#2f3a4c' : '#5e81ac',
+                      color: '#f0f4ff',
+                      fontWeight: 600,
+                      cursor: notificationPermission === 'granted' ? 'default' : (notificationPrompting ? 'wait' : 'pointer')
+                    }}
+                  >
+                    {notificationPermission === 'granted' ? 'Notifications enabled' : (notificationPrompting ? 'Requesting...' : 'Enable notifications')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={sendTestNotification}
+                    disabled={!supportsNotifications || notificationPermission !== 'granted' || notificationTesting}
+                    style={{
+                      flex: '1 1 140px',
+                      padding: '10px 14px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(229,233,240,0.35)',
+                      background: 'transparent',
+                      color: '#e5e9f0',
+                      fontWeight: 600,
+                      cursor: notificationTesting ? 'wait' : (notificationPermission === 'granted' ? 'pointer' : 'not-allowed')
+                    }}
+                  >
+                    {notificationTesting ? 'Sending...' : 'Test notification'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+          <Menu menuItemStyles={sidebarMenuItemStyles}>
             {/* Account Menu Item */}
             <MenuItem
               icon={<GiFullMotorcycleHelmet size={20} />}
@@ -1036,18 +1280,21 @@ export default function App() {
                   setSidebarOpen(true)
                   setShowAccountSection(true)
                   setShowHelpSection(false)
+                  setShowNotificationsSection(false)
                   return
                 }
                 setShowAccountSection(prev => {
                   const next = !prev
-                  if (next && showHelpSection) setShowHelpSection(false)
+                  if (next) {
+                    if (showHelpSection) setShowHelpSection(false)
+                    if (showNotificationsSection) setShowNotificationsSection(false)
+                  }
                   return next
                 })
               }}
             >
               Account
             </MenuItem>
-            
           </Menu>
           {/* Account Slide-Out */}
           <div
@@ -1133,11 +1380,15 @@ export default function App() {
                   setSidebarOpen(true)
                   setShowHelpSection(true)
                   setShowAccountSection(false)
+                  setShowNotificationsSection(false)
                   return
                 }
                 setShowHelpSection(prev => {
                   const next = !prev
-                  if (next && showAccountSection) setShowAccountSection(false)
+                  if (next) {
+                    if (showAccountSection) setShowAccountSection(false)
+                    if (showNotificationsSection) setShowNotificationsSection(false)
+                  }
                   return next
                 })
               }}
@@ -1544,6 +1795,20 @@ export default function App() {
               <span style={{fontWeight: 500}}>Force show stale data banner</span>
             </label>
           </div>
+
+          <div style={{marginTop: '16px', padding: '14px', background: '#eef2ff', borderRadius: '6px', border: '1px solid #c7d2fe'}}>
+            <div style={{fontWeight: 600, marginBottom: '10px'}}>Notifications (debug)</div>
+            <div style={{fontSize: '0.9rem', marginBottom: '10px', color: '#1e3a8a'}}>
+              Support: {supportsNotifications ? 'Available' : 'Not supported'}<br/>
+              Permission: {supportsNotifications ? notificationPermission : 'unsupported'}<br/>
+              Service Worker: {serviceWorkerRegistrationState}
+            </div>
+            <div style={{fontSize: '0.82rem', color: '#334155'}}>
+              Last status: {notificationStatus ? notificationStatus.message : 'None'}<br/>
+              Test button: {notificationTesting ? 'sending...' : 'idle'}
+            </div>
+          </div>
+
         </div>
       )}
       

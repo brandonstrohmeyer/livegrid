@@ -15,26 +15,22 @@ export default defineConfig({
         name: 'LiveGrid',
         short_name: 'LiveGrid',
         description: 'Live NASA session tracker with synced preferences and notifications.',
-        start_url: 'https://livegrid.stro.io/',
+        start_url: '/',
+        scope: '/',
         display: 'standalone',
         theme_color: '#1f2630',
         background_color: '#1f2630',
         icons: [
           {
-            src: 'pwa-icon-192.png',
-            sizes: '192x192',
+            src: 'livegrid-icon.png',
+            sizes: '559x560',
             type: 'image/png'
           },
           {
-            src: 'pwa-icon-512.png',
-            sizes: '512x512',
-            type: 'image/png'
-          },
-          {
-            src: 'pwa-icon-512.png',
-            sizes: '512x512',
+            src: 'livegrid-icon-maskable.png',
+            sizes: '808x810',
             type: 'image/png',
-            purpose: 'maskable any'
+            purpose: 'any maskable'
           }
         ]
       }

@@ -4,9 +4,12 @@ import Papa from 'papaparse'
 import { XMLParser } from 'fast-xml-parser'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
 import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline } from 'react-icons/md'
+import { GiFullMotorcycleHelmet } from 'react-icons/gi'
 import { FaInstagram } from 'react-icons/fa'
 import { FaEnvelope } from 'react-icons/fa'
 import { FaDiscord } from 'react-icons/fa'
+import { useAuth } from './contexts/AuthContext'
+import { useSyncedPreference } from './contexts/PreferencesContext'
 import {
   parseTimeToToday,
   addMinutes,
@@ -20,7 +23,6 @@ import {
 } from './scheduleUtils.js'
 
 const DEFAULT_STALE_THRESHOLD_MINUTES = 5
-
 function useBreakpoint(maxWidth = 900) {
   const getInitial = () => {
     if (typeof window === 'undefined') return false
@@ -266,6 +268,7 @@ export default function App() {
   }
   
   const demoOffsets = getDemoOffsets()
+  const { user, loading: authLoading, signIn, signOut: signOutUser } = useAuth()
   
   // State management - initialize with demo values if URL param is set
   const [rows, setRows] = useState([])
@@ -273,8 +276,18 @@ export default function App() {
   const [clockOffset, setClockOffset] = useState(demoOffsets.clockOffset)
   const [dayOffset, setDayOffset] = useState(demoOffsets.dayOffset)
   const [now, setNow] = useState(new Date())
-  const [selectedGroups, setSelectedGroups] = useState(isDemoMode ? ['HPDE 1', 'TT Omega'] : ['All'])
-  const [selectedDay, setSelectedDay] = useState(isDemoMode ? 'Saturday' : null)
+  const [selectedGroups, setSelectedGroups] = useSyncedPreference('selectedGroups', () => (isDemoMode ? ['HPDE 1', 'TT Omega'] : ['All']))
+  const [selectedDay, setSelectedDay] = useSyncedPreference('selectedDay', () => (isDemoMode ? 'Saturday' : null))
+  const [selectedCsvFile, setSelectedCsvFile] = useSyncedPreference(
+    'selectedCsvFile',
+    () => (isDemoMode ? '2026 New Year, New Gear - Schedule.csv' : 'schedule.csv')
+  )
+  const [customUrl, setCustomUrl] = useSyncedPreference('customUrl', () => '')
+  const [autoScrollEnabled, setAutoScrollEnabled] = useSyncedPreference('autoScrollEnabled', () => true)
+  const [staleThresholdMinutes, setStaleThresholdMinutes] = useSyncedPreference(
+    'staleThresholdMinutes',
+    () => DEFAULT_STALE_THRESHOLD_MINUTES
+  )
   const [lastFetch, setLastFetch] = useState(null)
   const [currentDay, setCurrentDay] = useState(null)
   const [availableDays, setAvailableDays] = useState([])
@@ -282,18 +295,9 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showDebugPanel, setShowDebugPanel] = useState(false)
   const [showHelpSection, setShowHelpSection] = useState(false)
+  const [showAccountSection, setShowAccountSection] = useState(false)
   const [runGroupsExpanded, setRunGroupsExpanded] = useState(false)
-  const [selectedCsvFile, setSelectedCsvFile] = useState(isDemoMode ? '2026 New Year, New Gear - Schedule.csv' : 'schedule.csv')
-  const [optionsExpanded, setOptionsExpanded] = useState(() => {
-    if (isDemoMode) return false
-    const savedUrl = localStorage.getItem('nasaScheduleUrl')
-    return !savedUrl // Open options if no URL saved
-  })
-  const [customUrl, setCustomUrl] = useState(() => {
-    if (isDemoMode) return ''
-    return localStorage.getItem('nasaScheduleUrl') || ''
-  })
-  const [useCustomUrl, setUseCustomUrl] = useState(true)
+  const [optionsExpanded, setOptionsExpanded] = useState(() => (isDemoMode ? false : !customUrl))
   const [sheetName, setSheetName] = useState('')
   const [connectionStatus, setConnectionStatus] = useState('online') // 'online', 'offline', 'error'
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState(null)
@@ -303,16 +307,14 @@ export default function App() {
   const [rssError, setRssError] = useState(null)
   const [selectedRssEventId, setSelectedRssEventId] = useState('')
   const rssFetchStartedRef = useRef(false)
-  const [autoScrollEnabled, setAutoScrollEnabled] = useState(() => {
-    const saved = localStorage.getItem('nasaAutoScroll')
-    return saved !== null ? saved === 'true' : true
-  })
   const [forceShowStaleBanner, setForceShowStaleBanner] = useState(false)
-  const [staleThresholdMinutes, setStaleThresholdMinutes] = useState(() => {
-    const stored = localStorage.getItem('nasaStaleThresholdMinutes')
-    const parsed = stored ? parseInt(stored, 10) : DEFAULT_STALE_THRESHOLD_MINUTES
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_STALE_THRESHOLD_MINUTES
-  })
+
+  useEffect(() => {
+    if (!sidebarOpen) {
+      setShowHelpSection(false)
+      setShowAccountSection(false)
+    }
+  }, [sidebarOpen])
 
   const staleThresholdMs = useMemo(() => Math.max(1, staleThresholdMinutes) * 60000, [staleThresholdMinutes])
   const staleThresholdLabel = useMemo(() => (
@@ -381,12 +383,6 @@ export default function App() {
   // Reset sheet name when URL changes
   useEffect(() => {
     setSheetName('')
-    // Save URL to localStorage
-    if (customUrl) {
-      localStorage.setItem('nasaScheduleUrl', customUrl)
-    } else {
-      localStorage.removeItem('nasaScheduleUrl')
-    }
   }, [customUrl])
 
   // Keep selected RSS event in sync with the current custom URL
@@ -399,15 +395,7 @@ export default function App() {
     setSelectedRssEventId(match ? match.id : '')
   }, [rssEvents, customUrl])
   
-  // Save auto-scroll preference to localStorage
-  useEffect(() => {
-    localStorage.setItem('nasaAutoScroll', autoScrollEnabled.toString())
-  }, [autoScrollEnabled])
-
-  // Persist stale threshold preference
-  useEffect(() => {
-    localStorage.setItem('nasaStaleThresholdMinutes', Math.max(1, staleThresholdMinutes).toString())
-  }, [staleThresholdMinutes])
+  // Preferences sync is handled via context
 
   // Lazy-load NASA-SE RSS events when options panel is opened
   useEffect(() => {
@@ -1040,174 +1028,299 @@ export default function App() {
             {/* Demo */}
 
 
-            {/* Help Menu Item */}
+            {/* Account Menu Item */}
             <MenuItem
-              icon={<MdHelpOutline size={20} />}
+              icon={<GiFullMotorcycleHelmet size={20} />}
               onClick={() => {
-                setSidebarOpen(true);
-                setShowHelpSection(true);
+                if (!sidebarOpen) {
+                  setSidebarOpen(true)
+                  setShowAccountSection(true)
+                  setShowHelpSection(false)
+                  return
+                }
+                setShowAccountSection(prev => {
+                  const next = !prev
+                  if (next && showHelpSection) setShowHelpSection(false)
+                  return next
+                })
               }}
             >
-              Help
+              Account
             </MenuItem>
+            
           </Menu>
+          {/* Account Slide-Out */}
           <div
             style={{
               margin: '0 16px 16px 16px',
-              padding: showHelpSection && sidebarOpen ? '28px 20px 20px 20px' : '0 16px',
-              background: '#f1f5f9',
+              padding: showAccountSection && sidebarOpen ? '24px 20px 20px 20px' : '0 16px',
               borderRadius: '14px',
-              color: '#334155',
-              fontSize: '0.95rem',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-              border: '1px solid #e5e7eb',
-              maxHeight: showHelpSection && sidebarOpen ? 420 : 0,
+              border: '1px solid rgba(255,255,255,0.08)',
+              background: '#1f2630',
+              color: '#e5e9f0',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              maxHeight: showAccountSection && sidebarOpen ? 320 : 0,
               overflow: 'hidden',
               transition: 'max-height 0.4s cubic-bezier(.4,0,.2,1), padding 0.3s cubic-bezier(.4,0,.2,1)',
-              display: sidebarOpen ? 'block' : 'none',
+              display: sidebarOpen ? 'block' : 'none'
             }}
           >
-            {showHelpSection && sidebarOpen && (
+            {showAccountSection && sidebarOpen && (
               <>
-                <div style={{marginBottom: 4, fontWeight: 500, color: '#334155'}}>Having issues?</div>
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'flex-start',
-                  gap: 10,
-                  marginBottom: 4,
-                  paddingTop: '0.75em',
-                  paddingBottom: '0.75em'
-                }}>
-                  <a
-                    href="mailto:brandon@stro.io?subject=LiveGrid%20Issue"
-                    style={{
-                      color: '#000',
-                      background: '#fff',
-                      border: '1.5px solid #000',
-                      textDecoration: 'none',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: 32,
-                      height: 32,
-                      borderRadius: 6,
-                      transition: 'background 0.2s, color 0.2s',
-                      boxSizing: 'border-box',
-                    }}
-                    title="Email brandon@stro.io"
-                  >
-                    <FaEnvelope size={18} color="#000" />
-                  </a>
-                  <a
-                    href="https://discord.com/users/362053962637246464"
-                    style={{
-                      color: '#000',
-                      background: '#fff',
-                      border: '1.5px solid #000',
-                      textDecoration: 'none',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: 32,
-                      height: 32,
-                      borderRadius: 6,
-                      transition: 'background 0.2s, color 0.2s',
-                      boxSizing: 'border-box',
-                    }}
-                    title="DM on Discord"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <FaDiscord size={18} color="#000" />
-                  </a>
-                  <a
-                    href="https://ig.me/m/stro38x"
-                    style={{
-                      color: '#000',
-                      background: '#fff',
-                      border: '1.5px solid #000',
-                      textDecoration: 'none',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      width: 32,
-                      height: 32,
-                      borderRadius: 6,
-                      transition: 'background 0.2s, color 0.2s',
-                      boxSizing: 'border-box',
-                    }}
-                    title="DM on Instagram"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <FaInstagram size={18} color="#000" />
-                  </a>
-                </div>
-                <div style={{color: '#334155', fontSize: '0.97em', marginLeft: 2, marginBottom: 12}}>
-                  ...or come find me in the paddock
-                </div>
-                <hr style={{border: 0, borderTop: '1px solid #e5e7eb', margin: '12px 0 10px 0'}} />
-                <div style={{display: 'flex', gap: 12, marginBottom: 8, justifyContent: 'flex-start'}}>
-                  <button
-                    onClick={() => setShowDebugPanel(v => !v)}
-                    style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 2,
-                      background: '#5e81ac', color: '#eceff4', border: '1px solid #5e81ac', borderRadius: 3,
-                      padding: '0 6px', fontWeight: 500, fontSize: '0.75rem', cursor: 'pointer',
-                      transition: 'background 0.2s, color 0.2s',
-                      height: 22,
-                      minWidth: 0,
-                    }}
-                  >
-                    <MdBuild size={11} style={{marginRight: 1}} />
-                    Debug
-                  </button>
-                  <button
-                    onClick={() => {
-                      const now = new Date();
-                      const currentDay = now.getDay();
-                      let daysUntilSaturday = (6 - currentDay + 7) % 7;
-                      if (daysUntilSaturday === 0 && currentDay === 6) {
-                        daysUntilSaturday = 0;
-                      }
-                      const target = new Date(now);
-                      target.setDate(target.getDate() + daysUntilSaturday);
-                      target.setHours(10, 30, 0, 0);
-                      const nowDayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                      const targetDayStart = new Date(target.getFullYear(), target.getMonth(), target.getDate());
-                      const dayDiff = Math.round((targetDayStart - nowDayStart) / 86400000);
-                      const nowTimeMs = now.getTime() - nowDayStart.getTime();
-                      const targetTimeMs = target.getTime() - targetDayStart.getTime();
-                      const clockMinutes = Math.round((targetTimeMs - nowTimeMs) / 60000);
-                      setDayOffset(dayDiff);
-                      setClockOffset(clockMinutes);
-                      if (!debugMode) setDebugMode(true);
-                      setSelectedCsvFile('2026 New Year, New Gear - Schedule.csv');
-                      setCustomUrl('');
-                      setSelectedDay('Saturday');
-                      setSelectedGroups(['HPDE 1', 'TT Omega']);
-                      setOptionsExpanded(false);
-                    }}
-                    style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 2,
-                      background: '#5e81ac', color: '#eceff4', border: '1px solid #5e81ac', borderRadius: 3,
-                      padding: '0 6px', fontWeight: 500, fontSize: '0.75rem', cursor: 'pointer',
-                      transition: 'background 0.2s, color 0.2s',
-                      height: 22,
-                      minWidth: 0,
-                    }}
-                  >
-                    <MdPlayArrow size={11} style={{marginRight: 1}} />
-                    Demo
-                  </button>
-                </div>
-                <hr style={{border: 0, borderTop: '1px solid #e5e7eb', margin: '10px 0 0 0'}} />
+                {user ? (
+                  <>
+                    <div style={{fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7}}>
+                      Synced Account
+                    </div>
+                    <div style={{fontWeight: 600, margin: '6px 0 10px 0'}}>
+                      {user.displayName || user.email || 'Signed in'}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={signOutUser}
+                      style={{
+                        width: '100%',
+                        padding: '8px 12px',
+                        borderRadius: '8px',
+                        border: '1px solid rgba(229,233,240,0.35)',
+                        background: 'transparent',
+                        color: '#e5e9f0',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Sign out
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div style={{fontSize: '0.82rem', lineHeight: 1.4, marginBottom: '12px'}}>
+                      Sign in to sync your schedule preferences across desktop and mobile.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={signIn}
+                      disabled={authLoading}
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px',
+                        borderRadius: '8px',
+                        border: 'none',
+                        background: '#5e81ac',
+                        color: '#f0f4ff',
+                        fontWeight: 600,
+                        cursor: authLoading ? 'wait' : 'pointer'
+                      }}
+                    >
+                      {authLoading ? 'Checking account…' : 'Sign in & Sync'}
+                    </button>
+                  </>
+                )}
+                {authLoading && user && (
+                  <div style={{marginTop: '12px', fontSize: '0.75rem', opacity: 0.7}}>Syncing preferences…</div>
+                )}
               </>
             )}
           </div>
           {/* Spacer to push Debug to bottom */}
           <div style={{flex: 1}} />
+          {/* Help Toggle + Drawer */}
+          <div style={{padding: '0 12px 8px 12px'}}>
+            <button
+              type="button"
+              onClick={() => {
+                if (!sidebarOpen) {
+                  setSidebarOpen(true)
+                  setShowHelpSection(true)
+                  setShowAccountSection(false)
+                  return
+                }
+                setShowHelpSection(prev => {
+                  const next = !prev
+                  if (next && showAccountSection) setShowAccountSection(false)
+                  return next
+                })
+              }}
+              aria-expanded={showHelpSection}
+              style={{
+                width: sidebarOpen ? '100%' : '44px',
+                minWidth: '44px',
+                height: '44px',
+                minHeight: '44px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: sidebarOpen ? 'flex-start' : 'center',
+                gap: sidebarOpen ? 10 : 0,
+                padding: sidebarOpen ? '12px 16px' : 0,
+                margin: '0 auto',
+                marginBottom: sidebarOpen ? '8px' : '8px',
+                borderRadius: sidebarOpen ? '10px' : '50%',
+                border: 'none',
+                background: '#2b303b',
+                color: '#b4c6dd',
+                cursor: 'pointer',
+                transition: 'background 0.2s, transform 0.2s'
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#3b4252' }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#2b303b' }}
+            >
+              <MdHelpOutline size={20} />
+              {sidebarOpen && <span style={{fontSize: '0.95rem', fontWeight: 500}}>Help</span>}
+            </button>
+            <div
+              style={{
+                margin: '0 12px',
+                padding: showHelpSection && sidebarOpen ? '20px 0 6px 0' : '0 0',
+                background: 'transparent',
+                color: '#d8dee9',
+                fontSize: '0.95rem',
+                border: 'none',
+                maxHeight: showHelpSection && sidebarOpen ? 420 : 0,
+                overflow: 'hidden',
+                transition: 'max-height 0.4s cubic-bezier(.4,0,.2,1), padding 0.3s cubic-bezier(.4,0,.2,1)',
+                display: sidebarOpen ? 'block' : 'none'
+              }}
+            >
+              {showHelpSection && sidebarOpen && (
+                <>
+                  <div style={{marginBottom: 4, fontWeight: 500, color: '#e5e9f0'}}>Having issues?</div>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'flex-start',
+                    gap: 10,
+                    marginBottom: 4,
+                    paddingTop: '0.75em',
+                    paddingBottom: '0.75em'
+                  }}>
+                    <a
+                      href="mailto:brandon@stro.io?subject=LiveGrid%20Issue"
+                      style={{
+                        color: '#000',
+                        background: '#fff',
+                        border: '1.5px solid #000',
+                        textDecoration: 'none',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 32,
+                        height: 32,
+                        borderRadius: 6,
+                        transition: 'background 0.2s, color 0.2s',
+                        boxSizing: 'border-box'
+                      }}
+                      title="Email brandon@stro.io"
+                    >
+                      <FaEnvelope size={18} color="#000" />
+                    </a>
+                    <a
+                      href="https://discord.com/users/362053962637246464"
+                      style={{
+                        color: '#000',
+                        background: '#fff',
+                        border: '1.5px solid #000',
+                        textDecoration: 'none',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 32,
+                        height: 32,
+                        borderRadius: 6,
+                        transition: 'background 0.2s, color 0.2s',
+                        boxSizing: 'border-box'
+                      }}
+                      title="DM on Discord"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <FaDiscord size={18} color="#000" />
+                    </a>
+                    <a
+                      href="https://ig.me/m/stro38x"
+                      style={{
+                        color: '#000',
+                        background: '#fff',
+                        border: '1.5px solid #000',
+                        textDecoration: 'none',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 32,
+                        height: 32,
+                        borderRadius: 6,
+                        transition: 'background 0.2s, color 0.2s',
+                        boxSizing: 'border-box'
+                      }}
+                      title="DM on Instagram"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <FaInstagram size={18} color="#000" />
+                    </a>
+                  </div>
+                  <div style={{color: '#e5e9f0', fontSize: '0.97em', marginLeft: 2, marginBottom: 12}}>
+                    ...or come find me in the paddock
+                  </div>
+                  <hr style={{border: 0, borderTop: '1px solid rgba(255,255,255,0.12)', margin: '12px 0 10px 0'}} />
+                  <div style={{display: 'flex', gap: 12, marginBottom: 8, justifyContent: 'flex-start'}}>
+                    <button
+                      onClick={() => setShowDebugPanel(v => !v)}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 2,
+                        background: '#5e81ac', color: '#eceff4', border: '1px solid #5e81ac', borderRadius: 3,
+                        padding: '0 6px', fontWeight: 500, fontSize: '0.75rem', cursor: 'pointer',
+                        transition: 'background 0.2s, color 0.2s',
+                        height: 22,
+                        minWidth: 0
+                      }}
+                    >
+                      <MdBuild size={11} style={{marginRight: 1}} />
+                      Debug
+                    </button>
+                    <button
+                      onClick={() => {
+                        const now = new Date()
+                        const currentDay = now.getDay()
+                        let daysUntilSaturday = (6 - currentDay + 7) % 7
+                        if (daysUntilSaturday === 0 && currentDay === 6) {
+                          daysUntilSaturday = 0
+                        }
+                        const target = new Date(now)
+                        target.setDate(target.getDate() + daysUntilSaturday)
+                        target.setHours(10, 30, 0, 0)
+                        const nowDayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+                        const targetDayStart = new Date(target.getFullYear(), target.getMonth(), target.getDate())
+                        const dayDiff = Math.round((targetDayStart - nowDayStart) / 86400000)
+                        const nowTimeMs = now.getTime() - nowDayStart.getTime()
+                        const targetTimeMs = target.getTime() - targetDayStart.getTime()
+                        const clockMinutes = Math.round((targetTimeMs - nowTimeMs) / 60000)
+                        setDayOffset(dayDiff)
+                        setClockOffset(clockMinutes)
+                        if (!debugMode) setDebugMode(true)
+                        setSelectedCsvFile('2026 New Year, New Gear - Schedule.csv')
+                        setCustomUrl('')
+                        setSelectedDay('Saturday')
+                        setSelectedGroups(['HPDE 1', 'TT Omega'])
+                        setOptionsExpanded(false)
+                      }}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 2,
+                        background: '#5e81ac', color: '#eceff4', border: '1px solid #5e81ac', borderRadius: 3,
+                        padding: '0 6px', fontWeight: 500, fontSize: '0.75rem', cursor: 'pointer',
+                        transition: 'background 0.2s, color 0.2s',
+                        height: 22,
+                        minWidth: 0
+                      }}
+                    >
+                      <MdPlayArrow size={11} style={{marginRight: 1}} />
+                      Demo
+                    </button>
+                  </div>
+                  <hr style={{border: 0, borderTop: '1px solid rgba(255,255,255,0.12)', margin: '10px 0 0 0'}} />
+                </>
+              )}
+            </div>
+          </div>
           {/* Build Number & Instagram */}
           <div style={{
             padding: '10px 16px',

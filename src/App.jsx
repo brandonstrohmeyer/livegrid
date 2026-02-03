@@ -1003,7 +1003,7 @@ export default function App() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: sidebarOpen ? 'flex-start' : 'center',
-                color: '#5e81ac' // Nord Frost blue
+                color: '#b4c6dd' // Lighter blue-gray
               },
               icon: {
                 display: 'flex',
@@ -1011,7 +1011,7 @@ export default function App() {
                 justifyContent: 'center',
                 minWidth: '24px',
                 margin: sidebarOpen ? '0' : '0 auto',
-                color: '#6b7280'
+                color: '#b4c6dd' // Lighter blue-gray
               }
             }}
           >
@@ -1043,7 +1043,10 @@ export default function App() {
             {/* Help Menu Item */}
             <MenuItem
               icon={<MdHelpOutline size={20} />}
-              onClick={() => setShowHelpSection(v => !v)}
+              onClick={() => {
+                setSidebarOpen(true);
+                setShowHelpSection(true);
+              }}
             >
               Help
             </MenuItem>
@@ -1250,7 +1253,7 @@ export default function App() {
         // backgroundColor: '#2e3440',
         minHeight: '100vh',
         height: showDebugPanel ? 'auto' : '100vh', // Auto height when debug panel is open
-        overflow: showDebugPanel ? 'visible' : 'hidden', // Allow overflow when debug panel is open
+        overflow: 'visible',
         display: 'flex',
         flexDirection: 'column',
         boxSizing: 'border-box'
@@ -1617,7 +1620,7 @@ export default function App() {
       <div className="content" style={{
         flex: showDebugPanel ? 'none' : 1, // Don't flex-fill when debug panel is open
         minHeight: showDebugPanel ? '600px' : 0, // Fixed min height when debug panel is open
-        overflow: showDebugPanel ? 'visible' : 'hidden', // Allow overflow when debug panel is open
+        overflow: 'visible', // Let panel shadows render without clipping
         flexDirection: isMobile ? 'column' : undefined,
         gap: isMobile ? '16px' : undefined
       }}>
@@ -1649,29 +1652,22 @@ export default function App() {
           </section>
         ) : (
           <aside className="left" style={{
-            background: '#eceff4', // Nord Snow Storm 2
-            borderRadius: '12px',
-            border: 'none',
-            padding: panelPadding,
-            boxShadow: '0 8px 32px 0 rgba(46,52,64,0.12), 0 1.5px 4px 0 rgba(46,52,64,0.08)',
-            boxSizing: 'border-box',
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column'
+            padding: panelPadding
           }}>
-            <h2 style={{margin: 0, marginBottom: '16px', fontSize: '1.8rem', color: '#1f2937'}}>Sessions</h2>
 
-            <div style={{display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px'}}>
-              <label style={{fontWeight: 600, color: '#4b5563'}}>Day:</label>
-              <select
-                value={selectedDay || ''}
-                onChange={e => setSelectedDay(e.target.value)}
-                style={{padding: '6px 8px', fontSize: '1rem'}}
-              >
-                {availableDays.map(d => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
+            <div style={{display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '18px', justifyContent: 'space-between'}}>
+              <h2 style={{margin: 0, fontSize: '1.7rem', color: '#1f2937', fontWeight: 700, letterSpacing: '-0.5px'}}>Sessions</h2>
+              <div style={{display: 'flex', alignItems: 'center'}}>
+                <select
+                  value={selectedDay || ''}
+                  onChange={e => setSelectedDay(e.target.value)}
+                  style={{padding: '3.5px 7px', fontSize: '0.98rem', borderRadius: '6px', border: '1px solid #d8dee9', background: '#f8fafd', color: '#222', fontWeight: 500}}
+                >
+                  {availableDays.map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div className="session-list" ref={listRef}>
@@ -1700,44 +1696,42 @@ export default function App() {
         
         {/* Right Side: Run Groups, Meetings, Upcoming */}
         <section className="right" style={{
-          background: '#eceff4', // Nord Snow Storm 2
-          borderRadius: '12px',
-          border: 'none',
           padding: panelPadding,
-          boxShadow: '0 8px 32px 0 rgba(46,52,64,0.12), 0 1.5px 4px 0 rgba(46,52,64,0.08)',
-          boxSizing: 'border-box',
           overflow: isMobile ? 'visible' : 'auto',
           width: isMobile ? '100%' : undefined,
           flex: isMobile ? '1 1 auto' : undefined,
           minHeight: isMobile ? '65vh' : undefined
         }}>
           {/* Run Groups Selector */}
-          <div style={{marginBottom: '0px'}}>
-            <label 
-              onClick={() => setRunGroupsExpanded(!runGroupsExpanded)}
-              style={{
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                fontSize: isMobile ? '0.9rem' : '1.8rem',
-                fontWeight: 700,
-                margin: 0,
-                color: '#1f2937'
-              }}
-            >
-              <span style={{fontSize: '0.7rem'}}>{runGroupsExpanded ? '▼' : '▶'}</span>
-              Run Groups
-            </label>
+          <div style={{paddingTop: '6px', marginBottom: '10px'}}>
+            <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px'}}>
+              <label
+                onClick={() => setRunGroupsExpanded(!runGroupsExpanded)}
+                style={{
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  fontSize: '1.7rem',
+                  fontWeight: 700,
+                  margin: 0,
+                  color: '#1f2937',
+                  letterSpacing: '-0.5px',
+                  gap: '8px'
+                }}
+              >
+                <span style={{fontSize: '0.7rem'}}>{runGroupsExpanded ? '▼' : '▶'}</span>
+                Run Groups
+              </label>
+            </div>
             {!runGroupsExpanded && selectedGroups.length > 0 && (
-              <div style={{marginTop: '8px', fontSize: '0.95rem', color: '#666', fontWeight: 500}}>
+              <div style={{fontSize: '0.98rem', color: '#666', fontWeight: 500, marginTop: '6px', marginLeft: '2px'}}>
                 {selectedGroups.join(', ')}
               </div>
             )}
           </div>
           
           {runGroupsExpanded && (
-            <div className="controls" style={{padding: '16px 20px', marginBottom: '20px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid #e5e7eb'}}>
+            <div className="controls" style={{padding: '16px 20px', marginBottom: '20px'}}>
               <div className="checkbox-group">
                 {groups.map(g => (
                   <label key={g} className="checkbox-label" style={{fontSize: '1rem', padding: '4px 8px'}}>
@@ -1800,8 +1794,10 @@ export default function App() {
                     const strongSize = upcomingCount === 1 ? '1.2rem' : 
                                       upcomingCount === 2 ? '1.15rem' : 
                                       upcomingCount === 3 ? '1.1rem' : '1.05rem'
+                    const startsInMs = session && session.start ? (session.start.getTime() - nowWithOffset.getTime()) : null
+                    const isSoon = startsInMs !== null && startsInMs > 0 && startsInMs <= 30 * 60000
                     return (
-                      <div key={group} className="next-for-block" style={{padding, fontSize}}>
+                      <div key={group} className={`next-for-block${isSoon ? ' soon' : ''}`} style={{padding, fontSize}}>
                         {session ? (
                           <>
                             <div>

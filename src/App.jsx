@@ -10,6 +10,7 @@ import { FaEnvelope } from 'react-icons/fa'
 import { FaDiscord } from 'react-icons/fa'
 import { useAuth } from './contexts/AuthContext'
 import { useSyncedPreference } from './contexts/PreferencesContext'
+import { getViewport, onViewportChange } from 'viewportify'
 import {
   obtainPushToken,
   revokePushToken,
@@ -321,6 +322,15 @@ export default function App() {
   const [notificationLeadMinutes, setNotificationLeadMinutes] = useSyncedPreference('notificationLeadMinutes', () => 15)
   const supportsNotifications = typeof window !== 'undefined' && 'Notification' in window
   const supportsServiceWorkers = typeof navigator !== 'undefined' && 'serviceWorker' in navigator
+  const userAgent = typeof navigator !== 'undefined' ? (navigator.userAgent || '') : ''
+  const isIOS = typeof navigator !== 'undefined' && (
+    /iP(ad|hone|od)/.test(userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  )
+  const isMobileSafari = isIOS && /Safari/.test(userAgent) && !/(Chrome|CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|Brave|Vivaldi)/.test(userAgent)
+  const isStandalone = typeof window !== 'undefined' && (
+    (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+    (typeof navigator !== 'undefined' && navigator.standalone)
+  )
   const [notificationPermission, setNotificationPermission] = useState(() => {
     if (!supportsNotifications) return 'unsupported'
     return Notification.permission
@@ -377,7 +387,49 @@ export default function App() {
   }, [hasActiveSchedule, lastSuccessfulFetch, now, staleThresholdMs])
 
   const isMobile = useBreakpoint(900)
-  
+  const [hasToolbarInset, setHasToolbarInset] = useState(false)
+  const [viewportHeightPx, setViewportHeightPx] = useState(null)
+  const viewportWidthRef = useRef(null)
+  const viewportHeightStyle = viewportHeightPx ? `${viewportHeightPx}px` : 'var(--vp-dvh, var(--vp-height, 100dvh))'
+  const viewportMinHeightStyle = viewportHeightPx ? `${viewportHeightPx}px` : 'var(--vp-dvh, var(--vp-height, 100vh))'
+  const safeAreaPaddingExpr = 'var(--vp-safe-bottom, env(safe-area-inset-bottom, 0px))'
+
+  useEffect(() => {
+    const updateInset = (info) => {
+      if (!info) {
+        setHasToolbarInset(false)
+        setViewportHeightPx(null)
+        return
+      }
+      const lvh = Number.isFinite(info.lvh) ? info.lvh : info.height
+      const dvh = Number.isFinite(info.dvh) ? info.dvh : info.height
+      const height = Number.isFinite(info.dvh) ? info.dvh : info.height
+      const width = Number.isFinite(info.width) ? info.width : null
+      setHasToolbarInset(lvh - dvh > 1)
+      if (Number.isFinite(width) && width !== viewportWidthRef.current) {
+        viewportWidthRef.current = width
+        setViewportHeightPx(Number.isFinite(height) ? Math.round(height) : null)
+        return
+      }
+      setViewportHeightPx(prev => {
+        const next = Number.isFinite(height) ? Math.round(height) : null
+        if (!next) return null
+        if (!prev) return next
+        if (isMobile) {
+          return Math.min(prev, next)
+        }
+        return next
+      })
+    }
+
+    updateInset(getViewport())
+    const unsubscribe = onViewportChange(updateInset)
+
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe()
+    }
+  }, [isMobile])
+
   // Refs for scrolling
   const listRef = useRef(null)
   const itemRefs = useRef({})
@@ -543,10 +595,10 @@ export default function App() {
     setNotificationStatus({ ...payload, id, fading: false })
     setTimeout(() => {
       setNotificationStatus(prev => (prev && prev.id === id ? { ...prev, fading: true } : prev))
-    }, 1000)
+    }, 3000)
     setTimeout(() => {
       setNotificationStatus(prev => (prev && prev.id === id ? null : prev))
-    }, 2000)
+    }, 4000)
   }, [setNotificationStatus])
 
   const cleanupPushSubscription = useCallback(async () => {
@@ -598,8 +650,15 @@ export default function App() {
   }, [supportsNotifications, notificationPermission, resolvedTimezone, getAuthToken])
 
   const requestNotificationPermission = async () => {
+    if (isMobileSafari && !isStandalone) {
+      showTimedNotification({
+        type: 'info',
+        message: 'Add to Home Screen to enable notifications on iOS.'
+      })
+      return
+    }
     if (!supportsNotifications) {
-      setNotificationStatus({ type: 'error', message: 'Notifications are not supported in this browser.' })
+      showTimedNotification({ type: 'error', message: 'Notifications are not supported in this browser.' })
       return
     }
     if (notificationPrompting) return
@@ -1119,37 +1178,11 @@ export default function App() {
     }
 
     const remoteDelivered = await sendRemoteNotification({ title, body, tag: options.tag, data: dataPayload, reason })
-    const isDocumentVisible = typeof document === 'undefined' ? true : document.visibilityState === 'visible'
-    const shouldShowLocal = !remoteDelivered || isDocumentVisible
-
-    if (!shouldShowLocal) {
-      if (reason !== 'auto') {
+    if (reason !== 'auto') {
+      if (remoteDelivered) {
         showTimedNotification({ type: 'success', message: `${group} notification sent (${minutesLabel}).` })
-      }
-      return
-    }
-
-    try {
-      let delivered = false
-      if (supportsServiceWorkers && navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
-        const registration = await navigator.serviceWorker.getRegistration()
-        if (registration && registration.showNotification) {
-          await registration.showNotification(title, options)
-          delivered = true
-        }
-      }
-      if (!delivered) {
-        // eslint-disable-next-line no-new
-        new Notification(title, options)
-      }
-      if (reason !== 'auto') {
-        showTimedNotification({ type: 'success', message: `${group} notification sent (${minutesLabel}).` })
-      }
-    } catch (error) {
-      if (reason !== 'auto') {
-        setNotificationStatus({ type: 'error', message: `Unable to show notification: ${error.message}` })
       } else {
-        console.error('LiveGrid notification failed', error)
+        setNotificationStatus({ type: 'error', message: 'Unable to send Firebase notification.' })
       }
     }
   }
@@ -1186,31 +1219,7 @@ export default function App() {
             return
           }
         }
-        const options = {
-          body: 'LiveGrid will ping you when your run group is on deck.',
-          tag: 'livegrid-debug-test-generic',
-          renotify: true,
-          icon: '/livegrid-icon.png',
-          badge: '/livegrid-icon-maskable.png',
-          timestamp: Date.now(),
-          data: { source: 'debug-test-generic' },
-          actions: [
-            { action: 'open', title: 'Open LiveGrid' }
-          ]
-        }
-        let delivered = false
-        if (supportsServiceWorkers && navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
-          const registration = await navigator.serviceWorker.getRegistration()
-          if (registration && registration.showNotification) {
-            await registration.showNotification('LiveGrid test notification', options)
-            delivered = true
-          }
-        }
-        if (!delivered) {
-          // eslint-disable-next-line no-new
-          new Notification('LiveGrid test notification', options)
-        }
-        showTimedNotification({ type: 'success', message: 'Generic test notification sent.' })
+        setNotificationStatus({ type: 'error', message: 'Unable to send Firebase notification.' })
       }
     } catch (error) {
       setNotificationStatus({ type: 'error', message: `Unable to show notification: ${error.message}` })
@@ -1308,7 +1317,12 @@ export default function App() {
       ? '16px 48px'
       : '16px 48px 24px 64px'
   const panelPadding = isMobile ? '16px' : '24px'
+  const mainPaddingBottomPx = isMobile ? 24 : (sidebarOpen ? 16 : 24)
   const notificationsExpanded = showNotificationsSection && sidebarOpen
+  const sidebarBaseSafePadding = safeAreaPaddingExpr
+  const sidebarContentPadding = '12px'
+  const sidebarScrollPadding = '16px'
+  const mainContentPaddingBottom = `calc(${mainPaddingBottomPx}px + ${safeAreaPaddingExpr})`
   const sidebarMenuItemStyles = useMemo(() => ({
     button: {
       '&:hover': {
@@ -1334,7 +1348,7 @@ export default function App() {
   }), [sidebarOpen])
   
   return (
-    <div style={{ display: 'flex', height: '100vh' }}>
+    <div style={{ display: 'flex', height: viewportHeightStyle, minHeight: viewportMinHeightStyle }}>
       {/* React Pro Sidebar */}
       <Sidebar
         collapsed={!sidebarOpen}
@@ -1348,8 +1362,11 @@ export default function App() {
           zIndex: 1000,
           border: 'none',
           borderRight: '1px solid #3b4252',
-          height: '100vh',
+          height: viewportHeightStyle,
+          paddingBottom: sidebarBaseSafePadding,
           background: '#2e3440',
+          borderRadius: isMobile && hasToolbarInset ? '0 18px 18px 0' : 0,
+          overflow: isMobile && hasToolbarInset ? 'hidden' : 'visible',
           boxShadow: '2px 0 12px 0 rgba(0,0,0,0.12)',
           transform: isMobile && !sidebarOpen ? 'translateX(-100%)' : 'translateX(0)',
           transition: 'transform 0.3s ease'
@@ -1358,8 +1375,16 @@ export default function App() {
         <div style={{
           height: '100%',
           display: 'flex',
-          flexDirection: 'column'
+          flexDirection: 'column',
+          paddingBottom: sidebarContentPadding,
+          boxSizing: 'border-box'
         }}>
+          <div style={{
+            flex: '1 1 auto',
+            minHeight: 0,
+            overflowY: 'auto',
+            paddingBottom: sidebarScrollPadding
+          }}>
           {/* Sidebar Header */}
           <div style={{
             padding: '20px 16px',
@@ -1457,7 +1482,7 @@ export default function App() {
               background: '#1f2630',
               color: '#e5e9f0',
               boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-              maxHeight: notificationsExpanded ? '70vh' : 0,
+              maxHeight: notificationsExpanded ? 'calc(var(--vp-dvh, 100dvh) * 0.7)' : 0,
               overflowX: 'hidden',
               overflowY: notificationsExpanded ? 'auto' : 'hidden',
               transition: 'max-height 0.4s cubic-bezier(.4,0,.2,1), padding 0.3s cubic-bezier(.4,0,.2,1)',
@@ -1498,7 +1523,7 @@ export default function App() {
                         requestNotificationPermission()
                       }
                     }}
-                    disabled={!supportsNotifications || notificationPrompting}
+                    disabled={notificationPrompting}
                     style={{
                       flex: '1 1 140px',
                       padding: '10px 14px',
@@ -1651,10 +1676,14 @@ export default function App() {
               </>
             )}
           </div>
-          {/* Spacer to push Debug to bottom */}
-          <div style={{flex: 1}} />
+          </div>
+          <div style={{flex: '0 0 auto', display: 'flex', flexDirection: 'column', marginTop: 'auto'}}>
           {/* Help Toggle + Drawer */}
-          <div style={{padding: '0 12px 8px 12px'}}>
+          <div
+            style={{
+              padding: sidebarOpen ? '0 12px 8px 12px' : '0 0 8px 0'
+            }}
+          >
             <button
               type="button"
               onClick={() => {
@@ -1677,15 +1706,15 @@ export default function App() {
               aria-expanded={showHelpSection}
               style={{
                 width: sidebarOpen ? '100%' : '44px',
-                minWidth: '44px',
-                height: '44px',
+                minWidth: 0,
                 minHeight: '44px',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: sidebarOpen ? 'flex-start' : 'center',
                 gap: sidebarOpen ? 10 : 0,
-                padding: sidebarOpen ? '12px 16px' : 0,
-                margin: '8px',
+                padding: sidebarOpen ? '12px 16px' : '12px 0',
+                margin: sidebarOpen ? '8px' : '8px auto',
+                boxSizing: 'border-box',
                 borderRadius: 0,
                 border: 'none',
                 background: 'transparent',
@@ -1702,7 +1731,16 @@ export default function App() {
                 e.currentTarget.style.color = '#b4c6dd'
               }}
             >
-              <MdHelpOutline size={20} />
+              <span style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minWidth: '24px',
+                margin: sidebarOpen ? '0' : '0 auto',
+                color: '#b4c6dd'
+              }}>
+                <MdHelpOutline size={20} />
+              </span>
               {sidebarOpen && <span style={{fontSize: '0.95rem', fontWeight: 500}}>Help</span>}
             </button>
             <div
@@ -1862,6 +1900,7 @@ export default function App() {
           {/* Build Number & Instagram */}
           <div style={{
             padding: '10px 16px',
+            paddingBottom: '10px',
             borderTop: '1px solid #e5e7eb',
             display: 'flex',
             alignItems: 'center',
@@ -1892,18 +1931,24 @@ export default function App() {
               </a>
             )}
           </div>
+          </div>
         </div>
       </Sidebar>
 
       {/* Main Content Wrapper - Controls viewport filling */}
-      <div style={{
+      <div
+        onClick={() => {
+          if (isMobile && sidebarOpen) setSidebarOpen(false)
+        }}
+        style={{
         marginLeft: isMobile ? '0px' : (sidebarOpen ? sidebarFullWidth : sidebarCollapsedWidth),
         transition: 'margin-left 0.3s ease',
         flex: 1,
         padding: mainPadding,
+        paddingBottom: mainContentPaddingBottom,
         // backgroundColor: '#2e3440',
-        minHeight: '100vh',
-        height: showDebugPanel ? 'auto' : '100vh', // Auto height when debug panel is open
+        minHeight: viewportMinHeightStyle,
+        height: showDebugPanel ? 'auto' : viewportHeightStyle, // Auto height when debug panel is open
         overflow: 'visible',
         display: 'flex',
         flexDirection: 'column',
@@ -2368,7 +2413,7 @@ export default function App() {
           overflow: isMobile ? 'visible' : 'auto',
           width: isMobile ? '100%' : undefined,
           flex: isMobile ? '1 1 auto' : undefined,
-          minHeight: isMobile ? '65vh' : undefined
+          minHeight: isMobile ? 'calc(var(--vp-dvh, 100dvh) * 0.65)' : undefined
         }}>
           {/* Run Groups Selector */}
           <div style={{paddingTop: '6px', marginBottom: '10px'}}>

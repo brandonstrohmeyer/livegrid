@@ -172,9 +172,13 @@ exports.sendPushNotification = functions.https.onRequest({ cors: true }, async (
 
   try {
     const response = await messaging.send(message)
+    console.log('[sendPushNotification] FCM response:', response)
     res.json({ status: 'sent', id: response, requestedBy: uid || null })
   } catch (err) {
     console.error('Failed to send push message', err)
-    res.status(500).json({ error: 'Failed to send push message' })
+    if (err && err.stack) {
+      console.error('Stack:', err.stack)
+    }
+    res.status(500).json({ error: 'Failed to send push message', details: err && err.message ? err.message : err })
   }
 })

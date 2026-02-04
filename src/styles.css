@@ -19,15 +19,27 @@
 	--shadow-light:0 4px 14px rgba(2,6,23,0.05);
 }
 
+/* iOS Safari safe area support */
+.ps-sidebar-root {
+	padding-bottom: var(--vp-safe-bottom, env(safe-area-inset-bottom, 0px)) !important;
+}
+
+html, body, #root {
+	height: 100%;
+}
+
 /* SCROLL STRATEGY:
    - Default (no debug): body overflow:hidden prevents page scroll, internal sections scroll independently
    - Debug mode: body overflow:auto allows page-level scrolling for long debug panels */
 body{font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial; margin:0; padding:0; 
 	background: #f8f9fc;
-	color:#0b2336; font-size:18px; min-height:100vh; box-sizing:border-box; overflow:visible}
+	color:#0b2336; font-size:18px; min-height:var(--vp-dvh, var(--vp-height, 100dvh)); box-sizing:border-box; overflow:visible}
+@supports (height: 100dvh){
+	body{min-height:var(--vp-dvh, var(--vp-height, 100dvh));}
+}
 body.debug-mode{overflow:auto}
-.container{max-width:1200px;margin:0 auto; min-height:100vh; display:flex; flex-direction:column; background:transparent; overflow:visible;}
-.container.debug-mode{min-height:100vh}
+.container{max-width:1200px;margin:0 auto; min-height:var(--vp-dvh, var(--vp-height, 100dvh)); display:flex; flex-direction:column; background:transparent; overflow:visible;}
+.container.debug-mode{min-height:var(--vp-dvh, var(--vp-height, 100dvh))}
 
 /* two-column content layout */
 .content{display:flex;gap:20px;align-items:stretch; flex:1; min-height:0; background:transparent; border-radius:0;}
@@ -63,7 +75,7 @@ body.debug-mode{overflow:auto}
 
 /* session list styles */
 .session-list{flex:1; overflow-y:auto; overflow-x:visible; padding:8px;background:transparent;border-radius:var(--radius-card); min-height:0; scroll-snap-type: y proximity}
-.session{display:grid;grid-template-columns:120px 1fr 60px;gap:12px;padding:14px 12px;border-radius:var(--radius-card);background:var(--card-bg);margin-bottom:8px;align-items:center;transition:transform 200ms ease, box-shadow 200ms ease;font-size:1.05rem; scroll-snap-align: center; scroll-margin: 40vh 0; box-shadow:none;}
+.session{display:grid;grid-template-columns:120px 1fr 60px;gap:12px;padding:14px 12px;border-radius:var(--radius-card);background:var(--card-bg);margin-bottom:8px;align-items:center;transition:transform 200ms ease, box-shadow 200ms ease;font-size:1.05rem; scroll-snap-align: center; scroll-margin: calc(var(--vp-dvh, 100dvh) * 0.4) 0; box-shadow:none;}
 .session.past{opacity:0.45;color:var(--muted-text)}
 .session.future{opacity:1}
 .session.now{

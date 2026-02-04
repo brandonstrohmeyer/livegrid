@@ -179,12 +179,29 @@ Groups match sessions using flexible logic:
 
 ## Notification Flow
 
+**Current Implementation: Client-Driven Notifications**
+
+The notification system is **client-driven**, meaning the app must be running for notifications to be scheduled and sent. This is not a true background notification system.
+
 1. **Permission + Token** – When a user taps Enable Notifications, the app asks the browser for permission, registers `firebase-messaging-sw.js`, and calls `obtainPushToken()` to get an FCM token.
 2. **Token Storage** – The token plus metadata (timezone, optional user ID) is sent to the `registerPushToken` HTTPS function, which writes to Firestore (`notificationTokens` collection).
-3. **Scheduling Alerts** – `notifyUpcomingSession()` evaluates lead time for each run group. When a session is close, it calls the `sendPushNotification` function so the server delivers a lock-screen friendly payload (title/body/icon) directly through FCM.
+3. **Scheduling Alerts (Client-Side)** – While the app is open, `notifyUpcomingSession()` runs continuously to evaluate lead time for each run group. When a session is approaching, the **client** calls the `sendPushNotification` Cloud Function to deliver a push notification via FCM.
 4. **Foreground Fallback** – If the browser tab is visible, the client also shows a local `Notification` so the user gets immediate feedback without waiting for the push round trip.
-5. **Delivery** – The service worker listens for incoming pushes and immediately invokes `showNotification()`, which allows iOS/Android to post on the lock screen even when LiveGrid is not open.
+5. **Delivery** – The service worker listens for incoming pushes and immediately invokes `showNotification()`, displaying the notification even if the tab is in the background.
 6. **Disable Flow** – Toggling notifications off calls `unregisterPushToken` and deletes the local token so no further pushes are queued for that device.
+
+**Limitations:**
+- ❌ Notifications **only work if the app is open** in a browser tab (foreground or background)
+- ❌ If the user closes the app completely, no notifications will be sent
+- ❌ Browser tab suspension may prevent notification scheduling
+- ✅ Works reliably when app is open and visible or minimized
+
+**For True Background Notifications:**
+To send notifications when the app is closed, a server-side scheduler would be needed:
+- Cloud Scheduler (cron) running every 1-5 minutes
+- Fetches schedule data and evaluates upcoming sessions
+- Queries Firestore for registered tokens with matching run groups
+- Sends push notifications directly via FCM without client involvement
 
 ## Performance Optimizations
 

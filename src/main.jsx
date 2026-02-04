@@ -6,6 +6,10 @@ import './styles.css'
 import { AuthProvider } from './contexts/AuthContext'
 import { PreferencesProvider } from './contexts/PreferencesContext'
 
+if (typeof globalThis !== 'undefined') {
+  globalThis.React = React
+}
+
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <AuthProvider>

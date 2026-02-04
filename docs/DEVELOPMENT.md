@@ -33,6 +33,55 @@ npm test             # Run tests in watch mode
 npm run test:run     # Run tests once (CI mode)
 ```
 
+### Environment Variables
+
+Create a `.env.local` (or `.env`) file with your Firebase configuration:
+
+```
+VITE_FIREBASE_API_KEY=...
+VITE_FIREBASE_AUTH_DOMAIN=...
+VITE_FIREBASE_PROJECT_ID=...
+VITE_FIREBASE_STORAGE_BUCKET=...
+VITE_FIREBASE_MESSAGING_SENDER_ID=...
+VITE_FIREBASE_APP_ID=...
+VITE_FIREBASE_MEASUREMENT_ID=...
+VITE_FIREBASE_VAPID_KEY=...
+
+# Optional when developing against the Functions emulator
+VITE_FUNCTIONS_BASE_URL=http://localhost:5001/<project-id>/us-central1
+```
+
+The `VITE_FIREBASE_VAPID_KEY` is required for Firebase Cloud Messaging and must match the Web Push certificate created in the Firebase console (`Project settings → Cloud Messaging → Web configuration`). Without it the app falls back to legacy, in-page notifications only.
+
+### Firebase Functions & Hosting
+
+Cloud Functions power the RSS proxy plus all push-notification endpoints. Typical workflow:
+
+1. Install function dependencies:
+  ```bash
+  cd functions
+  npm install
+  ```
+2. Run emulators (optional):
+  ```bash
+  firebase emulators:start --only functions,hosting
+  ```
+  Set `VITE_FUNCTIONS_BASE_URL=http://localhost:5001/<project-id>/us-central1` so the frontend hits the emulator endpoints.
+3. Deploy:
+  ```bash
+  firebase deploy --only functions,hosting
+  ```
+  The hosting rewrite table in `firebase.json` exposes `/api/register-push-token`, `/api/unregister-push-token`, and `/api/send-push-notification`.
+
+### Notifications Overview
+
+- **Client opt-in** – The sidebar button triggers the browser permission prompt. If granted, `pushNotifications.js` registers `firebase-messaging-sw.js`, fetches the FCM token, and stores it in state.
+- **Server registration** – Tokens are POSTed to `registerPushToken`, which saves them to Firestore with the user ID (if signed in) and timezone.
+- **Sending alerts** – `notifyUpcomingSession()` calls `sendPushNotification` with a `title`/`body` payload so the OS can display it on the lock screen. If the page is already visible, a local `Notification` is also shown.
+- **Disabling** – Turning notifications off runs `unregisterPushToken` and deletes the local token so the server stops targeting that device.
+
+This keeps the wording simple while ensuring iOS devices receive alerts even when LiveGrid is closed.
+
 ## Development Workflow
 
 ### Adding a New Schedule
@@ -113,6 +162,15 @@ npm run test:run
 ```
 
 Always ensure tests pass before committing.
+
+#### Manual Push Test
+
+Because push flows rely on browser APIs, add a quick manual check after major changes:
+
+1. Enable notifications in the sidebar and confirm the green success toast fades out.
+2. Lock the device or background the browser.
+3. Tap "Test notification" and verify the alert appears on the lock screen within a few seconds.
+4. Disable notifications and make sure the info toast appears and no further pushes arrive.
 
 ## Code Style
 

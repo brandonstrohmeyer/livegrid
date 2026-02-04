@@ -2,6 +2,9 @@
   "functions": {
     "source": "functions"
   },
+  "firestore": {
+    "rules": "firestore.rules"
+  },
   "hosting": {
     "public": "dist",
     "ignore": [
@@ -13,6 +16,18 @@
       {
         "source": "/api/nasa-se-feed",
         "function": "nasaFeed"
+      },
+      {
+        "source": "/api/register-push-token",
+        "function": "registerPushToken"
+      },
+      {
+        "source": "/api/unregister-push-token",
+        "function": "unregisterPushToken"
+      },
+      {
+        "source": "/api/send-push-notification",
+        "function": "sendPushNotification"
       },
       {
         "source": "**",

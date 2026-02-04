@@ -9,6 +9,9 @@ The NASA Session Dashboard is a single-page React application that displays real
 - **React 18.2** - Component framework with hooks
 - **Vite 5** - Build tool and dev server
 - **PapaParse 5.4** - CSV parsing library
+- **Firebase Cloud Messaging (FCM)** - Web push delivery
+- **Firebase Cloud Functions** - Lightweight APIs and RSS proxy
+- **Cloud Firestore** - Stores registered notification tokens
 - **Vitest** - Testing framework
 
 ## Project Structure
@@ -24,6 +27,7 @@ nasa-session-dashboard/
 │   └── MultiSchedule.test.js # Multi-schedule tests
 ├── public/
 │   ├── schedule.csv         # Default schedule file
+│   ├── firebase-messaging-sw.js # Service worker used for push delivery
 │   └── test-schedules/      # Test schedule files
 ├── docs/                    # Documentation
 └── package.json
@@ -47,6 +51,8 @@ The application uses a single main component with React hooks for state manageme
 - `debugMode` - Debug panel visibility
 - `runGroupsExpanded` - Run groups selector state
 - `selectedCsvFile` - Active schedule file
+- `pushToken` / `pushSyncState` - Tracks FCM registration progress
+- `notificationPermission` / `notificationStatus` - UI state for enabling and testing alerts
 
 **Key Effects:**
 1. Clock update (1 second interval)
@@ -115,6 +121,20 @@ Sort: "All" first, then alphabetically
 Display in UI
 ```
 
+### 4. Notification Token Lifecycle
+
+```
+User opts-in via UI
+  ↓
+Request Notification permission (browser API)
+  ↓
+FCM issues token via pushNotifications.js
+  ↓
+registerPushToken Cloud Function stores token in Firestore
+  ↓
+App caches token in state and schedules sync checks
+```
+
 ## Key Algorithms
 
 ### Session Priority (for deduplication)
@@ -156,6 +176,15 @@ Groups match sessions using flexible logic:
 - **Special cases**: 
   - "TT Alpha" and "TT Omega" both match "TT ALL"
   - "TT Alpha" and "TT Omega" both match "TT Drivers Meeting"
+
+## Notification Flow
+
+1. **Permission + Token** – When a user taps Enable Notifications, the app asks the browser for permission, registers `firebase-messaging-sw.js`, and calls `obtainPushToken()` to get an FCM token.
+2. **Token Storage** – The token plus metadata (timezone, optional user ID) is sent to the `registerPushToken` HTTPS function, which writes to Firestore (`notificationTokens` collection).
+3. **Scheduling Alerts** – `notifyUpcomingSession()` evaluates lead time for each run group. When a session is close, it calls the `sendPushNotification` function so the server delivers a lock-screen friendly payload (title/body/icon) directly through FCM.
+4. **Foreground Fallback** – If the browser tab is visible, the client also shows a local `Notification` so the user gets immediate feedback without waiting for the push round trip.
+5. **Delivery** – The service worker listens for incoming pushes and immediately invokes `showNotification()`, which allows iOS/Android to post on the lock screen even when LiveGrid is not open.
+6. **Disable Flow** – Toggling notifications off calls `unregisterPushToken` and deletes the local token so no further pushes are queued for that device.
 
 ## Performance Optimizations
 

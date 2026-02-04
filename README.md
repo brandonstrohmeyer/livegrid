@@ -9,6 +9,7 @@ A real-time racing schedule dashboard for NASA (National Auto Sport Association)
 - **Live Session Tracking** - Highlights current session with automatic scrolling
 - **Run Group Filtering** - Filter by HPDE level, TT groups, or race classes
 - **Meeting Notifications** - Automatic detection of relevant meetings (HPDE, TT Drivers, Racers)
+- **Lock-Screen Alerts** - Firebase Cloud Messaging push delivery with OS-level notifications
 - **Multi-Day Support** - Handles Friday practice, Saturday qualifying, Sunday racing
 - **Multiple Schedules** - Quickly switch between different race events
 - **Debug Mode** - Time/day offset controls for testing and development
@@ -83,6 +84,20 @@ npm run build        # Build for production
 npm test             # Run tests in watch mode
 npm run test:run     # Run tests once
 ```
+
+### Web Push Configuration
+
+Lock-screen notifications use Firebase Cloud Messaging (FCM). Configure the following before building for production:
+
+1. **FCM Credentials** – In the Firebase console generate a Web Push certificate and copy the *VAPID key*. Add it to your environment as `VITE_FIREBASE_VAPID_KEY`.
+2. **Functions API** – Deploy the included Cloud Functions (requires `firebase deploy --only functions`). These expose:
+	- `POST /api/register-push-token`
+	- `POST /api/unregister-push-token`
+	- `POST /api/send-push-notification`
+3. **Hosting Rewrites** – Already provided in `firebase.json`; ensure you deploy Hosting so `/api/*` rewrites resolve.
+4. **Local Development** – When running `npm run dev`, set `VITE_FUNCTIONS_BASE_URL` (e.g. `http://localhost:5001/<project>/us-central1`) so the frontend can reach the emulator.
+
+Without these values the UI will fall back to in-page notifications only.
 
 ## Testing
 

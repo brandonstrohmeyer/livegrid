@@ -108,12 +108,23 @@ Tests deduplication logic:
 // 9:00 AM
 'HPDE 1' (priority 2) + 'HPDE' (priority 3) → Keep 'HPDE 1'
 
+
+## Notification Delivery Checklist (Manual)
+
+Automated tests do not cover push notifications. Run this short checklist when touching notification code:
+
+1. Enable notifications in the sidebar and confirm the success toast appears.
+2. Check Firestore `notificationTokens` for a new entry (optional but useful).
+3. Trigger "Test notification" and verify a lock-screen alert arrives on iOS/Android.
+4. Disable notifications and ensure no new pushes arrive afterward.
+5. Repeat on at least one additional browser to verify token registration is per-device.
 // 12:00 PM  
 'Lunch' (priority 1) + 'HPDE 2' (priority 2) → Keep 'Lunch'
 ```
 
 ## Writing New Tests
 
+4. **Notifications**: Push registration and Cloud Functions rely on real browsers/devices and must be verified manually
 ### Test Helper Functions
 
 ```javascript

@@ -11,6 +11,13 @@ import { FaDiscord } from 'react-icons/fa'
 import { useAuth } from './contexts/AuthContext'
 import { useSyncedPreference } from './contexts/PreferencesContext'
 import {
+  obtainPushToken,
+  revokePushToken,
+  registerTokenWithServer,
+  unregisterTokenWithServer,
+  sendServerPush
+} from './pushNotifications'
+import {
   parseTimeToToday,
   addMinutes,
   isTimeRow,
@@ -310,6 +317,7 @@ export default function App() {
   const rssFetchStartedRef = useRef(false)
   const [forceShowStaleBanner, setForceShowStaleBanner] = useState(false)
   const upcomingNotificationTrackerRef = useRef(new Map())
+  const pushSyncPromiseRef = useRef(null)
   const [notificationLeadMinutes, setNotificationLeadMinutes] = useSyncedPreference('notificationLeadMinutes', () => 15)
   const supportsNotifications = typeof window !== 'undefined' && 'Notification' in window
   const supportsServiceWorkers = typeof navigator !== 'undefined' && 'serviceWorker' in navigator
@@ -324,6 +332,24 @@ export default function App() {
     if (!supportsServiceWorkers) return 'unsupported'
     return 'checking'
   })
+  const [pushToken, setPushToken] = useState(null)
+  const [pushSyncState, setPushSyncState] = useState('idle')
+  const [pushSetupError, setPushSetupError] = useState(null)
+  const [pushPaused, setPushPaused] = useState(false)
+  const resolvedTimezone = useMemo(() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+    } catch (error) {
+      console.warn('[notifications] Failed to resolve timezone', error)
+      return 'UTC'
+    }
+  }, [])
+  const appOrigin = useMemo(() => {
+    if (typeof window !== 'undefined' && window.location) {
+      return window.location.origin
+    }
+    return 'https://livegrid.app'
+  }, [])
 
   useEffect(() => {
     if (!sidebarOpen) {
@@ -502,6 +528,16 @@ export default function App() {
   const lastFetchTimeDisplay = lastFetchAdjusted ? lastFetchAdjusted.toLocaleTimeString() : 'Never'
   const lastFetchDateTimeDisplay = lastFetchAdjusted ? lastFetchAdjusted.toLocaleString() : 'Never'
 
+  const getAuthToken = useCallback(async () => {
+    if (!user || typeof user.getIdToken !== 'function') return null
+    try {
+      return await user.getIdToken()
+    } catch (error) {
+      console.warn('[notifications] Unable to fetch auth token', error)
+      return null
+    }
+  }, [user])
+
   const showTimedNotification = useCallback(payload => {
     const id = `${Date.now()}-${Math.random()}`
     setNotificationStatus({ ...payload, id, fading: false })
@@ -512,6 +548,54 @@ export default function App() {
       setNotificationStatus(prev => (prev && prev.id === id ? null : prev))
     }, 2000)
   }, [setNotificationStatus])
+
+  const cleanupPushSubscription = useCallback(async () => {
+    if (!pushToken) return
+    try {
+      await unregisterTokenWithServer({ token: pushToken, authToken: await getAuthToken() })
+    } catch (error) {
+      console.warn('[notifications] Failed to unregister push token', error)
+    }
+    await revokePushToken(pushToken)
+    setPushToken(null)
+    setPushSyncState('idle')
+  }, [pushToken, getAuthToken])
+
+  const syncPushSubscription = useCallback(async () => {
+    if (!supportsNotifications) return null
+    if (notificationPermission !== 'granted') return null
+    if (pushSyncPromiseRef.current) return pushSyncPromiseRef.current
+    const pending = (async () => {
+      setPushSyncState('syncing')
+      setPushSetupError(null)
+      try {
+        const token = await obtainPushToken()
+        if (!token) {
+          setPushSyncState('error')
+          setPushSetupError('Unable to register for push notifications')
+          return null
+        }
+        setPushToken(token)
+        await registerTokenWithServer({
+          token,
+          timezone: resolvedTimezone,
+          appVersion: version,
+          authToken: await getAuthToken()
+        })
+        setPushSyncState('ready')
+        return token
+      } catch (error) {
+        console.error('[notifications] Push sync failed', error)
+        setPushSetupError(error.message)
+        setPushSyncState('error')
+        return null
+      } finally {
+        pushSyncPromiseRef.current = null
+      }
+    })()
+    pushSyncPromiseRef.current = pending
+    return pending
+  }, [supportsNotifications, notificationPermission, resolvedTimezone, getAuthToken])
 
   const requestNotificationPermission = async () => {
     if (!supportsNotifications) {
@@ -526,7 +610,9 @@ export default function App() {
       const resolved = result || (supportsNotifications ? Notification.permission : 'default')
       setNotificationPermission(resolved)
       if (resolved === 'granted') {
+        setPushPaused(false)
         showTimedNotification({ type: 'success', message: 'Notifications enabled' })
+        syncPushSubscription()
       }
       // No message for denied/dismissed
     } catch (error) {
@@ -535,6 +621,14 @@ export default function App() {
       setNotificationPrompting(false)
     }
   }
+
+  useEffect(() => {
+    if (notificationPermission === 'granted' && !pushPaused) {
+      syncPushSubscription()
+    } else if (pushToken) {
+      cleanupPushSubscription()
+    }
+  }, [notificationPermission, pushPaused, syncPushSubscription, cleanupPushSubscription, pushToken])
 
   const renderInfoPanel = () => (
     <div style={{
@@ -972,6 +1066,27 @@ export default function App() {
     return `${Math.round(minutes)}m`
   }
 
+  const sendRemoteNotification = useCallback(async ({ title, body, tag, data, reason = 'auto' }) => {
+    if (!pushToken) return false
+    try {
+      await sendServerPush({
+        token: pushToken,
+        title,
+        body,
+        tag,
+        data,
+        authToken: await getAuthToken()
+      })
+      return true
+    } catch (error) {
+      console.error('[notifications] Remote push failed', error)
+      if (reason !== 'auto') {
+        setNotificationStatus({ type: 'error', message: `Unable to queue push notification: ${error.message}` })
+      }
+      return false
+    }
+  }, [pushToken, getAuthToken])
+
   const notifyUpcomingSession = async ({ session, group, minutesUntil, reason = 'auto' }) => {
     const etaMinutes = minutesUntil != null
       ? minutesUntil
@@ -995,6 +1110,25 @@ export default function App() {
       timestamp: Date.now(),
       data: { group, session: session.session, reason }
     }
+    const dataPayload = {
+      url: appOrigin,
+      group,
+      session: session.session || 'Session',
+      startTime: session.start ? session.start.toISOString() : '',
+      reason
+    }
+
+    const remoteDelivered = await sendRemoteNotification({ title, body, tag: options.tag, data: dataPayload, reason })
+    const isDocumentVisible = typeof document === 'undefined' ? true : document.visibilityState === 'visible'
+    const shouldShowLocal = !remoteDelivered || isDocumentVisible
+
+    if (!shouldShowLocal) {
+      if (reason !== 'auto') {
+        showTimedNotification({ type: 'success', message: `${group} notification sent (${minutesLabel}).` })
+      }
+      return
+    }
+
     try {
       let delivered = false
       if (supportsServiceWorkers && navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
@@ -1036,8 +1170,21 @@ export default function App() {
           return
         }
         if (notificationPermission !== 'granted') {
-            setNotificationStatus({ type: 'info', message: 'Notifications disabled' })
+          setNotificationStatus({ type: 'info', message: 'Notifications disabled' })
           return
+        }
+        if (pushToken) {
+          const remoteSent = await sendRemoteNotification({
+            title: 'LiveGrid test notification',
+            body: 'LiveGrid will ping you when your run group is on deck.',
+            tag: 'livegrid-debug-test-generic',
+            data: { url: appOrigin, reason: 'test' },
+            reason: 'test'
+          })
+          if (remoteSent) {
+            showTimedNotification({ type: 'success', message: 'Generic test notification sent.' })
+            return
+          }
         }
         const options = {
           body: 'LiveGrid will ping you when your run group is on deck.',
@@ -1339,12 +1486,15 @@ export default function App() {
                 <div style={{display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '12px'}}>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       if (notificationPermission === 'granted') {
                         // Simulate disabling by setting permission to 'default' (cannot revoke via API)
+                        await cleanupPushSubscription()
+                        setPushPaused(true)
                         setNotificationPermission('default')
                         showTimedNotification({ type: 'info', message: 'Notifications disabled' })
                       } else {
+                        setPushPaused(false)
                         requestNotificationPermission()
                       }
                     }}
@@ -1939,6 +2089,8 @@ export default function App() {
               Support: {supportsNotifications ? 'Available' : 'Not supported'}<br/>
               Permission: {supportsNotifications ? notificationPermission : 'unsupported'}<br/>
               Service Worker: {serviceWorkerRegistrationState}<br/>
+              Push token: {pushToken ? 'Registered' : 'Not registered'}<br/>
+              Push sync: {pushSyncState}{pushSetupError ? ` - ${pushSetupError}` : ''}<br/>
               Lead time: {notificationLeadMinutes}m<br/>
             </div>
             <div style={{fontSize: '0.82rem', color: '#334155'}}>

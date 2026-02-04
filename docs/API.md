@@ -336,3 +336,102 @@ Formats countdown timer or "now" indicator.
   day: string          // "Friday", "Saturday", or "Sunday"
 }
 ```
+
+## Notification Helpers (pushNotifications.js)
+
+The `pushNotifications.js` module wraps Firebase Cloud Messaging (FCM) for the web app.
+
+### `obtainPushToken()`
+
+Requests a browser push subscription and returns the FCM registration token.
+
+**Returns:** `Promise<string|null>`
+
+**Notes:**
+- Registers `firebase-messaging-sw.js` automatically
+- Requires `VITE_FIREBASE_VAPID_KEY`
+
+### `revokePushToken(token)`
+
+Deletes the locally stored FCM token.
+
+**Parameters:**
+- `token` (string) – Token to revoke
+
+**Returns:** `Promise<boolean>`
+
+### `registerTokenWithServer({ token, timezone, appVersion, authToken })`
+
+Calls the Cloud Function `registerPushToken` so the backend knows about this device.
+
+**Parameters:**
+- `token` – FCM token
+- `timezone` – IANA timezone string
+- `appVersion` – App build version string
+- `authToken` – Optional Firebase ID token
+
+**Returns:** `Promise<object>`
+
+### `unregisterTokenWithServer({ token, authToken })`
+
+Removes the token document on the server when the user disables notifications or logs out.
+
+### `sendServerPush({ token, title, body, data, tag, authToken })`
+
+Convenience wrapper around the `sendPushNotification` Cloud Function. Sends a lock-screen friendly push payload.
+
+**Usage Notes:**
+- `title` and `body` must be defined or iOS will ignore the push
+- `data` accepts simple key/value pairs (strings)
+- Returns Cloud Function response payload
+
+## Cloud Functions (functions/index.js)
+
+### `nasaFeed`
+
+`GET /api/nasa-se-feed` proxies the NASA-SE RSS feed to avoid CORS issues.
+
+### `registerPushToken`
+
+`POST /api/register-push-token`
+
+Stores or updates an FCM token document. Body shape:
+
+```json
+{
+  "token": "string",
+  "platform": "web",
+  "timezone": "America/New_York",
+  "appVersion": "0.1.0"
+}
+```
+
+Optionally include an `Authorization: Bearer <ID token>` header so the token is linked to a Firebase user ID.
+
+### `unregisterPushToken`
+
+`POST /api/unregister-push-token`
+
+Deletes the Firestore document for a token. Body:
+
+```json
+{ "token": "string" }
+```
+
+### `sendPushNotification`
+
+`POST /api/send-push-notification`
+
+Dispatches a push message by calling FCM. Body:
+
+```json
+{
+  "token": "string",
+  "title": "HPDE 1 in 5m",
+  "body": "Driver's meeting at 09:45",
+  "tag": "livegrid-HPDE 1-<timestamp>",
+  "data": { "url": "https://livegrid.app/" }
+}
+```
+
+The function automatically fills in web push metadata (icon, badge, vibration) so the OS can present the notification on the lock screen.

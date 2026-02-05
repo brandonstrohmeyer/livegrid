@@ -9,7 +9,11 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico'],
       workbox: {
-        navigateFallback: '/index.html'
+        navigateFallback: '/index.html',
+        navigateFallbackDenylist: [
+          /^\/__\/auth\//,
+          /^\/__\/firebase\//
+        ]
       },
       manifest: {
         name: 'LiveGrid',

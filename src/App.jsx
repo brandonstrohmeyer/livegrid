@@ -8,9 +8,11 @@ import { GiFullMotorcycleHelmet } from 'react-icons/gi'
 import { FaInstagram } from 'react-icons/fa'
 import { FaEnvelope } from 'react-icons/fa'
 import { FaDiscord } from 'react-icons/fa'
+import { httpsCallable } from 'firebase/functions'
 import { useAuth } from './contexts/AuthContext'
 import { useSyncedPreference } from './contexts/PreferencesContext'
 import { getViewport, onViewportChange } from 'viewportify'
+import { functions } from './firebaseClient'
 import {
   obtainPushToken,
   revokePushToken,
@@ -276,7 +278,7 @@ export default function App() {
   }
   
   const demoOffsets = getDemoOffsets()
-  const { user, loading: authLoading, signIn, signOut: signOutUser } = useAuth()
+  const { user, loading: authLoading, error: authError, signIn, signOut: signOutUser } = useAuth()
   
   // State management - initialize with demo values if URL param is set
   const [rows, setRows] = useState([])
@@ -338,6 +340,14 @@ export default function App() {
   const [notificationPrompting, setNotificationPrompting] = useState(false)
   const [notificationTesting, setNotificationTesting] = useState(false)
   const [notificationStatus, setNotificationStatus] = useState(null)
+  const [schedulerDebugInfo, setSchedulerDebugInfo] = useState(() => ({
+    lastSyncAttemptAt: null,
+    lastSyncSuccessAt: null,
+    lastSyncError: null,
+    eventId: null,
+    scheduledCount: 0,
+    nextScheduled: null
+  }))
   const [serviceWorkerRegistrationState, setServiceWorkerRegistrationState] = useState(() => {
     if (!supportsServiceWorkers) return 'unsupported'
     return 'checking'
@@ -360,6 +370,22 @@ export default function App() {
     }
     return 'https://livegrid.app'
   }, [])
+  const eventId = useMemo(() => {
+    if (customUrl) {
+      const sheetMatch = customUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
+      const gidMatch = customUrl.match(/[#&]gid=(\d+)/)
+      if (sheetMatch) {
+        return `sheet:${sheetMatch[1]}${gidMatch ? `:gid:${gidMatch[1]}` : ''}`
+      }
+      return `sheet-url:${customUrl}`
+    }
+    if (selectedCsvFile) return `file:${selectedCsvFile}`
+    return null
+  }, [customUrl, selectedCsvFile])
+  const syncScheduledNotificationsFn = useMemo(() => (
+    functions ? httpsCallable(functions, 'syncScheduledNotifications') : null
+  ), [functions])
+  const scheduleSyncSignatureRef = useRef(null)
 
   useEffect(() => {
     if (!sidebarOpen) {
@@ -650,6 +676,10 @@ export default function App() {
   }, [supportsNotifications, notificationPermission, resolvedTimezone, getAuthToken])
 
   const requestNotificationPermission = async () => {
+    if (!user) {
+      showTimedNotification({ type: 'info', message: 'Sign in to enable notifications.' })
+      return
+    }
     if (isMobileSafari && !isStandalone) {
       showTimedNotification({
         type: 'info',
@@ -1125,6 +1155,46 @@ export default function App() {
     return `${Math.round(minutes)}m`
   }
 
+  const scheduleOffsetMs = useMemo(() => (clockOffset * 60000 + dayOffset * 86400000), [clockOffset, dayOffset])
+
+  const desiredNotifications = useMemo(() => (
+    Object.entries(nextSessionsByGroup)
+      .map(([group, session]) => {
+        if (!session || !session.start) return null
+        const fireAt = new Date(session.start.getTime() - notificationLeadMinutes * 60000 - scheduleOffsetMs)
+        const minutesLabel = formatMinutesUntil(notificationLeadMinutes)
+        const startLabel = formatTimeWithAmPm(session.start)
+        const title = `${group} ${minutesLabel === 'now' ? 'is up' : `in ${minutesLabel}`}`
+        const body = `${session.session || 'Session'} starts at ${startLabel}`
+        return {
+          runGroupId: group,
+          sessionStartIsoUtc: session.start.toISOString(),
+          offsetMinutes: notificationLeadMinutes,
+          fireAtIsoUtc: fireAt.toISOString(),
+          payload: {
+            title,
+            body,
+            data: {
+              eventId,
+              runGroupId: group,
+              startTime: session.start.toISOString(),
+              leadMinutes: notificationLeadMinutes
+            }
+          }
+        }
+      })
+        .filter(Boolean)
+      ), [nextSessionsByGroup, notificationLeadMinutes, eventId, scheduleOffsetMs])
+
+  const formatDebugTimestamp = value => {
+    if (!value) return 'never'
+    try {
+      return new Date(value).toLocaleString()
+    } catch (error) {
+      return String(value)
+    }
+  }
+
   const sendRemoteNotification = useCallback(async ({ title, body, tag, data, reason = 'auto' }) => {
     if (!pushToken) return false
     try {
@@ -1145,6 +1215,49 @@ export default function App() {
       return false
     }
   }, [pushToken, getAuthToken])
+
+  const forceSchedulerSync = useCallback(async () => {
+    if (!syncScheduledNotificationsFn) return
+    if (!user || !eventId) return
+    if (!supportsNotifications || notificationPermission !== 'granted') return
+    if (!pushToken) return
+
+    const nextScheduled = [...desiredNotifications]
+      .filter(item => item?.fireAtIsoUtc)
+      .sort((a, b) => new Date(a.fireAtIsoUtc).getTime() - new Date(b.fireAtIsoUtc).getTime())[0]
+
+    setSchedulerDebugInfo(prev => ({
+      ...prev,
+      eventId,
+      scheduledCount: desiredNotifications.length,
+      nextScheduled: nextScheduled ? {
+        runGroupId: nextScheduled.runGroupId,
+        fireAtIsoUtc: nextScheduled.fireAtIsoUtc,
+        sessionStartIsoUtc: nextScheduled.sessionStartIsoUtc,
+        title: nextScheduled.payload?.title,
+        body: nextScheduled.payload?.body
+      } : null,
+      lastSyncAttemptAt: new Date().toISOString(),
+      lastSyncError: null
+    }))
+
+    try {
+      await syncScheduledNotificationsFn({
+        eventId,
+        desiredNotifications
+      })
+      setSchedulerDebugInfo(prev => ({
+        ...prev,
+        lastSyncSuccessAt: new Date().toISOString()
+      }))
+    } catch (error) {
+      setSchedulerDebugInfo(prev => ({
+        ...prev,
+        lastSyncError: error?.message || 'Failed to sync'
+      }))
+      console.error('[notifications] Forced scheduler sync failed', error)
+    }
+  }, [syncScheduledNotificationsFn, user, eventId, supportsNotifications, notificationPermission, pushToken, desiredNotifications])
 
   const notifyUpcomingSession = async ({ session, group, minutesUntil, reason = 'auto' }) => {
     const etaMinutes = minutesUntil != null
@@ -1253,24 +1366,50 @@ export default function App() {
   }, [current, rows, autoScrollEnabled, isMobile])
 
   useEffect(() => {
-    const canNotify = supportsNotifications && notificationPermission === 'granted'
-    if (!canNotify) return
-    const entries = Object.entries(nextSessionsByGroup)
-    if (!entries.length) return
-    entries.forEach(([group, session]) => {
-      if (!session || !session.start) return
-      const diffMs = session.start.getTime() - nowWithOffset.getTime()
-      const minutesUntil = diffMs / 60000
-      if (minutesUntil < 0) return
-      if (minutesUntil > notificationLeadMinutes) return
-      const key = `${group}-${session.start.toISOString()}`
-      if (upcomingNotificationTrackerRef.current.has(key)) return
-      upcomingNotificationTrackerRef.current.set(key, Date.now())
-      notifyUpcomingSession({ session, group, minutesUntil, reason: 'auto' }).catch(error => {
-        console.error('LiveGrid notification failed', error)
-      })
+    if (!syncScheduledNotificationsFn) return
+    if (!user || !eventId) return
+    if (!pushToken) return
+    if (!supportsNotifications || notificationPermission !== 'granted') return
+
+    const signature = `${eventId}|${notificationLeadMinutes}|${scheduleOffsetMs}|${desiredNotifications.map(item => `${item.runGroupId}:${item.sessionStartIsoUtc}`).sort().join('|')}`
+    if (scheduleSyncSignatureRef.current === signature) return
+    scheduleSyncSignatureRef.current = signature
+
+    const nextScheduled = [...desiredNotifications]
+      .filter(item => item?.fireAtIsoUtc)
+      .sort((a, b) => new Date(a.fireAtIsoUtc).getTime() - new Date(b.fireAtIsoUtc).getTime())[0]
+
+    setSchedulerDebugInfo(prev => ({
+      ...prev,
+      eventId,
+      scheduledCount: desiredNotifications.length,
+      nextScheduled: nextScheduled ? {
+        runGroupId: nextScheduled.runGroupId,
+        fireAtIsoUtc: nextScheduled.fireAtIsoUtc,
+        sessionStartIsoUtc: nextScheduled.sessionStartIsoUtc,
+        title: nextScheduled.payload?.title,
+        body: nextScheduled.payload?.body
+      } : null,
+      lastSyncAttemptAt: new Date().toISOString(),
+      lastSyncError: null
+    }))
+
+    syncScheduledNotificationsFn({
+      eventId,
+      desiredNotifications
+    }).then(() => {
+      setSchedulerDebugInfo(prev => ({
+        ...prev,
+        lastSyncSuccessAt: new Date().toISOString()
+      }))
+    }).catch(error => {
+      setSchedulerDebugInfo(prev => ({
+        ...prev,
+        lastSyncError: error?.message || 'Failed to sync'
+      }))
+      console.error('[notifications] Failed to sync scheduled notifications', error)
     })
-  }, [nextSessionsByGroup, nowWithOffset, notificationPermission, notificationLeadMinutes, notifyUpcomingSession, supportsNotifications])
+  }, [eventId, notificationLeadMinutes, desiredNotifications, notificationPermission, pushToken, supportsNotifications, syncScheduledNotificationsFn, user])
   
   // Handle run group selection
   function handleGroupToggle(group) {
@@ -1668,6 +1807,11 @@ export default function App() {
                     >
                       {authLoading ? 'Checking account…' : 'Sign in & Sync'}
                     </button>
+                    {authError && (
+                      <div style={{marginTop: '10px', fontSize: '0.78rem', color: '#fca5a5'}}>
+                        {authError.message || 'Sign-in failed. Please try again.'}
+                      </div>
+                    )}
                   </>
                 )}
                 {authLoading && user && (
@@ -2140,7 +2284,25 @@ export default function App() {
             </div>
             <div style={{fontSize: '0.82rem', color: '#334155'}}>
               Last status: {notificationStatus ? notificationStatus.message : 'None'}<br/>
-              Test button: {notificationTesting ? 'sending...' : 'idle'}
+              Test button: {notificationTesting ? 'sending...' : 'idle'}<br/>
+              Scheduler last update: {formatDebugTimestamp(schedulerDebugInfo.lastSyncSuccessAt)}<br/>
+              Scheduler last attempt: {formatDebugTimestamp(schedulerDebugInfo.lastSyncAttemptAt)}<br/>
+              Scheduler last error: {schedulerDebugInfo.lastSyncError || 'None'}<br/>
+              Scheduler event: {schedulerDebugInfo.eventId || 'None'}<br/>
+              Scheduled count: {schedulerDebugInfo.scheduledCount || 0}<br/>
+              Next scheduled: {schedulerDebugInfo.nextScheduled
+                ? `${schedulerDebugInfo.nextScheduled.title || schedulerDebugInfo.nextScheduled.runGroupId || 'Unknown'} @ ${formatDebugTimestamp(schedulerDebugInfo.nextScheduled.fireAtIsoUtc)}`
+                : 'None'}
+            </div>
+            <div style={{marginTop: '10px'}}>
+              <button
+                type="button"
+                onClick={forceSchedulerSync}
+                disabled={!syncScheduledNotificationsFn || !user || !eventId || !pushToken || notificationPermission !== 'granted'}
+                style={{padding: '6px 12px'}}
+              >
+                Sync scheduler now
+              </button>
             </div>
           </div>
 

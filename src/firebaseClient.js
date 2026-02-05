@@ -1,5 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app'
 import { getAuth, connectAuthEmulator } from 'firebase/auth'
+import { getFunctions, connectFunctionsEmulator } from 'firebase/functions'
 import {
   getFirestore,
   connectFirestoreEmulator,
@@ -7,9 +8,13 @@ import {
   enableMultiTabIndexedDbPersistence
 } from 'firebase/firestore'
 
+const runtimeAuthDomain =
+  import.meta.env.VITE_FIREBASE_AUTH_DOMAIN ||
+  (typeof window !== 'undefined' ? window.location.host : undefined)
+
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  authDomain: runtimeAuthDomain,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
@@ -34,11 +39,13 @@ const isFirebaseConfigured = missingConfig.length === 0
 let firebaseApp = null
 let auth = null
 let firestore = null
+let functions = null
 
 if (isFirebaseConfigured) {
   firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig)
   auth = getAuth(firebaseApp)
   firestore = getFirestore(firebaseApp)
+  functions = getFunctions(firebaseApp, 'us-central1')
 } else {
   console.info('[firebase] Client SDK disabled: missing config values')
 }
@@ -60,6 +67,14 @@ if (useEmulators && auth && firestore) {
     connectFirestoreEmulator(firestore, host, port)
   } catch (err) {
     console.warn('[firebase] Failed to connect firestore emulator', err)
+  }
+}
+
+if (useEmulators && functions) {
+  try {
+    connectFunctionsEmulator(functions, 'localhost', 5001)
+  } catch (err) {
+    console.warn('[firebase] Failed to connect functions emulator', err)
   }
 }
 
@@ -85,4 +100,4 @@ export function ensureFirestorePersistence({ multiTab = true } = {}) {
   return persistencePromise
 }
 
-export { firebaseApp, auth, firestore, isFirebaseConfigured }
+export { firebaseApp, auth, firestore, functions, isFirebaseConfigured }

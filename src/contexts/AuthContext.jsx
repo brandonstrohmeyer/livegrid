@@ -1,11 +1,14 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import {
   GoogleAuthProvider,
-  getRedirectResult,
   onAuthStateChanged,
-  signInWithPopup,
-  signInWithRedirect,
-  signOut as firebaseSignOut
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence,
+  indexedDBLocalPersistence,
+  signOut as firebaseSignOut,
+  getRedirectResult,
+  signInWithRedirect
 } from 'firebase/auth'
 import { auth } from '../firebaseClient'
 
@@ -22,6 +25,14 @@ function isStandalonePwa() {
   return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true
 }
 
+function isIosSafari() {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent || ''
+  const isIOS = /iP(ad|hone|od)/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  const isSafari = /Safari/.test(ua) && !/(Chrome|CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|Brave|Vivaldi)/.test(ua)
+  return isIOS && isSafari
+}
+
 const provider = new GoogleAuthProvider()
 provider.setCustomParameters({ prompt: 'select_account' })
 
@@ -35,28 +46,73 @@ export function AuthProvider({ children }) {
       setLoading(false)
       return () => {}
     }
-    const unsub = onAuthStateChanged(auth, firebaseUser => {
-      setUser(firebaseUser)
-      setLoading(false)
+    console.info('[auth] Init', {
+      isStandalonePwa: isStandalonePwa(),
+      isIosSafari: isIosSafari(),
+      authDomain: auth?.config?.authDomain
     })
-    return () => unsub()
-  }, [])
+    let unsub = null
+    let active = true
+    const setup = async () => {
+      try {
+        if (isStandalonePwa() || isIosSafari()) {
+          console.info('[auth] Setting persistence: indexedDBLocalPersistence')
+          try {
+            await setPersistence(auth, indexedDBLocalPersistence)
+          } catch (err) {
+            console.warn('[auth] Failed to set IndexedDB persistence, falling back', err)
+            try {
+              console.info('[auth] Setting persistence: browserLocalPersistence')
+              await setPersistence(auth, browserLocalPersistence)
+            } catch (fallbackErr) {
+              console.warn('[auth] Failed to set local persistence, falling back', fallbackErr)
+              console.info('[auth] Setting persistence: browserSessionPersistence')
+              await setPersistence(auth, browserSessionPersistence)
+            }
+          }
+        } else {
+          console.info('[auth] Setting persistence: browserLocalPersistence')
+          await setPersistence(auth, browserLocalPersistence)
+        }
+      } catch (err) {
+        console.warn('[auth] Failed to set persistence on init', err)
+      }
 
-  useEffect(() => {
-    if (typeof window === 'undefined' || !auth) return undefined
-    let isMounted = true
-    getRedirectResult(auth)
-      .then(() => {
-        if (isMounted) setError(null)
+      if (!active) return
+      unsub = onAuthStateChanged(auth, firebaseUser => {
+        console.info('[auth] Auth state changed', { uid: firebaseUser?.uid || null })
+        setUser(firebaseUser)
+        setLoading(false)
       })
-      .catch(err => {
-        if (isMounted) {
+    }
+
+    const init = async () => {
+      await setup()
+      if (!active) return
+      console.info('[auth] Checking redirect result...')
+      try {
+        const result = await getRedirectResult(auth)
+        console.info('[auth] Redirect result', {
+          hasUser: Boolean(result?.user),
+          providerId: result?.providerId || null
+        })
+        if (!active) return
+        if (result?.user) {
+          setUser(result.user)
+        }
+        setError(null)
+      } catch (err) {
+        if (active) {
           console.error('[auth] Redirect sign-in failed', err)
           setError(err)
         }
-      })
+      }
+    }
+
+    init()
     return () => {
-      isMounted = false
+      active = false
+      if (typeof unsub === 'function') unsub()
     }
   }, [])
 
@@ -67,16 +123,10 @@ export function AuthProvider({ children }) {
       return Promise.reject(err)
     }
     setError(null)
-    if (isStandalonePwa()) {
-      return signInWithRedirect(auth, provider)
-    }
     try {
-      await signInWithPopup(auth, provider)
+      return signInWithRedirect(auth, provider)
     } catch (err) {
-      if (err?.code === 'auth/popup-blocked' || err?.code === 'auth/popup-closed-by-user') {
-        return signInWithRedirect(auth, provider)
-      }
-      console.error('[auth] Popup sign-in failed', err)
+      console.error('[auth] Redirect sign-in failed', err)
       setError(err)
       throw err
     }

@@ -11,11 +11,15 @@ self.addEventListener('push', event => {
   const data = payload.data || {}
   const title = notificationPayload.title || payload.title || 'LiveGrid update'
 
+  const defaultUrl = 'https://livegrid.stro.io/'
   const options = {
     body: notificationPayload.body || payload.body || 'Tap to open LiveGrid.',
     icon: notificationPayload.icon || payload.icon || '/livegrid-icon.png',
     badge: notificationPayload.badge || payload.badge || '/livegrid-icon-maskable.png',
-    data,
+    data: {
+      ...data,
+      url: data?.url || payload?.url || defaultUrl
+    },
     tag: notificationPayload.tag || payload.tag,
     renotify: true
   }
@@ -25,7 +29,7 @@ self.addEventListener('push', event => {
 
 self.addEventListener('notificationclick', event => {
   event.notification.close()
-  const urlToOpen = event.notification?.data?.url || 'https://livegrid.app/'
+  const urlToOpen = event.notification?.data?.url || 'https://livegrid.stro.io/'
 
   event.waitUntil(
     (async () => {
@@ -38,6 +42,13 @@ self.addEventListener('notificationclick', event => {
       }
       const matchingClient = clientsArr.find(client => client.url.startsWith(targetOrigin))
       if (matchingClient) {
+        if ('navigate' in matchingClient) {
+          try {
+            await matchingClient.navigate(urlToOpen)
+          } catch (err) {
+            // ignore navigation errors
+          }
+        }
         matchingClient.focus()
         return undefined
       }

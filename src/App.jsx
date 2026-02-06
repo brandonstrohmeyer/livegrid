@@ -2374,7 +2374,7 @@ export default function App() {
       {optionsExpanded && (
         <div style={{marginBottom: '24px', padding: '20px', background: '#f8f9fa', borderRadius: '12px', border: '1px solid #e5e7eb', boxShadow: '0 1px 3px rgba(0,0,0,0.1)'}}>
           <div style={{marginBottom: '18px', color: '#334155', fontSize: '0.98rem', lineHeight: 1.5}}>
-             This application is in beta and does not replace the official schedule published by the event organizers. Always refer to the official event schedule.
+             LiveGrid is in beta and does not replace the official schedule published by the event organizers. Always refer to the official event schedule.
           </div>
           <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
             <div>

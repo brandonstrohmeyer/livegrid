@@ -41,7 +41,7 @@ const crypto_1 = require("crypto");
 admin.initializeApp();
 const db = admin.firestore();
 const messaging = admin.messaging();
-const defaultHost = process.env.GCLOUD_PROJECT ? `https://${process.env.GCLOUD_PROJECT}.web.app` : 'https://livegrid.app';
+const defaultHost = process.env.GCLOUD_PROJECT ? `https://${process.env.GCLOUD_PROJECT}.web.app` : 'https://livegrid.stro.io';
 const appPublicUrl = process.env.APP_PUBLIC_URL || defaultHost;
 const scheduledCollection = db.collection('scheduledNotifications');
 const usersCollection = db.collection('users');
@@ -69,6 +69,17 @@ function sanitizeData(payload = {}) {
         acc[key] = typeof value === 'string' ? value : JSON.stringify(value);
         return acc;
     }, {});
+}
+function tokenFingerprint(token) {
+    if (!token)
+        return null;
+    try {
+        return (0, crypto_1.createHash)('sha256').update(token).digest('hex').slice(0, 12);
+    }
+    catch (err) {
+        console.warn('[functions] Failed to hash token for logging', err);
+        return 'hash_error';
+    }
 }
 function buildNotifId({ uid, eventId, runGroupId, sessionStartIsoUtc, offsetMinutes }) {
     const raw = `${uid}|${eventId}|${runGroupId}|${sessionStartIsoUtc}|${offsetMinutes}`;
@@ -158,16 +169,33 @@ exports.registerPushToken = (0, https_1.onRequest)({ cors: true, region: SCHEDUL
         res.status(405).send('Method not allowed');
         return;
     }
-    const { token, platform = 'web', timezone = null, appVersion = null } = req.body || {};
+    const { token, platform = 'unknown', timezone = null, appVersion = null, clientInfo = null } = req.body || {};
     if (!token) {
         res.status(400).json({ error: 'token is required' });
         return;
     }
     const uid = await authenticate(req);
+    const tokenHash = tokenFingerprint(token);
+    const clientSummary = clientInfo ? {
+        os: clientInfo.os || null,
+        browser: clientInfo.browser || null,
+        deviceClass: clientInfo.deviceClass || null,
+        isStandalone: clientInfo.isStandalone ?? null,
+        displayMode: clientInfo.displayMode || null
+    } : null;
+    console.log('[registerPushToken] Request', {
+        uid: uid || null,
+        tokenHash,
+        platform,
+        timezone,
+        appVersion,
+        client: clientSummary
+    });
     try {
         await db.collection('notificationTokens').doc(token).set({
             uid: uid || null,
             platform,
+            clientInfo: clientInfo || null,
             timezone,
             appVersion,
             lastSeenAt: admin.firestore.FieldValue.serverTimestamp()
@@ -177,7 +205,12 @@ exports.registerPushToken = (0, https_1.onRequest)({ cors: true, region: SCHEDUL
                 tokens: admin.firestore.FieldValue.arrayUnion(token),
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
             }, { merge: true });
+            console.log('[registerPushToken] Linked token to user doc', { uid, tokenHash });
         }
+        else {
+            console.warn('[registerPushToken] Missing auth uid; token not linked to user doc', { tokenHash });
+        }
+        console.log('[registerPushToken] Stored token', { uid: uid || null, tokenHash });
         res.json({ status: 'registered' });
     }
     catch (err) {
@@ -200,6 +233,8 @@ exports.unregisterPushToken = (0, https_1.onRequest)({ cors: true, region: SCHED
         return;
     }
     const uid = await authenticate(req);
+    const tokenHash = tokenFingerprint(token);
+    console.log('[unregisterPushToken] Request', { uid: uid || null, tokenHash });
     try {
         await db.collection('notificationTokens').doc(token).delete();
         if (uid) {
@@ -208,6 +243,7 @@ exports.unregisterPushToken = (0, https_1.onRequest)({ cors: true, region: SCHED
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
             }, { merge: true });
         }
+        console.log('[unregisterPushToken] Deleted token', { uid: uid || null, tokenHash });
         res.json({ status: 'deleted' });
     }
     catch (err) {
@@ -291,7 +327,8 @@ exports.syncScheduledNotifications = (0, https_1.onCall)({ region: SCHEDULER_REG
     const batch = db.batch();
     desiredMap.forEach((item, notifId) => {
         const existing = existingById.get(notifId);
-        if (existing?.exists && existing.data()?.status === 'sent') {
+        const existingStatus = existing?.data()?.status;
+        if (existing?.exists && existingStatus === 'sent') {
             return;
         }
         const fireAt = parseTimestamp(item.fireAtIsoUtc);
@@ -323,7 +360,16 @@ exports.syncScheduledNotifications = (0, https_1.onCall)({ region: SCHEDULER_REG
             }, { merge: true });
         }
         else {
-            batch.set(docRef, base, { merge: true });
+            const reset = existingStatus === 'undeliverable'
+                ? {
+                    status: 'pending',
+                    leaseUntil: null,
+                    sentAt: null,
+                    undeliverableAt: null,
+                    undeliverableReason: null
+                }
+                : {};
+            batch.set(docRef, { ...base, ...reset }, { merge: true });
         }
     });
     const pendingSnap = await scheduledCollection
@@ -420,15 +466,58 @@ exports.scheduledNotificationDispatcher = (0, scheduler_1.onSchedule)({ schedule
                 console.log('[scheduledNotificationDispatcher] Missing user doc for uid', uid, 'doc', doc.id);
             }
             if (!tokens.length) {
-                console.log('[scheduledNotificationDispatcher] No tokens for uid', uid, 'doc', doc.id);
+                const reason = userDoc.exists ? 'no_tokens' : 'missing_user_doc';
+                console.log('[scheduledNotificationDispatcher] Undeliverable notification', {
+                    uid,
+                    docId: doc.id,
+                    reason,
+                    userDocExists: userDoc.exists,
+                    tokensCount: tokens.length
+                });
                 await doc.ref.update({
-                    status: 'sent',
-                    sentAt: now,
+                    status: 'undeliverable',
+                    undeliverableReason: reason,
+                    undeliverableAt: now,
                     leaseUntil: null,
                     updatedAt: now
                 });
                 continue;
             }
+            const tokenDocs = tokens.length
+                ? await db.getAll(...tokens.map(tokenValue => db.collection('notificationTokens').doc(tokenValue)))
+                : [];
+            const tokenMeta = tokenDocs.map((snap, idx) => {
+                const tokenValue = tokens[idx];
+                const hash = tokenFingerprint(tokenValue);
+                if (!snap.exists) {
+                    return { tokenHash: hash, missingTokenDoc: true };
+                }
+                const data = snap.data();
+                const client = data?.clientInfo || {};
+                const lastSeenAt = data?.lastSeenAt?.toDate?.()?.toISOString?.() || null;
+                return {
+                    tokenHash: hash,
+                    platform: data?.platform || null,
+                    appVersion: data?.appVersion || null,
+                    timezone: data?.timezone || null,
+                    os: client?.os || null,
+                    browser: client?.browser || null,
+                    deviceClass: client?.deviceClass || null,
+                    isStandalone: client?.isStandalone ?? null,
+                    displayMode: client?.displayMode || null,
+                    lastSeenAt,
+                    tokenUid: data?.uid || null,
+                    missingTokenDoc: false
+                };
+            });
+            if (tokenMeta.length) {
+                console.log('[scheduledNotificationDispatcher] Token metadata', {
+                    docId: doc.id,
+                    uid,
+                    tokens: tokenMeta
+                });
+            }
+            const tokenMetaByHash = new Map(tokenMeta.map(entry => [entry.tokenHash, entry]));
             const message = buildMessage({
                 tokenList: tokens,
                 title,
@@ -439,10 +528,23 @@ exports.scheduledNotificationDispatcher = (0, scheduler_1.onSchedule)({ schedule
             const response = await messaging.sendEachForMulticast(message);
             const invalidTokens = [];
             let transientFailures = 0;
+            const failureDetails = [];
             response.responses.forEach((resp, idx) => {
                 if (resp.success)
                     return;
                 const code = resp.error?.code;
+                const tokenHash = tokenFingerprint(tokens[idx]);
+                const meta = tokenHash ? tokenMetaByHash.get(tokenHash) : null;
+                failureDetails.push({
+                    tokenHash,
+                    code,
+                    message: resp.error?.message,
+                    platform: meta?.platform ?? null,
+                    deviceClass: meta?.deviceClass ?? null,
+                    os: meta?.os ?? null,
+                    browser: meta?.browser ?? null,
+                    isStandalone: meta?.isStandalone ?? null
+                });
                 if (isInvalidTokenError(code)) {
                     invalidTokens.push(tokens[idx]);
                 }
@@ -459,27 +561,66 @@ exports.scheduledNotificationDispatcher = (0, scheduler_1.onSchedule)({ schedule
                 invalidTokens: invalidTokens.length,
                 transientFailures
             });
+            if (failureDetails.length) {
+                console.log('[scheduledNotificationDispatcher] Token failures', {
+                    docId: doc.id,
+                    uid,
+                    failures: failureDetails
+                });
+            }
             if (invalidTokens.length) {
                 await usersCollection.doc(uid).set({
                     tokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens),
                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
                 }, { merge: true });
             }
-            if (response.successCount > 0 || transientFailures === 0) {
+            if (response.successCount === tokens.length) {
                 await doc.ref.update({
                     status: 'sent',
                     sentAt: now,
                     leaseUntil: null,
-                    updatedAt: now
+                    updatedAt: now,
+                    successCount: response.successCount,
+                    failureCount: response.failureCount,
+                    transientFailures
                 });
                 continue;
             }
+            if (response.successCount > 0) {
+                await doc.ref.update({
+                    status: 'partial',
+                    sentAt: now,
+                    leaseUntil: null,
+                    updatedAt: now,
+                    successCount: response.successCount,
+                    failureCount: response.failureCount,
+                    transientFailures
+                });
+                continue;
+            }
+            if (transientFailures > 0) {
+                await doc.ref.update({
+                    status: 'pending',
+                    leaseUntil: null,
+                    updatedAt: now,
+                    fireAt: admin.firestore.Timestamp.fromMillis(now.toMillis() + 60 * 1000),
+                    retryCount: admin.firestore.FieldValue.increment(1),
+                    successCount: response.successCount,
+                    failureCount: response.failureCount,
+                    transientFailures
+                });
+                continue;
+            }
+            const undeliverableReason = invalidTokens.length === tokens.length ? 'invalid_tokens' : 'all_failed';
             await doc.ref.update({
-                status: 'pending',
+                status: 'undeliverable',
+                undeliverableReason,
+                undeliverableAt: now,
                 leaseUntil: null,
                 updatedAt: now,
-                fireAt: admin.firestore.Timestamp.fromMillis(now.toMillis() + 60 * 1000),
-                retryCount: admin.firestore.FieldValue.increment(1)
+                successCount: response.successCount,
+                failureCount: response.failureCount,
+                transientFailures
             });
         }
         catch (err) {

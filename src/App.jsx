@@ -341,6 +341,7 @@ export default function App() {
   })
   const [notificationPrompting, setNotificationPrompting] = useState(false)
   const [notificationTesting, setNotificationTesting] = useState(false)
+  const [mockTestMinutesInput, setMockTestMinutesInput] = useState('2')
   const [notificationStatus, setNotificationStatus] = useState(null)
   const [schedulerDebugInfo, setSchedulerDebugInfo] = useState(() => ({
     lastSyncAttemptAt: null,
@@ -1193,36 +1194,43 @@ export default function App() {
     return `${Math.round(minutes)}m`
   }
 
-  const scheduleOffsetMs = useMemo(() => (clockOffset * 60000 + dayOffset * 86400000), [clockOffset, dayOffset])
+  const buildScheduledNotification = ({ group, session, leadMinutes, eventId }) => {
+    if (!session || !session.start) return null
+    const fireAt = new Date(session.start.getTime() - leadMinutes * 60000)
+    const minutesLabel = formatMinutesUntil(leadMinutes)
+    const startLabel = formatTimeWithAmPm(session.start)
+    const title = `${group} ${minutesLabel === 'now' ? 'is up' : `in ${minutesLabel}`}`
+    const body = `${session.session || 'Session'} starts at ${startLabel}`
+    return {
+      runGroupId: group,
+      sessionStartIsoUtc: session.start.toISOString(),
+      offsetMinutes: leadMinutes,
+      fireAtIsoUtc: fireAt.toISOString(),
+      payload: {
+        title,
+        body,
+        data: {
+          eventId,
+          runGroupId: group,
+          startTime: session.start.toISOString(),
+          leadMinutes
+        }
+      }
+    }
+  }
 
   const desiredNotifications = useMemo(() => (
     Object.entries(nextSessionsByGroup)
       .map(([group, session]) => {
-        if (!session || !session.start) return null
-        const fireAt = new Date(session.start.getTime() - notificationLeadMinutes * 60000 - scheduleOffsetMs)
-        const minutesLabel = formatMinutesUntil(notificationLeadMinutes)
-        const startLabel = formatTimeWithAmPm(session.start)
-        const title = `${group} ${minutesLabel === 'now' ? 'is up' : `in ${minutesLabel}`}`
-        const body = `${session.session || 'Session'} starts at ${startLabel}`
-        return {
-          runGroupId: group,
-          sessionStartIsoUtc: session.start.toISOString(),
-          offsetMinutes: notificationLeadMinutes,
-          fireAtIsoUtc: fireAt.toISOString(),
-          payload: {
-            title,
-            body,
-            data: {
-              eventId,
-              runGroupId: group,
-              startTime: session.start.toISOString(),
-              leadMinutes: notificationLeadMinutes
-            }
-          }
-        }
+        return buildScheduledNotification({
+          group,
+          session,
+          leadMinutes: notificationLeadMinutes,
+          eventId
+        })
       })
         .filter(Boolean)
-      ), [nextSessionsByGroup, notificationLeadMinutes, eventId, scheduleOffsetMs])
+      ), [nextSessionsByGroup, notificationLeadMinutes, eventId])
 
   const formatDebugTimestamp = value => {
     if (!value) return 'never'
@@ -1338,42 +1346,130 @@ export default function App() {
     }
   }
 
-  const sendTestNotification = async () => {
+  const sendImmediateTestNotification = async () => {
     if (notificationTesting) return
     setNotificationStatus(null)
     setNotificationTesting(true)
     try {
-      const candidate = getPrimaryNextSessionEntry()
-      if (candidate) {
-        const [group, session] = candidate
-        const minutesUntil = session.start ? (session.start.getTime() - nowWithOffset.getTime()) / 60000 : null
-        await notifyUpcomingSession({ session, group, minutesUntil, reason: 'test' })
-      } else {
-        if (!supportsNotifications) {
-          setNotificationStatus({ type: 'error', message: 'Notifications are not supported in this browser.' })
-          return
-        }
-        if (notificationPermission !== 'granted') {
-          setNotificationStatus({ type: 'info', message: 'Notifications disabled' })
-          return
-        }
-        if (pushToken) {
-          const remoteSent = await sendRemoteNotification({
-            title: 'LiveGrid test notification',
-            body: 'LiveGrid will ping you when your run group is on deck.',
-            tag: 'livegrid-debug-test-generic',
-            data: { url: appOrigin, reason: 'test' },
-            reason: 'test'
-          })
-          if (remoteSent) {
-            showTimedNotification({ type: 'success', message: 'Generic test notification sent.' })
-            return
-          }
-        }
-        setNotificationStatus({ type: 'error', message: 'Unable to send Firebase notification.' })
+      if (!supportsNotifications) {
+        setNotificationStatus({ type: 'error', message: 'Notifications are not supported in this browser.' })
+        return
       }
+      if (notificationPermission !== 'granted') {
+        setNotificationStatus({ type: 'info', message: 'Notifications disabled' })
+        return
+      }
+      if (!pushToken) {
+        setNotificationStatus({ type: 'error', message: 'Push token not registered.' })
+        return
+      }
+      const remoteSent = await sendRemoteNotification({
+        title: 'LiveGrid test notification',
+        body: 'LiveGrid will ping you when your run group is on deck.',
+        tag: `livegrid-debug-test-generic-${Date.now()}`,
+        data: { url: appOrigin, reason: 'test' },
+        reason: 'test'
+      })
+      if (remoteSent) {
+        showTimedNotification({ type: 'success', message: 'Generic test notification sent.' })
+        return
+      }
+      setNotificationStatus({ type: 'error', message: 'Unable to send Firebase notification.' })
     } catch (error) {
-      setNotificationStatus({ type: 'error', message: `Unable to show notification: ${error.message}` })
+      setNotificationStatus({ type: 'error', message: `Unable to send test notification: ${error.message}` })
+    } finally {
+      setNotificationTesting(false)
+    }
+  }
+
+  const scheduleMockNotification = async () => {
+    if (notificationTesting) return
+    setNotificationStatus(null)
+    setNotificationTesting(true)
+    try {
+      if (!syncScheduledNotificationsFn) {
+        setNotificationStatus({ type: 'error', message: 'Scheduler is unavailable.' })
+        return
+      }
+      if (!user) {
+        setNotificationStatus({ type: 'info', message: 'Sign in to schedule notifications.' })
+        return
+      }
+      if (!supportsNotifications) {
+        setNotificationStatus({ type: 'error', message: 'Notifications are not supported in this browser.' })
+        return
+      }
+      if (notificationPermission !== 'granted') {
+        setNotificationStatus({ type: 'info', message: 'Notifications disabled' })
+        return
+      }
+      if (!pushToken) {
+        setNotificationStatus({ type: 'error', message: 'Push token not registered.' })
+        return
+      }
+
+      const rawMinutes = Number(mockTestMinutesInput)
+      if (Number.isNaN(rawMinutes)) {
+        setNotificationStatus({ type: 'error', message: 'Enter a valid number of minutes.' })
+        return
+      }
+      const clampedMinutes = Math.max(1, Math.min(120, Math.round(rawMinutes)))
+      if (String(clampedMinutes) !== mockTestMinutesInput) {
+        setMockTestMinutesInput(String(clampedMinutes))
+      }
+
+      const leadMinutes = Math.max(1, notificationLeadMinutes)
+      const fireAt = new Date(Date.now() + clampedMinutes * 60000)
+      const leadMs = leadMinutes * 60000
+      const sessionStart = new Date(fireAt.getTime() + leadMs)
+      const mockSession = { start: sessionStart, session: 'Mock Session' }
+      const mockEventId = eventId ? `${eventId}:mock` : `mock:${Date.now()}`
+      const mockNotification = buildScheduledNotification({
+        group: 'Mock Test',
+        session: mockSession,
+        leadMinutes,
+        eventId: mockEventId
+      })
+
+      if (!mockNotification) {
+        setNotificationStatus({ type: 'error', message: 'Unable to build mock notification.' })
+        return
+      }
+
+      setSchedulerDebugInfo(prev => ({
+        ...prev,
+        eventId: mockEventId,
+        scheduledCount: 1,
+        nextScheduled: {
+          runGroupId: mockNotification.runGroupId,
+          fireAtIsoUtc: mockNotification.fireAtIsoUtc,
+          sessionStartIsoUtc: mockNotification.sessionStartIsoUtc,
+          title: mockNotification.payload?.title,
+          body: mockNotification.payload?.body
+        },
+        lastSyncAttemptAt: new Date().toISOString(),
+        lastSyncError: null
+      }))
+
+      await syncScheduledNotificationsFn({
+        eventId: mockEventId,
+        desiredNotifications: [mockNotification]
+      })
+
+      setSchedulerDebugInfo(prev => ({
+        ...prev,
+        lastSyncSuccessAt: new Date().toISOString()
+      }))
+      showTimedNotification({
+        type: 'success',
+        message: `Mock notification scheduled for ${formatDebugTimestamp(fireAt.toISOString())}.`
+      })
+    } catch (error) {
+      setSchedulerDebugInfo(prev => ({
+        ...prev,
+        lastSyncError: error?.message || 'Failed to sync'
+      }))
+      setNotificationStatus({ type: 'error', message: `Unable to schedule mock notification: ${error.message}` })
     } finally {
       setNotificationTesting(false)
     }
@@ -1409,7 +1505,7 @@ export default function App() {
     if (!pushToken) return
     if (!supportsNotifications || notificationPermission !== 'granted') return
 
-    const signature = `${eventId}|${notificationLeadMinutes}|${scheduleOffsetMs}|${desiredNotifications.map(item => `${item.runGroupId}:${item.sessionStartIsoUtc}`).sort().join('|')}`
+    const signature = `${eventId}|${notificationLeadMinutes}|${desiredNotifications.map(item => `${item.runGroupId}:${item.sessionStartIsoUtc}`).sort().join('|')}`
     if (scheduleSyncSignatureRef.current === signature) return
     scheduleSyncSignatureRef.current = signature
 
@@ -1701,23 +1797,6 @@ export default function App() {
                     }}
                   >
                     {notificationPermission === 'granted' ? 'Disable notifications' : (notificationPrompting ? 'Requesting...' : 'Enable notifications')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={sendTestNotification}
-                    disabled={!supportsNotifications || notificationPermission !== 'granted' || notificationTesting}
-                    style={{
-                      flex: '1 1 140px',
-                      padding: '10px 14px',
-                      borderRadius: '8px',
-                      border: '1px solid rgba(229,233,240,0.35)',
-                      background: 'transparent',
-                      color: '#e5e9f0',
-                      fontWeight: 600,
-                      cursor: notificationTesting ? 'wait' : (notificationPermission === 'granted' ? 'pointer' : 'not-allowed')
-                    }}
-                  >
-                    {notificationTesting ? 'Sending...' : 'Test notification'}
                   </button>
                 </div>
                 <div style={{marginBottom: '10px'}}>
@@ -2345,7 +2424,7 @@ export default function App() {
             </div>
             <div style={{fontSize: '0.82rem', color: '#334155'}}>
               Last status: {notificationStatus ? notificationStatus.message : 'None'}<br/>
-              Test button: {notificationTesting ? 'sending...' : 'idle'}<br/>
+              Test status: {notificationTesting ? 'sending...' : 'idle'}<br/>
               Scheduler last update: {formatDebugTimestamp(schedulerDebugInfo.lastSyncSuccessAt)}<br/>
               Scheduler last attempt: {formatDebugTimestamp(schedulerDebugInfo.lastSyncAttemptAt)}<br/>
               Scheduler last error: {schedulerDebugInfo.lastSyncError || 'None'}<br/>
@@ -2354,6 +2433,62 @@ export default function App() {
               Next scheduled: {schedulerDebugInfo.nextScheduled
                 ? `${schedulerDebugInfo.nextScheduled.title || schedulerDebugInfo.nextScheduled.runGroupId || 'Unknown'} @ ${formatDebugTimestamp(schedulerDebugInfo.nextScheduled.fireAtIsoUtc)}`
                 : 'None'}
+            </div>
+            <div style={{marginTop: '12px', padding: '10px', background: '#f8fafc', borderRadius: '6px', border: '1px solid #cbd5f5'}}>
+              <div style={{fontWeight: 600, marginBottom: '8px', color: '#1e3a8a'}}>Test notifications</div>
+              <div style={{display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center'}}>
+                <button
+                  type="button"
+                  onClick={sendImmediateTestNotification}
+                  disabled={!supportsNotifications || notificationPermission !== 'granted' || !pushToken || notificationTesting}
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid #94a3b8',
+                    background: '#fff',
+                    color: '#1e293b',
+                    fontWeight: 600,
+                    cursor: notificationTesting ? 'wait' : (notificationPermission === 'granted' ? 'pointer' : 'not-allowed')
+                  }}
+                >
+                  {notificationTesting ? 'Sending...' : 'Send immediate test'}
+                </button>
+                <div style={{display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap'}}>
+                  <input
+                    type="number"
+                    min={1}
+                    max={120}
+                    value={mockTestMinutesInput}
+                    onChange={e => setMockTestMinutesInput(e.target.value)}
+                    onBlur={() => {
+                      if (mockTestMinutesInput === '') {
+                        setMockTestMinutesInput('2')
+                        return
+                      }
+                      const raw = Number(mockTestMinutesInput)
+                      if (Number.isNaN(raw)) {
+                        setMockTestMinutesInput('2')
+                        return
+                      }
+                      const clamped = Math.max(1, Math.min(120, Math.round(raw)))
+                      setMockTestMinutesInput(String(clamped))
+                    }}
+                    style={{width: '64px', padding: '4px 6px', borderRadius: '5px', border: '1px solid #94a3b8'}}
+                  />
+                  <span style={{fontSize: '0.85rem', color: '#475569'}}>minutes from now</span>
+                  <button
+                    type="button"
+                    onClick={scheduleMockNotification}
+                    disabled={!syncScheduledNotificationsFn || !user || !pushToken || notificationPermission !== 'granted' || notificationTesting}
+                    style={{padding: '6px 10px', borderRadius: '6px'}}
+                  >
+                    Schedule mock test
+                  </button>
+                </div>
+              </div>
+              <div style={{marginTop: '6px', fontSize: '0.75rem', color: '#64748b'}}>
+                Scheduled mock uses the same scheduler flow as real notifications.
+              </div>
             </div>
             <div style={{marginTop: '10px'}}>
               <button

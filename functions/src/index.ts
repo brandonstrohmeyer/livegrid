@@ -39,6 +39,16 @@ function sanitizeData(payload: Record<string, unknown> = {}) {
   }, {})
 }
 
+function tokenFingerprint(token?: string) {
+  if (!token) return null
+  try {
+    return createHash('sha256').update(token).digest('hex').slice(0, 12)
+  } catch (err) {
+    console.warn('[functions] Failed to hash token for logging', err)
+    return 'hash_error'
+  }
+}
+
 function buildNotifId({
   uid,
   eventId,
@@ -152,18 +162,35 @@ export const registerPushToken = onRequest({ cors: true, region: SCHEDULER_REGIO
     return
   }
 
-  const { token, platform = 'web', timezone = null, appVersion = null } = req.body || {}
+  const { token, platform = 'unknown', timezone = null, appVersion = null, clientInfo = null } = req.body || {}
   if (!token) {
     res.status(400).json({ error: 'token is required' })
     return
   }
 
   const uid = await authenticate(req)
+  const tokenHash = tokenFingerprint(token)
+  const clientSummary = clientInfo ? {
+    os: clientInfo.os || null,
+    browser: clientInfo.browser || null,
+    deviceClass: clientInfo.deviceClass || null,
+    isStandalone: clientInfo.isStandalone ?? null,
+    displayMode: clientInfo.displayMode || null
+  } : null
+  console.log('[registerPushToken] Request', {
+    uid: uid || null,
+    tokenHash,
+    platform,
+    timezone,
+    appVersion,
+    client: clientSummary
+  })
 
   try {
     await db.collection('notificationTokens').doc(token).set({
       uid: uid || null,
       platform,
+      clientInfo: clientInfo || null,
       timezone,
       appVersion,
       lastSeenAt: admin.firestore.FieldValue.serverTimestamp()
@@ -174,8 +201,12 @@ export const registerPushToken = onRequest({ cors: true, region: SCHEDULER_REGIO
         tokens: admin.firestore.FieldValue.arrayUnion(token),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true })
+      console.log('[registerPushToken] Linked token to user doc', { uid, tokenHash })
+    } else {
+      console.warn('[registerPushToken] Missing auth uid; token not linked to user doc', { tokenHash })
     }
 
+    console.log('[registerPushToken] Stored token', { uid: uid || null, tokenHash })
     res.json({ status: 'registered' })
   } catch (err) {
     console.error('Failed to store push token', err)
@@ -200,6 +231,8 @@ export const unregisterPushToken = onRequest({ cors: true, region: SCHEDULER_REG
   }
 
   const uid = await authenticate(req)
+  const tokenHash = tokenFingerprint(token)
+  console.log('[unregisterPushToken] Request', { uid: uid || null, tokenHash })
 
   try {
     await db.collection('notificationTokens').doc(token).delete()
@@ -211,6 +244,7 @@ export const unregisterPushToken = onRequest({ cors: true, region: SCHEDULER_REG
       }, { merge: true })
     }
 
+    console.log('[unregisterPushToken] Deleted token', { uid: uid || null, tokenHash })
     res.json({ status: 'deleted' })
   } catch (err) {
     console.error('Failed to delete push token', err)
@@ -315,7 +349,8 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
 
   desiredMap.forEach((item, notifId) => {
     const existing = existingById.get(notifId)
-    if (existing?.exists && existing.data()?.status === 'sent') {
+    const existingStatus = existing?.data()?.status
+    if (existing?.exists && existingStatus === 'sent') {
       return
     }
 
@@ -350,7 +385,16 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
         sentAt: null
       }, { merge: true })
     } else {
-      batch.set(docRef, base, { merge: true })
+      const reset = existingStatus === 'undeliverable'
+        ? {
+            status: 'pending',
+            leaseUntil: null,
+            sentAt: null,
+            undeliverableAt: null,
+            undeliverableReason: null
+          }
+        : {}
+      batch.set(docRef, { ...base, ...reset }, { merge: true })
     }
   })
 
@@ -458,15 +502,59 @@ export const scheduledNotificationDispatcher = onSchedule(
         }
 
         if (!tokens.length) {
-          console.log('[scheduledNotificationDispatcher] No tokens for uid', uid, 'doc', doc.id)
+          const reason = userDoc.exists ? 'no_tokens' : 'missing_user_doc'
+          console.log('[scheduledNotificationDispatcher] Undeliverable notification', {
+            uid,
+            docId: doc.id,
+            reason,
+            userDocExists: userDoc.exists,
+            tokensCount: tokens.length
+          })
           await doc.ref.update({
-            status: 'sent',
-            sentAt: now,
+            status: 'undeliverable',
+            undeliverableReason: reason,
+            undeliverableAt: now,
             leaseUntil: null,
             updatedAt: now
           })
           continue
         }
+
+        const tokenDocs = tokens.length
+          ? await db.getAll(...tokens.map(tokenValue => db.collection('notificationTokens').doc(tokenValue)))
+          : []
+        const tokenMeta = tokenDocs.map((snap, idx) => {
+          const tokenValue = tokens[idx]
+          const hash = tokenFingerprint(tokenValue)
+          if (!snap.exists) {
+            return { tokenHash: hash, missingTokenDoc: true }
+          }
+          const data = snap.data() as any
+          const client = data?.clientInfo || {}
+          const lastSeenAt = data?.lastSeenAt?.toDate?.()?.toISOString?.() || null
+          return {
+            tokenHash: hash,
+            platform: data?.platform || null,
+            appVersion: data?.appVersion || null,
+            timezone: data?.timezone || null,
+            os: client?.os || null,
+            browser: client?.browser || null,
+            deviceClass: client?.deviceClass || null,
+            isStandalone: client?.isStandalone ?? null,
+            displayMode: client?.displayMode || null,
+            lastSeenAt,
+            tokenUid: data?.uid || null,
+            missingTokenDoc: false
+          }
+        })
+        if (tokenMeta.length) {
+          console.log('[scheduledNotificationDispatcher] Token metadata', {
+            docId: doc.id,
+            uid,
+            tokens: tokenMeta
+          })
+        }
+        const tokenMetaByHash = new Map(tokenMeta.map(entry => [entry.tokenHash, entry]))
 
         const message = buildMessage({
           tokenList: tokens,
@@ -480,10 +568,32 @@ export const scheduledNotificationDispatcher = onSchedule(
 
         const invalidTokens: string[] = []
         let transientFailures = 0
+        const failureDetails: Array<{
+          tokenHash: string | null
+          code?: string
+          message?: string
+          platform?: string | null
+          deviceClass?: string | null
+          os?: string | null
+          browser?: string | null
+          isStandalone?: boolean | null
+        }> = []
 
         response.responses.forEach((resp, idx) => {
           if (resp.success) return
           const code = resp.error?.code
+          const tokenHash = tokenFingerprint(tokens[idx])
+          const meta = tokenHash ? tokenMetaByHash.get(tokenHash) : null
+          failureDetails.push({
+            tokenHash,
+            code,
+            message: resp.error?.message,
+            platform: meta?.platform ?? null,
+            deviceClass: meta?.deviceClass ?? null,
+            os: meta?.os ?? null,
+            browser: meta?.browser ?? null,
+            isStandalone: meta?.isStandalone ?? null
+          })
           if (isInvalidTokenError(code)) {
             invalidTokens.push(tokens[idx])
           } else if (isTransientMessagingError(code)) {
@@ -500,6 +610,13 @@ export const scheduledNotificationDispatcher = onSchedule(
           invalidTokens: invalidTokens.length,
           transientFailures
         })
+        if (failureDetails.length) {
+          console.log('[scheduledNotificationDispatcher] Token failures', {
+            docId: doc.id,
+            uid,
+            failures: failureDetails
+          })
+        }
 
         if (invalidTokens.length) {
           await usersCollection.doc(uid).set({
@@ -508,22 +625,56 @@ export const scheduledNotificationDispatcher = onSchedule(
           }, { merge: true })
         }
 
-        if (response.successCount > 0 || transientFailures === 0) {
+        if (response.successCount === tokens.length) {
           await doc.ref.update({
             status: 'sent',
             sentAt: now,
             leaseUntil: null,
-            updatedAt: now
+            updatedAt: now,
+            successCount: response.successCount,
+            failureCount: response.failureCount,
+            transientFailures
           })
           continue
         }
 
+        if (response.successCount > 0) {
+          await doc.ref.update({
+            status: 'partial',
+            sentAt: now,
+            leaseUntil: null,
+            updatedAt: now,
+            successCount: response.successCount,
+            failureCount: response.failureCount,
+            transientFailures
+          })
+          continue
+        }
+
+        if (transientFailures > 0) {
+          await doc.ref.update({
+            status: 'pending',
+            leaseUntil: null,
+            updatedAt: now,
+            fireAt: admin.firestore.Timestamp.fromMillis(now.toMillis() + 60 * 1000),
+            retryCount: admin.firestore.FieldValue.increment(1),
+            successCount: response.successCount,
+            failureCount: response.failureCount,
+            transientFailures
+          })
+          continue
+        }
+
+        const undeliverableReason = invalidTokens.length === tokens.length ? 'invalid_tokens' : 'all_failed'
         await doc.ref.update({
-          status: 'pending',
+          status: 'undeliverable',
+          undeliverableReason,
+          undeliverableAt: now,
           leaseUntil: null,
           updatedAt: now,
-          fireAt: admin.firestore.Timestamp.fromMillis(now.toMillis() + 60 * 1000),
-          retryCount: admin.firestore.FieldValue.increment(1)
+          successCount: response.successCount,
+          failureCount: response.failureCount,
+          transientFailures
         })
       } catch (err: any) {
         console.error('[scheduler] Failed to dispatch notification', doc.id, err?.message || err)

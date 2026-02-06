@@ -26,6 +26,54 @@ const SEND_PUSH_ENDPOINT = endpoint('send-push-notification', 'sendPushNotificat
 
 let messagingInstancePromise = null
 
+function getPlatformInfo() {
+  if (typeof window === 'undefined') {
+    return { platform: 'unknown', clientInfo: {} }
+  }
+  const ua = navigator?.userAgent || ''
+  const isIOS = /iP(ad|hone|od)/.test(ua) || (navigator?.platform === 'MacIntel' && navigator?.maxTouchPoints > 1)
+  const isAndroid = /Android/i.test(ua)
+  const isMobile = isIOS || isAndroid || /Mobile/i.test(ua)
+  const isStandalone = !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || !!navigator?.standalone
+  let displayMode = 'browser'
+  if (window.matchMedia) {
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+      displayMode = 'standalone'
+    } else if (window.matchMedia('(display-mode: fullscreen)').matches) {
+      displayMode = 'fullscreen'
+    }
+  }
+  let browser = 'unknown'
+  if (/Edg/i.test(ua)) browser = 'edge'
+  else if (/Chrome|CriOS/i.test(ua)) browser = 'chrome'
+  else if (/Firefox|FxiOS/i.test(ua)) browser = 'firefox'
+  else if (/Safari/i.test(ua)) browser = 'safari'
+
+  let os = 'unknown'
+  if (isIOS) os = 'ios'
+  else if (isAndroid) os = 'android'
+  else if (/Windows/i.test(ua)) os = 'windows'
+  else if (/Mac OS X|Macintosh/i.test(ua)) os = 'macos'
+  else if (/Linux/i.test(ua)) os = 'linux'
+
+  let platform = 'desktop'
+  if (isIOS) platform = isStandalone ? 'ios-pwa' : 'ios-browser'
+  else if (isAndroid) platform = isStandalone ? 'android-pwa' : 'android-browser'
+  else if (isMobile) platform = 'mobile-browser'
+
+  return {
+    platform,
+    clientInfo: {
+      os,
+      browser,
+      deviceClass: isMobile ? 'mobile' : 'desktop',
+      isStandalone,
+      displayMode,
+      userAgent: ua
+    }
+  }
+}
+
 async function getMessagingInstance() {
   if (!isFirebaseConfigured) return null
   if (typeof window === 'undefined') return null
@@ -108,8 +156,21 @@ async function callFunctions(path, { method = 'POST', body, authToken } = {}) {
 
 export async function registerTokenWithServer({ token, timezone, appVersion, authToken }) {
   if (!token) return null
+  const platformInfo = getPlatformInfo()
+  console.log('[messaging] Registering push token', {
+    platform: platformInfo.platform,
+    clientInfo: platformInfo.clientInfo,
+    timezone,
+    appVersion
+  })
   return callFunctions(REGISTER_ENDPOINT, {
-    body: { token, timezone, appVersion, platform: 'web' },
+    body: {
+      token,
+      timezone,
+      appVersion,
+      platform: platformInfo.platform,
+      clientInfo: platformInfo.clientInfo
+    },
     authToken
   })
 }

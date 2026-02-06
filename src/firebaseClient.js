@@ -40,7 +40,6 @@ let firebaseApp = null
 let auth = null
 let firestore = null
 let functions = null
-
 if (isFirebaseConfigured) {
   firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig)
   auth = getAuth(firebaseApp)

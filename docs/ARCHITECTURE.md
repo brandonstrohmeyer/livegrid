@@ -2,259 +2,178 @@
 
 ## Overview
 
-The NASA Session Dashboard is a single-page React application that displays real-time racing schedules with live session tracking, meeting notifications, and run group filtering.
+The NASA Session Dashboard is a single-page React application that displays real-time racing schedules with live session tracking, meeting notifications, run group filtering, and optional account sync.
 
 ## Technology Stack
 
-- **React 18.2** - Component framework with hooks
-- **Vite 5** - Build tool and dev server
-- **PapaParse 5.4** - CSV parsing library
-- **Firebase Cloud Messaging (FCM)** - Web push delivery
-- **Firebase Cloud Functions** - Lightweight APIs and RSS proxy
-- **Cloud Firestore** - Stores registered notification tokens
-- **Vitest** - Testing framework
+- React 19 (hooks)
+- Vite 5 (build + dev server)
+- Vite PWA (service worker + manifest)
+- Firebase 11 (Auth, Firestore, Cloud Messaging)
+- React Pro Sidebar (sidebar layout)
+- PapaParse (CSV parsing)
+- Vitest (tests)
 
 ## Project Structure
 
 ```
 nasa-session-dashboard/
-├── src/
-│   ├── App.jsx              # Main application component
-│   ├── main.jsx             # Application entry point
-│   ├── scheduleUtils.js     # Utility functions for schedule processing
-│   ├── styles.css           # Global styles
-│   ├── App.test.js          # Application tests
-│   └── MultiSchedule.test.js # Multi-schedule tests
-├── public/
-│   ├── schedule.csv         # Default schedule file
-│   ├── firebase-messaging-sw.js # Service worker used for push delivery
-│   └── test-schedules/      # Test schedule files
-├── docs/                    # Documentation
-└── package.json
+  src/
+    App.jsx
+    components/
+      FirebaseAuthUI.jsx
+    contexts/
+      AuthContext.jsx
+      PreferencesContext.jsx
+    firebaseClient.js
+    pushNotifications.js
+    scheduleUtils.js
+    styles.css
+    App.test.js
+    MultiSchedule.test.js
+  public/
+    schedule.csv
+    firebase-messaging-sw.js
+    test-schedules/
+  docs/
+  functions/
+  package.json
 ```
 
 ## Component Architecture
 
-### Main Component (App.jsx)
+### App.jsx
 
-The application uses a single main component with React hooks for state management:
+- Orchestrates the sidebar, schedule display, and right-hand panels.
+- Owns most UI state (run groups, day selection, debug panel, notifications, account panel).
+- Drives the CSV fetch/parse pipeline and auto-scroll logic.
 
-**State Variables:**
-- `rows` - Filtered session data for selected day
-- `allRows` - Complete parsed schedule data
-- `clockOffset` - Debug time offset (minutes)
-- `dayOffset` - Debug day offset (days)
-- `now` - Current time (updates every second)
-- `selectedGroups` - Active run group filters
-- `selectedDay` - Currently displayed day
-- `availableDays` - Days available in schedule
-- `debugMode` - Debug panel visibility
-- `runGroupsExpanded` - Run groups selector state
-- `selectedCsvFile` - Active schedule file
-- `pushToken` / `pushSyncState` - Tracks FCM registration progress
-- `notificationPermission` / `notificationStatus` - UI state for enabling and testing alerts
+### FirebaseAuthUI.jsx
 
-**Key Effects:**
-1. Clock update (1 second interval)
-2. Schedule fetch (30 second interval)
-3. Day-based row filtering
-4. Auto-scroll to current session
+- Handles Google, Apple, and email/password sign-in flows.
+- Uses Firebase Auth providers (redirect + email/password).
+- Shows password reset and account creation toggles.
+
+### AuthContext.jsx
+
+- Tracks Firebase auth state (`user`, `loading`, `error`).
+- Sets persistence for PWA / iOS Safari using IndexedDB when possible.
+- Exposes `signOut` for the account panel.
+
+### PreferencesContext.jsx
+
+- Stores preferences locally when signed out.
+- Syncs preferences to Firestore under `users/{uid}` when signed in.
+- Uses a small write buffer so rapid UI changes do not spam Firestore.
 
 ## Data Flow
 
 ### 1. CSV Parsing Pipeline
 
 ```
-CSV File
-  ↓
-Parse with PapaParse
-  ↓
-Detect day headers (Friday/Saturday/Sunday)
-  ↓
-Parse time rows (isTimeRow)
-  ↓
-Create session objects
-  - start: Date
-  - duration: number
-  - end: Date
-  - session: string
-  - note: string
-  - day: string
-  ↓
-Sort by start time
-  ↓
-Store in allRows
+CSV file
+  -> Parse with PapaParse
+  -> Detect day headers (Friday/Saturday/Sunday)
+  -> Parse time rows (isTimeRow)
+  -> Build session objects
+  -> Sort by start time
+  -> Store in allRows
 ```
 
 ### 2. Session Filtering
 
 ```
 allRows
-  ↓
-Filter by selectedDay
-  ↓
-Filter by isOnTrackSession
-  - Include: Sessions with track content
-  - Include: Lunch
-  - Exclude: Zero duration sessions
-  ↓
-Deduplicate by time (keep highest priority)
-  ↓
-Store in rows
+  -> Filter by selectedDay
+  -> Filter by isOnTrackSession
+  -> Deduplicate by time (highest priority wins)
+  -> Store in rows
 ```
 
 ### 3. Run Group Extraction
 
 ```
-Filtered sessions
-  ↓
-Exclude meetings, warmups, lunch
-  ↓
-Extract HPDE numbers (regex match)
-  ↓
-Normalize race names (Thunder/Lightning/Mock)
-  ↓
-Normalize TT groups (Alpha/Omega)
-  ↓
-Sort: "All" first, then alphabetically
-  ↓
-Display in UI
+rows
+  -> Exclude meetings, warmups, lunch
+  -> Extract HPDE numbers
+  -> Normalize race and TT group names
+  -> Sort (All first, then alphabetically)
 ```
 
-### 4. Notification Token Lifecycle
+### 4. Preferences Sync
 
 ```
-User opts-in via UI
-  ↓
-Request Notification permission (browser API)
-  ↓
-FCM issues token via pushNotifications.js
-  ↓
-registerPushToken Cloud Function stores token in Firestore
-  ↓
-App caches token in state and schedules sync checks
+Local UI updates
+  -> PreferencesContext
+  -> Local storage (signed out)
+  -> Firestore write (signed in)
 ```
+
+### 5. Notification Token Lifecycle
+
+```
+Enable notifications
+  -> Request permission
+  -> Obtain FCM token
+  -> registerPushToken (Cloud Function)
+  -> Store in Firestore
+```
+
+## Notification Flow (Client-Driven)
+
+Notifications are scheduled by the client while the app is open. This is not a true background scheduler.
+
+1. User enables notifications.
+2. Client requests permission and registers `firebase-messaging-sw.js`.
+3. Client obtains FCM token and registers it with Functions.
+4. While the app is open, the client evaluates upcoming sessions and sends pushes via Functions.
+5. The service worker shows the notification when a push arrives.
+
+Limitations:
+- Notifications only schedule while the app is running (foreground or background).
+- If the app is fully closed, no notifications are scheduled.
 
 ## Key Algorithms
 
-### Session Priority (for deduplication)
-
-When multiple sessions exist at the same time, priority determines which to keep:
+### Session Priority (Deduplication)
 
 1. Lunch (priority 1)
 2. HPDE with number (priority 2)
 3. Generic HPDE (priority 3)
-4. TT/Race (priority 4)
+4. TT or Race (priority 4)
 5. Other (priority 5)
 
 ### Time Parsing
 
-The `parseTimeToToday` function handles various time formats:
-
-- With AM/PM: "8:30 AM" → parsed directly
-- Without AM/PM:
-  - 12:xx → noon (PM)
-  - 8:00-11:59 → AM
-  - 1:00-7:59 → PM (meeting context)
+`parseTimeToToday` smart defaults when AM/PM is missing:
+- 12:xx -> noon (PM)
+- 8:00 to 11:59 -> AM
+- 1:00 to 7:59 -> PM
 
 ### Meeting Detection
 
-| Meeting Type | Trigger | Detection Method |
-|--------------|---------|------------------|
-| HPDE Meeting | HPDE group selected | Session name contains "hpde meeting" |
-| TT Drivers Meeting | TT group selected | Note contains "tt drivers" + time |
-| All Racers Meeting | Race group selected | Note contains "all racers meeting" + time |
-
-Time extraction regex: `/^(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)/i`
+- HPDE meeting when any HPDE group is selected.
+- TT Drivers meeting when any TT group is selected.
+- All Racers meeting when any race group is selected.
 
 ### Session Matching
 
-Groups match sessions using flexible logic:
+- TT ALL matches both TT Alpha and TT Omega.
+- TT Drivers matches both TT Alpha and TT Omega.
+- Combined sessions like "HPDE 3* & 4" match both groups.
 
-- **Exact match**: "HPDE 2" matches "HPDE 2"
-- **Combined sessions**: "HPDE 3" matches "HPDE 3* & 4"
-- **Special cases**: 
-  - "TT Alpha" and "TT Omega" both match "TT ALL"
-  - "TT Alpha" and "TT Omega" both match "TT Drivers Meeting"
+## UI Behavior
 
-## Notification Flow
-
-**Current Implementation: Client-Driven Notifications**
-
-The notification system is **client-driven**, meaning the app must be running for notifications to be scheduled and sent. This is not a true background notification system.
-
-1. **Permission + Token** – When a user taps Enable Notifications, the app asks the browser for permission, registers `firebase-messaging-sw.js`, and calls `obtainPushToken()` to get an FCM token.
-2. **Token Storage** – The token plus metadata (timezone, optional user ID) is sent to the `registerPushToken` HTTPS function, which writes to Firestore (`notificationTokens` collection).
-3. **Scheduling Alerts (Client-Side)** – While the app is open, `notifyUpcomingSession()` runs continuously to evaluate lead time for each run group. When a session is approaching, the **client** calls the `sendPushNotification` Cloud Function to deliver a push notification via FCM.
-4. **Foreground Fallback** – If the browser tab is visible, the client also shows a local `Notification` so the user gets immediate feedback without waiting for the push round trip.
-5. **Delivery** – The service worker listens for incoming pushes and immediately invokes `showNotification()`, displaying the notification even if the tab is in the background.
-6. **Disable Flow** – Toggling notifications off calls `unregisterPushToken` and deletes the local token so no further pushes are queued for that device.
-
-**Limitations:**
-- ❌ Notifications **only work if the app is open** in a browser tab (foreground or background)
-- ❌ If the user closes the app completely, no notifications will be sent
-- ❌ Browser tab suspension may prevent notification scheduling
-- ✅ Works reliably when app is open and visible or minimized
-
-**For True Background Notifications:**
-To send notifications when the app is closed, a server-side scheduler would be needed:
-- Cloud Scheduler (cron) running every 1-5 minutes
-- Fetches schedule data and evaluates upcoming sessions
-- Queries Firestore for registered tokens with matching run groups
-- Sends push notifications directly via FCM without client involvement
-
-## Performance Optimizations
-
-### React.useMemo
-
-Expensive computations are memoized:
-
-```javascript
-groups = useMemo(() => extractRunGroups(rows), [rows])
-current = useMemo(() => findCurrentSession(rows, nowWithOffset), [rows, nowWithOffset])
-relevantMeetings = useMemo(() => findRelevantMeetings(...), [...])
-nextSessionsByGroup = useMemo(() => findNextSessionsPerGroup(...), [...])
-```
-
-### Update Frequencies
-
-- **Clock**: 1 second (setInterval)
-- **Schedule fetch**: 30 seconds (setInterval)
-- **Auto-scroll re-center**: 30 seconds (setTimeout)
-
-## UI Responsiveness
-
-### Dynamic Sizing
-
-The UI automatically adjusts based on content density:
-
-```javascript
-upcomingCount > 3 → Compact mode
-  - Reduced padding
-  - Smaller fonts
-  - Tighter spacing
-
-Upcoming blocks padding scales:
-  1 item: 1.4rem
-  2 items: 1.1rem
-  3 items: 0.9rem
-  4+ items: 0.7rem
-```
-
-### Auto-scroll Behavior
-
-1. Find current session in list
-2. Scroll to center with smooth animation
-3. Re-center after 30 seconds of idle
-4. Cancel on component unmount
+- Sidebar slides in/out on mobile, collapses on desktop.
+- Account panel scrolls internally so it does not overlap lower controls.
+- Auth email form auto-scrolls into view when expanded.
+- Current session auto-scrolls in the list view.
 
 ## Debug Features
 
-Debug mode provides testing capabilities:
-
-- **Clock Offset**: ±12 hours for time testing
-- **Day Offset**: ±7 days for multi-day testing
-- **Debug Info Panel**: Shows real vs mocked time/day
+- Clock offset (+/- 12 hours)
+- Day offset (+/- 7 days)
+- Debug panel for time and schedule inspection
 
 ## CSV Format Requirements
 
@@ -266,12 +185,9 @@ Friday,,,,,
 12:00 PM,60,Lunch,,,"12:00 All Racers Meeting"
 ```
 
-**Required Elements:**
-1. Day headers: Row where first column contains day name
+Required elements:
+1. Day headers in the first column (Friday/Saturday/Sunday)
 2. Time format: "H:MM AM/PM" or "HH:MM AM/PM"
-3. Duration: Integer minutes in second column
-4. Notes: Can contain meeting times and descriptions
-
-**Note Column Locations:**
-- Searches columns 4 and 5 for robustness
-- Different schedules may use different column layouts
+3. Duration in minutes (second column)
+4. Session names in the third column
+5. Meeting notes in columns 4 or 5

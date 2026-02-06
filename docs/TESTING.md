@@ -1,21 +1,5 @@
 # Testing Documentation
 
-## Test Setup
-
-The project uses Vitest for testing with the following configuration:
-
-```javascript
-// vitest.config.js
-import { defineConfig } from 'vitest/config'
-
-export default defineConfig({
-  test: {
-    environment: 'jsdom',
-    setupFiles: './src/test-setup.js',
-  },
-})
-```
-
 ## Running Tests
 
 ```bash
@@ -30,139 +14,54 @@ npm run test:run
 
 ### Unit Tests (App.test.js)
 
-#### CSV Parsing Tests
-- Day detection (Friday, Saturday, Sunday)
-- Time parsing with AM/PM
-- Time parsing without AM/PM (smart defaults)
-- Duration parsing
-- Day offset application
-
-#### Session Filtering Tests
-- Track content inclusion
-- Lunch inclusion
-- Session priority and deduplication
-
-#### Run Group Extraction Tests
-- HPDE numbered group extraction
-- TT group normalization (Alpha/Omega)
-- Race name normalization (Thunder/Lightning/Mock)
-- Exclusions (Lunch, Meetings, Warmup, TT ALL, Awards)
-- Alphabetical sorting after "All"
-
-#### Meeting Time Parsing Tests
-Tests all 10 schedules in `test-schedules/` directory:
-- Saturday Racers Meeting
-- Saturday TT Drivers Meeting
-- Sunday Racers Meeting
-- Sunday TT Drivers Meeting
-
-**Test Output Example:**
-```
-2025 Flatten The Curve - Schedule.csv:
-  Saturday Racers Meeting: 12:00 → 12:00:00 PM
-  Saturday TT Drivers Meeting: 12:15 → 12:15:00 PM
-  Sunday Racers Meeting: 11:30 → 11:30:00 AM
-  Sunday TT Drivers Meeting: 11:15 → 11:15:00 AM
-```
-
-#### Session Matching Tests
-- HPDE combined sessions ("HPDE 3* & 4")
-- Test/Tune & Comp School splitting
-- TT ALL matching both Alpha and Omega
-- TT Drivers matching both Alpha and Omega
-- Negative cases (non-matches)
+- CSV parsing (day detection, time parsing, durations)
+- Session filtering and deduplication
+- Run group extraction and normalization
+- Meeting detection for all days
+- Session matching rules
 
 ### Multi-Schedule Tests (MultiSchedule.test.js)
 
-Validates consistency across all test schedules:
-- Structure validation
-- Run group extraction
-- Session counts per day
+- Validates structure across all test schedules
+- Ensures run group extraction is consistent
+- Verifies session counts per day
 
-## Test Coverage
+## Key Test Scenarios
 
-Current test suite: **119 tests across 2 files**
+### Time Parsing Without AM/PM
 
-### Key Test Scenarios
-
-#### Time Parsing Without AM/PM
-
-Tests the smart defaults for times without AM/PM:
 ```javascript
-parseTimeToToday('12:15') → 12:15 PM (noon)
-parseTimeToToday('11:30') → 11:30 AM
-parseTimeToToday('1:30')  → 1:30 PM (afternoon context)
+parseTimeToToday('12:15') // 12:15 PM (noon)
+parseTimeToToday('11:30') // 11:30 AM
+parseTimeToToday('1:30')  // 1:30 PM
 ```
 
-#### Meeting Detection Across All Schedules
+### Session Priority
 
-Ensures all schedules properly format meeting times:
-- Validates time extraction regex
-- Confirms parseTimeToToday handles all formats
-- Checks both Saturday and Sunday meetings
-
-#### Session Priority
-
-Tests deduplication logic:
 ```javascript
 // 9:00 AM
-'HPDE 1' (priority 2) + 'HPDE' (priority 3) → Keep 'HPDE 1'
+'HPDE 1' (priority 2) + 'HPDE' (priority 3) -> Keep 'HPDE 1'
 
+// 12:00 PM
+'Lunch' (priority 1) + 'HPDE 2' (priority 2) -> Keep 'Lunch'
+```
 
 ## Notification Delivery Checklist (Manual)
 
-Automated tests do not cover push notifications. Run this short checklist when touching notification code:
+Push notifications are not covered by automated tests. Validate manually after notification changes:
 
 1. Enable notifications in the sidebar and confirm the success toast appears.
-2. Check Firestore `notificationTokens` for a new entry (optional but useful).
-3. Trigger "Test notification" and verify a lock-screen alert arrives on iOS/Android.
-4. Disable notifications and ensure no new pushes arrive afterward.
-5. Repeat on at least one additional browser to verify token registration is per-device.
-// 12:00 PM  
-'Lunch' (priority 1) + 'HPDE 2' (priority 2) → Keep 'Lunch'
-```
+2. Trigger "Test notification" and verify an alert arrives on a device.
+3. Disable notifications and confirm no further pushes arrive.
+4. Repeat on at least one additional browser or device.
 
 ## Writing New Tests
 
-4. **Notifications**: Push registration and Cloud Functions rely on real browsers/devices and must be verified manually
-### Test Helper Functions
-
-```javascript
-// Parse CSV like the app does
-function parseScheduleCSV(csvText, dayOffset = 0) {
-  const parsed = Papa.parse(csvText, { skipEmptyLines: true })
-  const allRows = []
-  let currentDay = null
-  
-  parsed.data.forEach(row => {
-    // Day detection
-    const firstCol = (row[0] || '').toString().trim().toLowerCase()
-    if (firstCol.includes('friday')) currentDay = 'Friday'
-    else if (firstCol.includes('saturday')) currentDay = 'Saturday'
-    else if (firstCol.includes('sunday')) currentDay = 'Sunday'
-    
-    // Time row parsing
-    if (isTimeRow(row)) {
-      let start = parseTimeToToday(row[0])
-      if (start && dayOffset !== 0) {
-        start = new Date(start.getTime() + dayOffset * 86400000)
-      }
-      // ... build session object
-      allRows.push({ /* session data */ })
-    }
-  })
-  
-  return allRows
-}
-```
-
 ### Testing New Schedules
 
-To add a new test schedule:
-
-1. Add CSV file to `public/test-schedules/`
-2. The meeting parsing test automatically includes it
-3. Verify output shows correct meeting times
+1. Add a CSV file to `public/test-schedules/`.
+2. The meeting parsing test automatically includes it.
+3. Verify output shows correct meeting times.
 
 ### Testing Session Matching
 
@@ -176,24 +75,15 @@ it('does not match [group] with [session]', () => {
 })
 ```
 
-## CI/CD Integration
-
-Tests run automatically on:
-- Local development (watch mode)
-- Pre-commit hooks (recommended)
-- CI pipeline (use `npm run test:run`)
-
 ## Known Test Limitations
 
-1. **Date dependencies**: Tests use `new Date()` which can vary by timezone
-2. **File system access**: Tests load CSV files from disk (not mocked)
-3. **Browser environment**: Requires jsdom for DOM APIs
+1. Date dependencies (tests use `new Date()`; timezone can affect output)
+2. File system access (tests load CSV files from disk)
+3. Browser environment (jsdom only)
 
 ## Future Test Improvements
 
-- [ ] Add component rendering tests
-- [ ] Test user interactions (clicks, selections)
-- [ ] Mock date/time for deterministic tests
-- [ ] Test auto-scroll behavior
-- [ ] Test debug mode functionality
-- [ ] Add visual regression tests
+- Add component rendering tests
+- Add interaction tests (clicks, selections)
+- Mock date/time for deterministic outputs
+- Add visual regression tests

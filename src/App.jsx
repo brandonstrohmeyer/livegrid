@@ -1,9 +1,9 @@
-import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react'
+import React, { useEffect, useState, useMemo, useRef, useCallback, useLayoutEffect } from 'react'
 import version from './version.js'
 import Papa from 'papaparse'
 import { XMLParser } from 'fast-xml-parser'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
-import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused } from 'react-icons/md'
+import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose } from 'react-icons/md'
 import { GiFullMotorcycleHelmet } from 'react-icons/gi'
 import { FaInstagram } from 'react-icons/fa'
 import { FaEnvelope } from 'react-icons/fa'
@@ -13,6 +13,7 @@ import { useAuth } from './contexts/AuthContext'
 import { useSyncedPreference } from './contexts/PreferencesContext'
 import { getViewport, onViewportChange } from 'viewportify'
 import { functions } from './firebaseClient'
+import FirebaseAuthUI from './components/FirebaseAuthUI'
 import {
   obtainPushToken,
   revokePushToken,
@@ -278,7 +279,7 @@ export default function App() {
   }
   
   const demoOffsets = getDemoOffsets()
-  const { user, loading: authLoading, error: authError, signIn, signOut: signOutUser } = useAuth()
+  const { user, loading: authLoading, error: authError, signOut: signOutUser } = useAuth()
   
   // State management - initialize with demo values if URL param is set
   const [rows, setRows] = useState([])
@@ -307,6 +308,7 @@ export default function App() {
   const [showHelpSection, setShowHelpSection] = useState(false)
   const [showAccountSection, setShowAccountSection] = useState(false)
   const [showNotificationsSection, setShowNotificationsSection] = useState(false)
+  const [accountPanelMaxHeight, setAccountPanelMaxHeight] = useState(null)
   const [runGroupsExpanded, setRunGroupsExpanded] = useState(false)
   const [optionsExpanded, setOptionsExpanded] = useState(() => (isDemoMode ? false : !customUrl))
   const [sheetName, setSheetName] = useState('')
@@ -356,6 +358,7 @@ export default function App() {
   const [pushSyncState, setPushSyncState] = useState('idle')
   const [pushSetupError, setPushSetupError] = useState(null)
   const [pushPaused, setPushPaused] = useState(false)
+  const [notificationLeadInput, setNotificationLeadInput] = useState(String(notificationLeadMinutes))
   const resolvedTimezone = useMemo(() => {
     try {
       return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
@@ -364,6 +367,10 @@ export default function App() {
       return 'UTC'
     }
   }, [])
+
+  useEffect(() => {
+    setNotificationLeadInput(String(notificationLeadMinutes))
+  }, [notificationLeadMinutes])
   const appOrigin = useMemo(() => {
     if (typeof window !== 'undefined' && window.location) {
       return window.location.origin
@@ -416,6 +423,8 @@ export default function App() {
   const [hasToolbarInset, setHasToolbarInset] = useState(false)
   const [viewportHeightPx, setViewportHeightPx] = useState(null)
   const viewportWidthRef = useRef(null)
+  const accountPanelRef = useRef(null)
+  const helpSectionRef = useRef(null)
   const viewportHeightStyle = viewportHeightPx ? `${viewportHeightPx}px` : 'var(--vp-dvh, var(--vp-height, 100dvh))'
   const viewportMinHeightStyle = viewportHeightPx ? `${viewportHeightPx}px` : 'var(--vp-dvh, var(--vp-height, 100vh))'
   const safeAreaPaddingExpr = 'var(--vp-safe-bottom, env(safe-area-inset-bottom, 0px))'
@@ -455,6 +464,35 @@ export default function App() {
       if (typeof unsubscribe === 'function') unsubscribe()
     }
   }, [isMobile])
+
+  const measureAccountPanelHeight = useCallback(() => {
+    const panel = accountPanelRef.current
+    const help = helpSectionRef.current
+    if (!panel || !help) return
+    const panelRect = panel.getBoundingClientRect()
+    const helpRect = help.getBoundingClientRect()
+    const available = Math.max(0, Math.floor(helpRect.top - panelRect.top - 12))
+    setAccountPanelMaxHeight(prev => (prev === available ? prev : available))
+  }, [])
+
+  useLayoutEffect(() => {
+    if (!sidebarOpen || !showAccountSection) {
+      setAccountPanelMaxHeight(null)
+      return
+    }
+    const raf = requestAnimationFrame(() => {
+      measureAccountPanelHeight()
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [
+    sidebarOpen,
+    showAccountSection,
+    showHelpSection,
+    showNotificationsSection,
+    viewportHeightPx,
+    isMobile,
+    measureAccountPanelHeight
+  ])
 
   // Refs for scrolling
   const listRef = useRef(null)
@@ -1490,7 +1528,7 @@ export default function App() {
     <div style={{ display: 'flex', height: viewportHeightStyle, minHeight: viewportMinHeightStyle }}>
       {/* React Pro Sidebar */}
       <Sidebar
-        collapsed={!sidebarOpen}
+        collapsed={!sidebarOpen && !isMobile}
         width={sidebarFullWidth}
         collapsedWidth={sidebarCollapsedWidth}
         backgroundColor="#2e3440"
@@ -1518,63 +1556,51 @@ export default function App() {
           paddingBottom: sidebarContentPadding,
           boxSizing: 'border-box'
         }}>
-          <div style={{
-            flex: '1 1 auto',
-            minHeight: 0,
-            overflowY: 'auto',
-            paddingBottom: sidebarScrollPadding
-          }}>
           {/* Sidebar Header */}
           <div style={{
             padding: '20px 16px',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: sidebarOpen ? 'space-between' : 'center',
-            borderBottom: '1px solid #e5e7eb',
-            background: '#ffffff'
+            justifyContent: 'flex-end',
+            borderBottom: '1px solid rgba(226,232,240,0.35)',
+            backgroundColor: '#0b1220',
+            backgroundImage: sidebarOpen
+              ? "url('/livegrid-header-logo.png')"
+              : "url('/livegrid-icon-maskable.png')",
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'center',
+            backgroundSize: sidebarOpen
+              ? (isMobile ? '100% auto' : 'cover')
+              : 'cover',
+            width: '100%',
+            height: '80px',
+            boxSizing: 'border-box'
+          }} />
+
+          <div style={{
+            flex: '1 1 auto',
+            minHeight: 0,
+            overflow: 'visible',
+            paddingBottom: sidebarScrollPadding
           }}>
-            {sidebarOpen && (
-              <span style={{color: '#1f2937', fontWeight: 600, fontSize: '1.1rem'}}>Menu</span>
-            )}
-            <button
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              style={{
-                background: '#f8f9fa',
-                border: '1px solid #e5e7eb',
-                color: '#1f2937',
-                padding: '8px',
-                cursor: 'pointer',
-                borderRadius: '8px',
-                fontSize: '1.2rem',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: '40px',
-                height: '40px',
-                transition: 'all 0.2s'
-              }}
-              onMouseEnter={(e) => { e.target.style.background = '#e5e7eb'; e.target.style.transform = 'scale(1.05)'; }}
-              onMouseLeave={(e) => { e.target.style.background = '#f8f9fa'; e.target.style.transform = 'scale(1)'; }}
-            >
-              {sidebarOpen ? '✕' : '☰'}
-            </button>
-          </div>
 
           {/* Menu Items */}
           <Menu menuItemStyles={sidebarMenuItemStyles}>
             {/* Fullscreen */}
-            <MenuItem
-              icon={document.fullscreenElement ? <MdFullscreenExit size={20} /> : <MdFullscreen size={20} />}
-              onClick={() => {
-                if (!document.fullscreenElement) {
-                  document.documentElement.requestFullscreen()
-                } else {
-                  document.exitFullscreen()
-                }
-              }}
-            >
-              Fullscreen
-            </MenuItem>
+            {!isMobile && (
+              <MenuItem
+                icon={document.fullscreenElement ? <MdFullscreenExit size={20} /> : <MdFullscreen size={20} />}
+                onClick={() => {
+                  if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen()
+                  } else {
+                    document.exitFullscreen()
+                  }
+                }}
+              >
+                Fullscreen
+              </MenuItem>
+            )}
 
             {/* Settings */}
             <MenuItem
@@ -1702,12 +1728,20 @@ export default function App() {
                       type="number"
                       min={1}
                       max={120}
-                      value={notificationLeadMinutes}
+                      value={notificationLeadInput}
                       onChange={e => {
-                        const raw = Number(e.target.value)
+                        const value = e.target.value
+                        setNotificationLeadInput(value)
+                        if (value === '') return
+                        const raw = Number(value)
                         if (Number.isNaN(raw)) return
                         const clamped = Math.max(1, Math.min(120, Math.round(raw)))
                         setNotificationLeadMinutes(clamped)
+                      }}
+                      onBlur={() => {
+                        if (notificationLeadInput === '') {
+                          setNotificationLeadInput(String(notificationLeadMinutes))
+                        }
                       }}
                       style={{width: '56px', padding: '4px 6px', borderRadius: '5px', border: '1px solid #444', background: '#181c23', color: '#e5e9f0', fontSize: '0.97em'}}
                     />
@@ -1744,16 +1778,22 @@ export default function App() {
           </Menu>
           {/* Account Slide-Out */}
           <div
+            className="account-panel"
+            ref={accountPanelRef}
             style={{
               margin: '0 16px 16px 16px',
-              padding: showAccountSection && sidebarOpen ? '24px 20px 20px 20px' : '0 16px',
+              padding: showAccountSection && sidebarOpen ? '16px 20px 18px 20px' : '0 16px',
               borderRadius: '14px',
               border: '1px solid rgba(255,255,255,0.08)',
               background: '#1f2630',
               color: '#e5e9f0',
               boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-              maxHeight: showAccountSection && sidebarOpen ? 320 : 0,
-              overflow: 'hidden',
+              maxHeight: showAccountSection && sidebarOpen
+                ? (accountPanelMaxHeight ? `${accountPanelMaxHeight}px` : 'calc(var(--vp-dvh, 100dvh) * 0.6)')
+                : 0,
+              overflowX: 'hidden',
+              overflowY: showAccountSection && sidebarOpen ? 'auto' : 'hidden',
+              overscrollBehavior: 'contain',
               transition: 'max-height 0.4s cubic-bezier(.4,0,.2,1), padding 0.3s cubic-bezier(.4,0,.2,1)',
               display: sidebarOpen ? 'block' : 'none'
             }}
@@ -1787,26 +1827,16 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <div style={{fontSize: '0.82rem', lineHeight: 1.4, marginBottom: '12px'}}>
-                      Sign in to sync your schedule preferences across desktop and mobile.
+                    <div style={{
+                      fontSize: '0.8rem',
+                      lineHeight: 1.4,
+                      marginBottom: '12px',
+                      color: '#cbd5e1',
+                      textAlign: 'center'
+                    }}>
+                      Sign in to sync your schedule and preferences.
                     </div>
-                    <button
-                      type="button"
-                      onClick={signIn}
-                      disabled={authLoading}
-                      style={{
-                        width: '100%',
-                        padding: '10px 14px',
-                        borderRadius: '8px',
-                        border: 'none',
-                        background: '#5e81ac',
-                        color: '#f0f4ff',
-                        fontWeight: 600,
-                        cursor: authLoading ? 'wait' : 'pointer'
-                      }}
-                    >
-                      {authLoading ? 'Checking account…' : 'Sign in & Sync'}
-                    </button>
+                    <FirebaseAuthUI />
                     {authError && (
                       <div style={{marginTop: '10px', fontSize: '0.78rem', color: '#fca5a5'}}>
                         {authError.message || 'Sign-in failed. Please try again.'}
@@ -1824,6 +1854,7 @@ export default function App() {
           <div style={{flex: '0 0 auto', display: 'flex', flexDirection: 'column', marginTop: 'auto'}}>
           {/* Help Toggle + Drawer */}
           <div
+            ref={helpSectionRef}
             style={{
               padding: sidebarOpen ? '0 12px 8px 12px' : '0 0 8px 0'
             }}
@@ -2098,6 +2129,36 @@ export default function App() {
         flexDirection: 'column',
         boxSizing: 'border-box'
       }}>
+      {!isMobile && (
+        <button
+          type="button"
+          onClick={() => setSidebarOpen(prev => !prev)}
+          aria-label={sidebarOpen ? 'Close menu' : 'Open menu'}
+          style={{
+            position: 'fixed',
+            top: '14px',
+            left: `calc(${sidebarOpen ? sidebarFullWidth : sidebarCollapsedWidth} + 14px)`,
+            zIndex: 1201,
+            background: '#f8f9fa',
+            border: '1px solid #e5e7eb',
+            color: '#1f2937',
+            padding: '8px',
+            cursor: 'pointer',
+            borderRadius: '10px',
+            fontSize: '1.2rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: '40px',
+            height: '40px',
+            transition: 'all 0.2s'
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = '#e5e7eb'; e.currentTarget.style.transform = 'scale(1.05)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = '#f8f9fa'; e.currentTarget.style.transform = 'scale(1)'; }}
+        >
+          {sidebarOpen ? <MdClose size={18} /> : <MdMenu size={20} />}
+        </button>
+      )}
       {isMobile && !sidebarOpen && (
         <button
           className="mobile-menu-button"
@@ -2699,3 +2760,7 @@ export default function App() {
     </div>
   )
 }
+
+
+
+

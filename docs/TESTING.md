@@ -22,9 +22,17 @@ npm run test:run
 
 ### Multi-Schedule Tests (MultiSchedule.test.js)
 
-- Validates structure across all test schedules
+- Validates structure across all parser fixtures
 - Ensures run group extraction is consistent
 - Verifies session counts per day
+
+### Parser Fixture Tests (nasaSeParser.fixtures.test.js)
+
+- Validates the normalized schedule contract
+- Runs anomaly checks (warn-first)
+- Aggregates warnings and prints a summary table
+
+Parser-specific CSV rules live in `docs/PARSERS.md`.
 
 ## Key Test Scenarios
 
@@ -59,9 +67,10 @@ Push notifications are not covered by automated tests. Validate manually after n
 
 ### Testing New Schedules
 
-1. Add a CSV file to `public/test-schedules/`.
-2. The meeting parsing test automatically includes it.
-3. Verify output shows correct meeting times.
+1. Add a CSV file to `src/schedule/parsers/<parserId>/fixtures/`.
+2. Update `manifest.json` in that folder.
+3. Parser fixture tests automatically include it.
+4. Add overrides to the manifest if a known anomaly is expected.
 
 ### Testing Session Matching
 
@@ -87,3 +96,40 @@ it('does not match [group] with [session]', () => {
 - Add interaction tests (clicks, selections)
 - Mock date/time for deterministic outputs
 - Add visual regression tests
+
+## Parser Fixture Manifests
+
+Each parser has a `fixtures/manifest.json` file:
+
+```json
+{
+  "parserId": "nasa-se",
+  "fixtures": [
+    { "file": "2026 New Year, New Gear - Schedule.csv", "label": "2026 New Year, New Gear" }
+  ]
+}
+```
+
+Optional overrides can be added to a fixture:
+
+- `allowNoClassroom`
+- `allowNoMeetings`
+- `allowSingleSessionGroup`
+- `allowSingleSessionGroups` (array of group names)
+- `allowUnknownRunGroups`
+- `allowEmptySessions`
+
+## Warn-Only vs Strict Mode
+
+By default, anomaly checks **warn only** and do not fail tests.
+
+To fail tests on anomalies:
+
+```bash
+LIVEGRID_TEST_STRICT=1 npm run test:run
+```
+
+## Group Taxonomy Tests
+
+Group taxonomy tests ensure related group labels map correctly (e.g., selecting `TT Omega`
+should still match a schedule label like "All Time Trial").

@@ -28,6 +28,21 @@ nasa-session-dashboard/
     firebaseClient.js
     pushNotifications.js
     scheduleUtils.js
+    schedule/
+      parsers/
+        nasaSeParser.js
+        nasaSeParser.test.js
+        nasaSeRules.js
+        registry.js
+        nasa-se/
+          fixtures/
+          groupTaxonomy.js
+      testing/
+        anomalyChecks.js
+        contract.js
+        fixtures.js
+        groupMapping.js
+      types.js
     styles.css
     App.test.js
     MultiSchedule.test.js
@@ -36,9 +51,22 @@ nasa-session-dashboard/
     firebase-messaging-sw.js
     test-schedules/
   docs/
+    PARSERS.md
   functions/
   package.json
 ```
+
+Parser fixtures live under:
+
+```
+src/
+  schedule/
+    parsers/
+      nasa-se/
+        fixtures/
+```
+
+Parser rules and CSV format details are documented in `docs/PARSERS.md`.
 
 ## Component Architecture
 
@@ -68,36 +96,34 @@ nasa-session-dashboard/
 
 ## Data Flow
 
-### 1. CSV Parsing Pipeline
+### 1. CSV Parsing Pipeline (Parser Registry)
 
 ```
 CSV file
-  -> Parse with PapaParse
-  -> Detect day headers (Friday/Saturday/Sunday)
-  -> Parse time rows (isTimeRow)
-  -> Build session objects
-  -> Sort by start time
-  -> Store in allRows
+  -> Parser registry selects organization parser
+  -> Parser reads CSV (PapaParse)
+  -> Detect day headers + time rows
+  -> Build normalized sessions + activities
+  -> Return NormalizedSchedule
 ```
+
+Parsers are modular and can include organization-specific helpers, fixtures, and taxonomy
+metadata for group mapping tests.
 
 ### 2. Session Filtering
 
 ```
-allRows
+NormalizedSchedule.sessions
   -> Filter by selectedDay
-  -> Filter by isOnTrackSession
-  -> Deduplicate by time (highest priority wins)
-  -> Store in rows
+  -> Render in session list
 ```
 
-### 3. Run Group Extraction
+### 3. Activity Filtering
 
 ```
-rows
-  -> Exclude meetings, warmups, lunch
-  -> Extract HPDE numbers
-  -> Normalize race and TT group names
-  -> Sort (All first, then alphabetically)
+NormalizedSchedule.activities
+  -> Filter by selectedDay + selectedGroups
+  -> Render in meetings/classroom list
 ```
 
 ### 4. Preferences Sync
@@ -160,6 +186,7 @@ Limitations:
 
 - TT ALL matches both TT Alpha and TT Omega.
 - TT Drivers matches both TT Alpha and TT Omega.
+- Mock Race and All Racers Warmup map to both Thunder and Lightning race groups.
 - Combined sessions like "HPDE 3* & 4" match both groups.
 
 ## UI Behavior
@@ -175,19 +202,7 @@ Limitations:
 - Day offset (+/- 7 days)
 - Debug panel for time and schedule inspection
 
-## CSV Format Requirements
+## CSV Format Requirements (Parser Modules)
 
-```csv
-Time,Duration,Track,Classroom,Toyota,Note
-Friday,,,,,
-8:00 AM,30,Registration,,,
-9:00 AM,60,HPDE 1,,,"On Track"
-12:00 PM,60,Lunch,,,"12:00 All Racers Meeting"
-```
-
-Required elements:
-1. Day headers in the first column (Friday/Saturday/Sunday)
-2. Time format: "H:MM AM/PM" or "HH:MM AM/PM"
-3. Duration in minutes (second column)
-4. Session names in the third column
-5. Meeting notes in columns 4 or 5
+Each parser defines its own CSV rules. See `docs/PARSERS.md` for organization-specific
+formats and run group mapping behavior.

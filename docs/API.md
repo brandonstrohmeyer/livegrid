@@ -19,34 +19,42 @@ Returns a new Date with minutes added.
 
 Returns true if a CSV row contains a time entry.
 
-### isOnTrackSession(session)
+## Schedule Parser Registry (src/schedule/parsers/registry.js)
 
-Returns true when a session has a track name and non-zero duration.
+### getParserById(parserId)
 
-### getSessionPriority(sessionName)
+Returns the registered parser for an organization.
 
-Returns numeric priority (lower is higher priority):
-1. Lunch
-2. HPDE with number
-3. Generic HPDE
-4. TT or Race
-5. Other
+### parseCsvSchedule({ csvText, parserId, dayOffset })
 
-### deduplicateSessions(sessions)
+Parses CSV text using the selected parser and returns a `NormalizedSchedule`.
 
-Removes duplicate sessions at the same time, keeping the highest priority.
+Parsers may also expose `groupTaxonomy` metadata for mapping tests.
 
-### shouldExcludeFromRunGroups(sessionName)
+### ScheduleParser (src/schedule/types.js)
 
-Filters out lunches, meetings, awards, and warmups when building run groups.
+- `id`: unique parser ID
+- `name`: display name
+- `parseCsv({ csvText, dayOffset })`: returns `NormalizedSchedule`
+- `groupTaxonomy` (optional): mapping hints for related-group tests
 
-### extractRunGroups(sessions)
+## Normalized Schedule Model (src/schedule/types.js)
 
-Extracts and normalizes run groups. Returns a list with "All" first.
+### NormalizedSchedule
 
-### fixSessionNameTypos(sessionName)
+- `runGroups`: array of labels (IDs = labels)
+- `sessions`: on-track session objects
+- `activities`: meeting/classroom objects
+- `days`: ordered list of days
+- `warnings`: parse warnings (if any)
 
-Fixes common session name typos (e.g., HDPE -> HPDE).
+### NormalizedSession
+
+- `session`, `day`, `start`, `duration`, `end`, `runGroupIds`, `note`, `classroom`
+
+### NormalizedActivity
+
+- `type`, `title`, `day`, `start`, `duration`, `relatedRunGroupIds`, `note`
 
 ## Formatting Utilities (App.jsx)
 

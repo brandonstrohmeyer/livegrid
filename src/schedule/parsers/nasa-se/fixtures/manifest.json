@@ -1,0 +1,14 @@
+{
+  "parserId": "nasa-se",
+  "fixtures": [
+    { "file": "2024 Santa's Toy Run - Schedule.csv", "label": "2024 Santa's Toy Run" },
+    { "file": "2024 Savannah Sizzler - Schedule.csv", "label": "2024 Savannah Sizzler" },
+    { "file": "2025 Brady Skelebration - Schedule.csv", "label": "2025 Brady Skelebration" },
+    { "file": "2025 Flatten The Curve - Schedule.csv", "label": "2025 Flatten The Curve" },
+    { "file": "2025 Santa's Toy Run - Schedule.csv", "label": "2025 Santa's Toy Run" },
+    { "file": "2025 Sinko De Mayo - Schedule.csv", "label": "2025 Sinko De Mayo" },
+    { "file": "2025 Spring Brake - Schedule.csv", "label": "2025 Spring Brake" },
+    { "file": "2025 Winter Meltdown - Schedule.csv", "label": "2025 Winter Meltdown" },
+    { "file": "2026 New Year, New Gear - Schedule.csv", "label": "2026 New Year, New Gear" }
+  ]
+}

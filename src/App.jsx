@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback, useLayoutEffect } from 'react'
 import version from './version.js'
-import Papa from 'papaparse'
 import { XMLParser } from 'fast-xml-parser'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
 import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose } from 'react-icons/md'
@@ -21,19 +20,17 @@ import {
   unregisterTokenWithServer,
   sendServerPush
 } from './pushNotifications'
-import {
-  parseTimeToToday,
-  addMinutes,
-  isTimeRow,
-  isOnTrackSession,
-  getSessionPriority,
-  deduplicateSessions,
-  shouldExcludeFromRunGroups,
-  extractRunGroups,
-  fixSessionNameTypos
-} from './scheduleUtils.js'
+import { addMinutes } from './scheduleUtils.js'
+import { parseCsvSchedule, SCHEDULE_PARSERS, DEFAULT_SCHEDULE_PARSER_ID } from './schedule/parsers/registry.js'
 
 const DEFAULT_STALE_THRESHOLD_MINUTES = 5
+const createEmptySchedule = () => ({
+  runGroups: ['All'],
+  sessions: [],
+  activities: [],
+  days: [],
+  warnings: []
+})
 function useBreakpoint(maxWidth = 900) {
   const getInitial = () => {
     if (typeof window === 'undefined') return false
@@ -60,69 +57,25 @@ function getDateWithOffsets(date, clockOffset = 0, dayOffset = 0) {
 }
 
 // ============================================================================
-// MEETING EXTRACTION - Find relevant meetings for selected groups
+// ACTIVITY FILTERING - Find relevant meetings/classroom items
 // ============================================================================
-/**
- * Find meetings relevant to the selected run groups
- */
-function findRelevantMeetings(allRows, selectedDay, selectedGroups, dayOffset = 0) {
+function arraysEqual(a, b) {
+  if (a === b) return true
+  if (!Array.isArray(a) || !Array.isArray(b)) return false
+  if (a.length !== b.length) return false
+  return a.every((value, index) => value === b[index])
+}
+
+function filterRelevantActivities(activities, selectedDay, selectedGroups) {
   if (selectedGroups.includes('All') || selectedGroups.length === 0) return []
-  
-  const meetings = []
-  
-  // HPDE Meeting
-  const hasHPDE = selectedGroups.some(g => g.includes('HPDE'))
-  if (hasHPDE) {
-    const hpdeMeeting = allRows.find(r => 
-      r.day === selectedDay && 
-      (r.session || '').toLowerCase().includes('hpde meeting')
-    )
-    if (hpdeMeeting) {
-      meetings.push({ session: hpdeMeeting.session, start: hpdeMeeting.start })
-    }
-  }
-  
-  // TT Drivers Meeting
-  const hasTT = selectedGroups.some(g => g.includes('TT'))
-  if (hasTT) {
-    const ttMeeting = allRows.find(r => 
-      r.day === selectedDay && 
-      (r.note || '').toLowerCase().includes('tt drivers')
-    )
-    if (ttMeeting) {
-      const timeMatch = ttMeeting.note.match(/^(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)/i)
-      const timeStr = timeMatch ? timeMatch[1].trim() : null
-      let start = timeStr ? parseTimeToToday(timeStr) : null
-      // Apply day offset to meeting time
-      if (start && dayOffset !== 0) {
-        start = new Date(start.getTime() + dayOffset * 86400000)
-      }
-      meetings.push({ session: 'TT Drivers Meeting', customTime: timeStr, start })
-    }
-  }
-  
-  // All Racers Meeting
-  const hasRace = selectedGroups.some(g => 
-    ['Thunder Race', 'Lightning Race', 'Mock Race'].includes(g)
-  )
-  if (hasRace) {
-    const racersMeeting = allRows.find(r => 
-      r.day === selectedDay && 
-      (r.note || '').toLowerCase().includes('all racers meeting')
-    )
-    if (racersMeeting) {
-      const timeMatch = racersMeeting.note.match(/^(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)/i)
-      const timeStr = timeMatch ? timeMatch[1].trim() : null
-      let start = timeStr ? parseTimeToToday(timeStr) : null
-      // Apply day offset to meeting time
-      if (start && dayOffset !== 0) {
-        start = new Date(start.getTime() + dayOffset * 86400000)
-      }
-      meetings.push({ session: 'All Racers Meeting', customTime: timeStr, start })
-    }
-  }
-  
-  return meetings
+  if (!activities || activities.length === 0) return []
+
+  return activities.filter(activity => {
+    if (!activity || !activity.start) return false
+    if (selectedDay && activity.day && activity.day !== selectedDay) return false
+    const related = Array.isArray(activity.relatedRunGroupIds) ? activity.relatedRunGroupIds : []
+    return related.some(group => selectedGroups.includes(group))
+  })
 }
 
 // ============================================================================
@@ -143,34 +96,11 @@ function findCurrentSession(sessions, nowWithOffset) {
 /**
  * Check if a session matches a selected group
  */
-function sessionMatchesGroup(sessionName, group) {
-  const lowerSession = (sessionName || '').toLowerCase()
-  const lowerGroup = group.toLowerCase()
-  
-  // TT ALL and TT Drivers match both TT Alpha and TT Omega
-  if (/tt\s+all|tt\s+drivers/i.test(sessionName)) {
-    return lowerGroup.includes('tt alpha') || lowerGroup.includes('tt omega')
-  }
-  
-  // For HPDE groups, extract all numbers from session name and check if group number is in there
-  // This handles "HPDE 3* & 4" matching both "HPDE 3" and "HPDE 4"
-  if (/hpde\s*\d/i.test(lowerGroup)) {
-    const groupNumber = lowerGroup.match(/\d+/)?.[0]
-    if (groupNumber && /hpde/i.test(lowerSession)) {
-      // Extract all numbers from the session name (after HPDE or standalone digits in combined sessions)
-      const allNumbers = lowerSession.match(/\d+/g) || []
-      return allNumbers.includes(groupNumber)
-    }
-  }
-  
-  // For combined sessions with "&" (like "Test/Tune & Comp School")
-  // Check if the group matches any part of the combined session
-  if (lowerSession.includes('&')) {
-    const parts = lowerSession.split('&').map(p => p.trim())
-    return parts.some(part => part.includes(lowerGroup) || lowerGroup.includes(part))
-  }
-  
-  return lowerSession.includes(lowerGroup)
+function sessionMatchesGroup(session, group) {
+  if (!session || !group) return false
+  if (group === 'All') return true
+  const runGroupIds = Array.isArray(session.runGroupIds) ? session.runGroupIds : []
+  return runGroupIds.includes(group)
 }
 
 /**
@@ -186,7 +116,7 @@ function findNextSession(sessions, selectedGroups, nowWithOffset) {
   
   // Filter by selected groups
   const filteredSessions = sessions.filter(session => 
-    selectedGroups.some(group => sessionMatchesGroup(session.session, group))
+    selectedGroups.some(group => sessionMatchesGroup(session, group))
   )
   
   return filteredSessions.find(session => 
@@ -282,8 +212,7 @@ export default function App() {
   const { user, loading: authLoading, error: authError, signOut: signOutUser } = useAuth()
   
   // State management - initialize with demo values if URL param is set
-  const [rows, setRows] = useState([])
-  const [allRows, setAllRows] = useState([])
+  const [scheduleData, setScheduleData] = useState(createEmptySchedule)
   const [clockOffset, setClockOffset] = useState(demoOffsets.clockOffset)
   const [dayOffset, setDayOffset] = useState(demoOffsets.dayOffset)
   const [now, setNow] = useState(new Date())
@@ -293,6 +222,10 @@ export default function App() {
     'selectedCsvFile',
     () => (isDemoMode ? '2026 New Year, New Gear - Schedule.csv' : 'schedule.csv')
   )
+  const [scheduleParserId, setScheduleParserId] = useSyncedPreference(
+    'scheduleParserId',
+    () => DEFAULT_SCHEDULE_PARSER_ID
+  )
   const [customUrl, setCustomUrl] = useSyncedPreference('customUrl', () => '')
   const [autoScrollEnabled, setAutoScrollEnabled] = useSyncedPreference('autoScrollEnabled', () => true)
   const [staleThresholdMinutes, setStaleThresholdMinutes] = useSyncedPreference(
@@ -300,8 +233,6 @@ export default function App() {
     () => DEFAULT_STALE_THRESHOLD_MINUTES
   )
   const [lastFetch, setLastFetch] = useState(null)
-  const [currentDay, setCurrentDay] = useState(null)
-  const [availableDays, setAvailableDays] = useState([])
   const [debugMode, setDebugMode] = useState(isDemoMode)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showDebugPanel, setShowDebugPanel] = useState(false)
@@ -414,11 +345,52 @@ export default function App() {
     return false
   }, [customUrl, debugMode, selectedCsvFile])
 
+  const scheduleParser = useMemo(() => (
+    SCHEDULE_PARSERS.find(parser => parser.id === scheduleParserId) || SCHEDULE_PARSERS[0] || null
+  ), [scheduleParserId])
+  const isNasaSeParser = scheduleParser?.id === 'nasa-se'
+  const showParserSelect = SCHEDULE_PARSERS.length > 1
+
+  useEffect(() => {
+    if (!scheduleParser) return
+    if (scheduleParserId !== scheduleParser.id) {
+      setScheduleParserId(scheduleParser.id)
+    }
+  }, [scheduleParser, scheduleParserId, setScheduleParserId])
+
   const isDataStale = useMemo(() => {
     if (!hasActiveSchedule) return false
     if (!lastSuccessfulFetch) return false
     return now.getTime() - lastSuccessfulFetch.getTime() > staleThresholdMs
   }, [hasActiveSchedule, lastSuccessfulFetch, now, staleThresholdMs])
+
+  const availableDays = useMemo(() => scheduleData.days || [], [scheduleData])
+  const groups = useMemo(() => (
+    scheduleData.runGroups && scheduleData.runGroups.length > 0 ? scheduleData.runGroups : ['All']
+  ), [scheduleData])
+  const sessions = useMemo(() => scheduleData.sessions || [], [scheduleData])
+  const activities = useMemo(() => scheduleData.activities || [], [scheduleData])
+  const rows = useMemo(() => {
+    if (!sessions.length) return []
+    if (selectedDay && availableDays.includes(selectedDay)) {
+      return sessions.filter(session => session.day === selectedDay)
+    }
+    if (availableDays.length > 0) {
+      return sessions.filter(session => session.day === availableDays[0])
+    }
+    return sessions
+  }, [sessions, selectedDay, availableDays])
+
+  useEffect(() => {
+    if (!groups || groups.length === 0) return
+    setSelectedGroups(prev => {
+      const safePrev = Array.isArray(prev) ? prev : []
+      const filtered = safePrev.filter(group => groups.includes(group))
+      const next = filtered.length > 0 ? filtered : ['All']
+      if (next.includes('All') && next.length > 1) return ['All']
+      return arraysEqual(safePrev, next) ? prev : next
+    })
+  }, [groups, setSelectedGroups])
 
   const isMobile = useBreakpoint(900)
   const [hasToolbarInset, setHasToolbarInset] = useState(false)
@@ -614,11 +586,12 @@ export default function App() {
   // Lazy-load NASA-SE RSS events when options panel is opened
   useEffect(() => {
     if (!optionsExpanded) return
+    if (!isNasaSeParser) return
     if (rssFetchStartedRef.current) return
     if (typeof window === 'undefined' || typeof DOMParser === 'undefined') return
     rssFetchStartedRef.current = true
     fetchRssEvents()
-  }, [optionsExpanded])
+  }, [optionsExpanded, isNasaSeParser])
   
   // Toggle body class for debug mode overflow handling and disable auto-scroll
   useEffect(() => {
@@ -936,8 +909,7 @@ export default function App() {
     // No schedule selected: do not fetch and do not surface stale/errors
     if (!hasActiveSchedule) {
       setFetchError(null)
-      setRows([])
-      setAllRows([])
+      setScheduleData(createEmptySchedule())
       if (!navigator.onLine) {
         setConnectionStatus('offline')
       } else {
@@ -1023,55 +995,14 @@ export default function App() {
         throw new Error('Received HTML instead of CSV. Sheet may not be publicly accessible.')
       }
       
-      const parsed = Papa.parse(text, { skipEmptyLines: true })
-      
-      // Parse all rows with day context
-      const allRows = []
-      let currentDay = null
-      
-      parsed.data.forEach(row => {
-        const firstCol = (row[0] || '').toString().trim().toLowerCase()
-        
-        // Detect day section headers
-        if (firstCol.includes('friday')) currentDay = 'Friday'
-        else if (firstCol.includes('saturday')) currentDay = 'Saturday'
-        else if (firstCol.includes('sunday')) currentDay = 'Sunday'
-        
-        // Parse time-based rows
-        if (isTimeRow(row)) {
-          let start = parseTimeToToday(row[0])
-          // Adjust start time by day offset so sessions match mocked day
-          if (dayOffset !== 0) {
-            start = new Date(start.getTime() + dayOffset * 86400000)
-          }
-          const duration = row[1] && /\d+/.test(row[1]) ? parseInt(row[1], 10) : null
-          const end = duration ? addMinutes(start, duration) : null
-          
-          // Fix common typos in session names
-          let sessionName = fixSessionNameTypos((row[2] || '').toString().trim())
-          
-          // Search for notes across columns (different schedules use different layouts)
-          const note = (row[4] || row[5] || '').toString().trim()
-          
-          allRows.push({
-            raw: row,
-            start,
-            duration,
-            end,
-            session: sessionName,
-            note,
-            classroomCell: (row[3] || '').toString().trim(),
-            day: currentDay
-          })
-        }
+      const parsedSchedule = parseCsvSchedule({
+        csvText: text,
+        parserId: scheduleParserId,
+        dayOffset
       })
+      setScheduleData(parsedSchedule)
       
-      // Sort by start time
-      allRows.sort((a, b) => (a.start && b.start ? a.start - b.start : 0))
-      
-      // Extract available days
-      const days = [...new Set(allRows.filter(r => r.day).map(r => r.day))]
-      setAvailableDays(days)
+      const days = parsedSchedule.days || []
       
       // Auto-select day based on current/mocked time (only if no day is currently selected or if auto-scroll is enabled)
       const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -1079,22 +1010,12 @@ export default function App() {
       const defaultDay = days.includes(todayName) ? todayName : days[0]
       
       // Only auto-select day if: no day selected yet, or auto-scroll is enabled (user wants automatic updates)
-      if (!selectedDay || autoScrollEnabled) {
+      if (defaultDay && (!selectedDay || autoScrollEnabled)) {
         setSelectedDay(defaultDay)
-      } else if (selectedDay && !days.includes(selectedDay)) {
+      } else if (defaultDay && selectedDay && !days.includes(selectedDay)) {
         // If user's selected day doesn't exist in new data, fall back to default
         setSelectedDay(defaultDay)
       }
-      
-      // Filter and deduplicate sessions for the currently selected (or default) day
-      const targetDay = selectedDay && days.includes(selectedDay) ? selectedDay : defaultDay
-      const dayRows = allRows.filter(r => r.day === targetDay)
-      const onTrackRows = dayRows.filter(isOnTrackSession)
-      const filteredRows = deduplicateSessions(onTrackRows)
-      
-      setAllRows(allRows)
-      setRows(filteredRows)
-      setCurrentDay(filteredRows.length > 0 ? filteredRows[0].day : null)
       setLastFetch(new Date())
       setLastSuccessfulFetch(new Date())
       setConnectionStatus('online')
@@ -1134,33 +1055,17 @@ export default function App() {
     fetchSchedule()
     const timer = setInterval(fetchSchedule, 30000)
     return () => clearInterval(timer)
-  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasActiveSchedule])
+  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasActiveSchedule, scheduleParserId])
   
-  // Update displayed rows when selected day changes
-  useEffect(() => {
-    if (!selectedDay || allRows.length === 0) return
-    
-    const dayRows = allRows.filter(r => r.day === selectedDay)
-    const onTrackRows = dayRows.filter(isOnTrackSession)
-    const filteredRows = deduplicateSessions(onTrackRows)
-    
-    setRows(filteredRows)
-    setCurrentDay(selectedDay)
-  }, [selectedDay, allRows])
-
   useEffect(() => {
     upcomingNotificationTrackerRef.current.clear()
-  }, [selectedDay, selectedGroups, selectedCsvFile, customUrl])
-  
-  // Extract run groups from current sessions
-  const groups = useMemo(() => extractRunGroups(rows), [rows])
+  }, [selectedDay, selectedGroups, selectedCsvFile, customUrl, scheduleParserId])
   
   // Find current and upcoming sessions
   const current = useMemo(() => findCurrentSession(rows, nowWithOffset), [rows, nowWithOffset])
-  const relevantMeetings = useMemo(() => 
-    findRelevantMeetings(allRows, selectedDay, selectedGroups, dayOffset),
-    [allRows, selectedDay, selectedGroups, dayOffset]
-  )
+  const relevantActivities = useMemo(() => (
+    filterRelevantActivities(activities, selectedDay, selectedGroups)
+  ), [activities, selectedDay, selectedGroups])
   const nextSessionsByGroup = useMemo(() => 
     findNextSessionsPerGroup(rows, selectedGroups, nowWithOffset),
     [rows, selectedGroups, nowWithOffset]
@@ -2316,6 +2221,7 @@ export default function App() {
           <div style={{marginBottom: '16px', fontSize: '0.9rem', background: '#e3f2fd', padding: '12px', borderRadius: '4px', border: '1px solid #90caf9'}}>
             <strong>Schedule Info:</strong><br/>
             Source: {customUrl ? 'Google Sheets' : 'Local CSV'}<br/>
+            Parser: {scheduleParser ? scheduleParser.name : scheduleParserId}<br/>
             {customUrl && (
               <>
                 Sheet Name: {sheetName || 'Loading...'}<br/>
@@ -2325,11 +2231,11 @@ export default function App() {
             {!customUrl && debugMode && (
               <>Local File: {selectedCsvFile}<br/></>
             )}
-            Total Sessions (all days): {allRows.length}<br/>
+            Total Sessions (all days): {sessions.length}<br/>
             Sessions (selected day): {rows.length}<br/>
             Run Groups: {groups.join(', ') || 'None'}<br/>
             Selected Groups: {selectedGroups.join(', ')}<br/>
-            Meetings Found: {relevantMeetings.length}<br/>
+            Activities Found: {relevantActivities.length}<br/>
             Upcoming Sessions: {Object.keys(nextSessionsByGroup).length} groups
           </div>
           
@@ -2343,14 +2249,7 @@ export default function App() {
             >
               <option value="schedule.csv">schedule.csv (default)</option>
               <option value="2024 Brady Memorial - Schedule.csv">2024 Brady Memorial</option>
-              <option value="2024 Santa's Toy Run - Schedule.csv">2024 Santa's Toy Run</option>
-              <option value="2024 Savannah Sizzler - Schedule.csv">2024 Savannah Sizzler</option>
-              <option value="2025 Brady Skelebration - Schedule.csv">2025 Brady Skelebration</option>
-              <option value="2025 Flatten The Curve - Schedule.csv">2025 Flatten The Curve</option>
-              <option value="2025 Santa's Toy Run - Schedule.csv">2025 Santa's Toy Run</option>
-              <option value="2025 Sinko De Mayo - Schedule.csv">2025 Sinko De Mayo</option>
               <option value="2025 Spring Brake - Schedule.csv">2025 Spring Brake</option>
-              <option value="2025 Winter Meltdown - Schedule.csv">2025 Winter Meltdown</option>
               <option value="2026 New Year, New Gear - Schedule.csv">2026 New Year, New Gear</option>
             </select>
           </div>
@@ -2513,44 +2412,63 @@ export default function App() {
           </div>
           <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
             <div>
-              <div style={{marginBottom: '12px'}}>
-                <label style={{display: 'block', marginBottom: '6px', fontWeight: 500}}>
-                  Events
-                </label>
-                {rssLoading && (
-                  <div style={{fontSize: '0.85rem', color: '#666'}}>
-                    Loading events from nasa-se.com...
-                  </div>
-                )}
-                {!rssLoading && rssError && (
-                  <div style={{
-                    fontSize: '0.8rem',
-                    color: '#c62828',
-                    background: '#ffebee',
-                    border: '1px solid #ef5350',
-                    borderRadius: '4px',
-                    padding: '8px'
-                  }}>
-                    {rssError}
-                  </div>
-                )}
-                {!rssLoading && !rssError && rssEvents.length > 0 && (
-                  <>
-                    <select
-                      value={selectedRssEventId}
-                      onChange={handleRssEventSelect}
-                      style={{width: '100%', padding: '8px', fontSize: '0.9rem', marginBottom: '4px'}}
-                    >
-                      <option value="">Select an event...</option>
-                      {rssEvents.map(ev => (
-                        <option key={ev.id} value={ev.id}>{ev.title}</option>
-                      ))}
-                    </select>
-                    <div style={{fontSize: '0.8rem', color: '#666'}}>
+              {showParserSelect && (
+                <div style={{marginBottom: '12px'}}>
+                  <label style={{display: 'block', marginBottom: '6px', fontWeight: 500}}>
+                    Organization
+                  </label>
+                  <select
+                    value={scheduleParserId}
+                    onChange={e => setScheduleParserId(e.target.value)}
+                    style={{width: '100%', padding: '8px', fontSize: '0.9rem'}}
+                  >
+                    {SCHEDULE_PARSERS.map(parser => (
+                      <option key={parser.id} value={parser.id}>{parser.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {isNasaSeParser && (
+                <div style={{marginBottom: '12px'}}>
+                  <label style={{display: 'block', marginBottom: '6px', fontWeight: 500}}>
+                    Events
+                  </label>
+                  {rssLoading && (
+                    <div style={{fontSize: '0.85rem', color: '#666'}}>
+                      Loading events from nasa-se.com...
                     </div>
-                  </>
-                )}
-              </div>
+                  )}
+                  {!rssLoading && rssError && (
+                    <div style={{
+                      fontSize: '0.8rem',
+                      color: '#c62828',
+                      background: '#ffebee',
+                      border: '1px solid #ef5350',
+                      borderRadius: '4px',
+                      padding: '8px'
+                    }}>
+                      {rssError}
+                    </div>
+                  )}
+                  {!rssLoading && !rssError && rssEvents.length > 0 && (
+                    <>
+                      <select
+                        value={selectedRssEventId}
+                        onChange={handleRssEventSelect}
+                        style={{width: '100%', padding: '8px', fontSize: '0.9rem', marginBottom: '4px'}}
+                      >
+                        <option value="">Select an event...</option>
+                        {rssEvents.map(ev => (
+                          <option key={ev.id} value={ev.id}>{ev.title}</option>
+                        ))}
+                      </select>
+                      <div style={{fontSize: '0.8rem', color: '#666'}}>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
               
               <label style={{display: 'block', marginBottom: '8px', fontWeight: 500}}>
                 Google Sheets URL:
@@ -2821,10 +2739,10 @@ export default function App() {
           {/* Upcoming Sessions */}
           {upcomingCount > 0 && (
             <>
-              {/* Meetings */}
+              {/* Activities */}
               <div style={{marginBottom: '16px'}}>
-                {relevantMeetings.map((meeting, idx) => {
-                  const isFuture = meeting.start && nowWithOffset <= addMinutes(meeting.start, 10)
+                {relevantActivities.map((activity, idx) => {
+                  const isFuture = activity.start && nowWithOffset <= addMinutes(activity.start, 10)
                   if (!isFuture) return null
                   return (
                     <div 
@@ -2837,7 +2755,7 @@ export default function App() {
                       }}
                     >
                       <div style={{fontSize: isCompactMode ? '0.9rem' : undefined}}>
-                        {meeting.session} — {meeting.start ? formatTimeWithAmPm(meeting.start) : meeting.customTime}
+                        {activity.title} — {activity.start ? formatTimeWithAmPm(activity.start) : 'TBD'}
                       </div>
                       <div 
                         className="countdown" 
@@ -2846,7 +2764,7 @@ export default function App() {
                           marginTop: isCompactMode ? '2px' : undefined
                         }}
                       >
-                        Starts in {formatTimeUntil(meeting.start - nowWithOffset, meeting, nowWithOffset)}
+                        Starts in {formatTimeUntil(activity.start - nowWithOffset, activity, nowWithOffset)}
                       </div>
                     </div>
                   )

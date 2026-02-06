@@ -99,21 +99,24 @@ Flow:
 ## Adding a New Schedule
 
 1. Export schedule as CSV from your source.
-2. Place it in `public/test-schedules/[event-name].csv`.
-3. Add to the dropdown in `App.jsx`.
-4. Tests will validate the schedule format.
+2. For the debug UI, place it in `public/test-schedules/[event-name].csv`.
+3. Add it to the debug dropdown in `App.jsx` if needed.
+4. For automated parser tests, add the file to `src/schedule/parsers/<parserId>/fixtures/` and update the manifest.
+
+## Adding a New Parser
+
+1. Create a new parser module in `src/schedule/parsers/` that returns a `NormalizedSchedule`.
+2. Add any organization-specific helpers in a subfolder (e.g., `src/schedule/parsers/<id>/`).
+3. Register the parser in `src/schedule/parsers/registry.js`.
+4. Add fixtures under `src/schedule/parsers/<id>/fixtures/` and a `manifest.json`.
+5. Add a focused parser test under `src/schedule/parsers/`.
+6. Document the CSV rules in `docs/PARSERS.md`.
 
 ## CSV Format Guidelines
 
-Your CSV must include:
+Parser CSV formats are defined per organization. See `docs/PARSERS.md` for details.
 
-1. Day headers: rows with "Friday", "Saturday", or "Sunday" in column 1.
-2. Time format: "H:MM AM/PM" or "HH:MM AM/PM".
-3. Duration: integer minutes in column 2.
-4. Track content: session names in column 3.
-5. Notes: meeting times and info in columns 4 or 5.
-
-Example:
+Example (NASA-SE):
 
 ```csv
 Friday,,Registration,,,

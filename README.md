@@ -40,35 +40,23 @@ Open http://localhost:5173 in your browser.
 ### For Event Organizers
 
 1. Export schedule as CSV with day headers and time columns
-2. Add to `public/test-schedules/` or replace `public/schedule.csv`
-3. Select from dropdown in UI
+2. Replace `public/schedule.csv` for the live schedule
+3. Optionally add debug CSVs under `public/test-schedules/` and select them from the UI
+4. Select the organization (parser) and schedule file from the UI
 4. Display on paddock kiosk/TV
 
-## CSV Format
+## CSV Format (Parser Modules)
 
-```csv
-Friday,,Registration,,,
-8:00 AM,30,HPDE 1,,,"On Track"
-9:00 AM,60,HPDE 2,,,
-12:00 PM,60,Lunch,,,"12:00 All Racers Meeting"
-Saturday,,Qualifying,,,
-...
-```
-
-**Requirements:**
-- Day headers: "Friday", "Saturday", "Sunday" in first column
-- Time format: "H:MM AM/PM" or "HH:MM AM/PM"
-- Duration: Integer minutes
-- Session names in third column
-- Meeting notes in columns 4-5
-
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed CSV guidelines.
+Parsers are modular and each organization can define its own CSV format. See:
+- [docs/PARSERS.md](docs/PARSERS.md) for parser-specific rules and mappings
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for how to add or update parsers
 
 ## Documentation
 
 - **[Architecture](docs/ARCHITECTURE.md)** - Technical design and data flow
 - **[Development Guide](docs/DEVELOPMENT.md)** - Setup, workflow, and contributing
 - **[API Reference](docs/API.md)** - Function signatures and usage
+- **[Parsers](docs/PARSERS.md)** - Parser rules and CSV format details
 - **[Testing](docs/TESTING.md)** - Test structure and running tests
 
 ## Tech Stack
@@ -115,7 +103,7 @@ Without these values the UI will fall back to in-page notifications only. Notifi
 ## Testing
 
 Tests validate:
-- CSV parsing across 10+ schedules
+- CSV parsing across parser fixtures
 - Time parsing with/without AM/PM
 - Session filtering and deduplication
 - Run group extraction and normalization
@@ -178,4 +166,4 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 
 - **Issues**: [GitHub Issues](https://github.com/brandonstrohmeyer/nasa-session-dashboard/issues)
 - **Documentation**: [docs/](docs/)
-- **Examples**: See `public/test-schedules/` for sample CSV files
+- **Examples**: Debug samples in `public/test-schedules/`; parser fixtures in `src/schedule/parsers/<parserId>/fixtures/`

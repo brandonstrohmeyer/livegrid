@@ -91,6 +91,13 @@ npm run test:ui      # Open Vitest UI
 npm run test:run     # Run tests once
 ```
 
+Version bump options (default is patch):
+```bash
+npm run build --bump=patch
+npm run build --bump=minor
+npm run build --bump=major
+```
+
 ### Web Push Configuration
 
 Lock-screen notifications use Firebase Cloud Messaging (FCM). Configure the following before building for production:

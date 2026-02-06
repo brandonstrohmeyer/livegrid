@@ -35,6 +35,13 @@ npm run test:ui      # Open Vitest UI
 npm run test:run     # Run tests once (CI mode)
 ```
 
+Version bump options (default is patch):
+```bash
+npm run build --bump=patch
+npm run build --bump=minor
+npm run build --bump=major
+```
+
 ## Environment Variables
 
 Create a `.env.local` (or `.env`) file with your Firebase configuration:

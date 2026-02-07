@@ -30,6 +30,9 @@ const SHEETS_DEFAULT_RANGE_END = 'Z'
 const SHEETS_WIDE_RANGE_END = 'AZ'
 const SHEETS_RATE_LIMIT_WINDOW_MS = 60 * 1000
 const SHEETS_RATE_LIMIT_MAX = 60
+const HOD_MA_ORG_URL = 'https://www.motorsportreg.com/orgs/hooked-on-driving/mid-atlantic'
+const HOD_MA_EVENT_LIMIT = 20
+const HOD_MA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 type SheetTab = {
   sheetId: number
@@ -94,6 +97,65 @@ function tokenFingerprint(token?: string) {
     console.warn('[functions] Failed to hash token for logging', err)
     return 'hash_error'
   }
+}
+
+function decodeHtmlEntities(input: string) {
+  return input
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&nbsp;/gi, ' ')
+}
+
+function extractEventLinksFromOrg(html: string) {
+  const links = new Set<string>()
+  const hrefRegex = /href=["']([^"']+)["']/gi
+  let match: RegExpExecArray | null
+  while ((match = hrefRegex.exec(html))) {
+    const rawHref = match[1] || ''
+    if (!rawHref.includes('/events/')) continue
+    const url = new URL(rawHref, 'https://www.motorsportreg.com')
+    if (!/\/events\/[^/]+-\d{5,}\/?$/.test(url.pathname)) continue
+    links.add(`https://www.motorsportreg.com${url.pathname}`)
+  }
+  return Array.from(links)
+}
+
+function extractSheetUrlFromHtml(html: string) {
+  const match = html.match(/https?:\/\/docs\.google\.com\/spreadsheets\/[^\s"'<>]+/i)
+  if (!match) return null
+  return decodeHtmlEntities(match[0])
+}
+
+function titleFromEventUrl(eventUrl: string) {
+  try {
+    const url = new URL(eventUrl)
+    const parts = url.pathname.split('/events/')
+    const slug = parts[1] || ''
+    const cleaned = slug.replace(/-\d{5,}\/?$/, '').replace(/[-_]+/g, ' ').trim()
+    if (!cleaned) return 'Event'
+    return cleaned
+      .split(' ')
+      .map(word => (word.length <= 3 ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)))
+      .join(' ')
+  } catch (err) {
+    return 'Event'
+  }
+}
+
+function extractEventTitle(html: string, fallbackUrl: string) {
+  const ogMatch = html.match(/property=["']og:title["'][^>]*content=["']([^"']+)["']/i)
+  if (ogMatch?.[1]) return decodeHtmlEntities(ogMatch[1]).trim()
+
+  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
+  if (titleMatch?.[1]) return decodeHtmlEntities(titleMatch[1]).trim()
+
+  const h1Match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i)
+  if (h1Match?.[1]) return decodeHtmlEntities(h1Match[1]).trim()
+
+  return titleFromEventUrl(fallbackUrl)
 }
 
 function buildRequestId() {
@@ -201,6 +263,65 @@ export const nasaFeed = onRequest({ cors: true, region: SCHEDULER_REGION }, asyn
   } catch (err) {
     console.error('Error proxying nasa-se feed', err)
     res.status(500).send('Error fetching feed')
+  }
+})
+
+export const hodMaEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('')
+    return
+  }
+  if (req.method !== 'GET') {
+    res.status(405).send('Method not allowed')
+    return
+  }
+
+  try {
+    const upstream = await fetch(HOD_MA_ORG_URL, {
+      headers: {
+        'User-Agent': HOD_MA_USER_AGENT
+      }
+    })
+    if (!upstream.ok) {
+      console.error('Upstream HOD-MA org error', upstream.status, upstream.statusText)
+      res.status(502).json({ error: 'Failed to fetch upstream events' })
+      return
+    }
+
+    const body = await upstream.text()
+    const eventLinks = extractEventLinksFromOrg(body).slice(0, HOD_MA_EVENT_LIMIT)
+    const events = []
+
+    for (const eventUrl of eventLinks) {
+      try {
+        const eventResp = await fetch(eventUrl, {
+          headers: { 'User-Agent': HOD_MA_USER_AGENT }
+        })
+        if (!eventResp.ok) continue
+        const eventHtml = await eventResp.text()
+        const sheetUrl = extractSheetUrlFromHtml(eventHtml)
+        if (!sheetUrl) continue
+
+        const title = extractEventTitle(eventHtml, eventUrl)
+        const idMatch = eventUrl.match(/-(\d{5,})(?:\/)?$/)
+        const eventId: string = idMatch && idMatch[1]
+          ? `hod-${idMatch[1]}`
+          : `hod-${events.length + 1}`
+        events.push({
+          id: eventId,
+          title,
+          sheetUrl,
+          eventUrl
+        })
+      } catch (err) {
+        console.warn('Failed to inspect HOD-MA event', eventUrl, err)
+      }
+    }
+
+    res.status(200).json({ events })
+  } catch (err) {
+    console.error('Error fetching HOD-MA events', err)
+    res.status(500).json({ error: 'Error fetching events' })
   }
 })
 

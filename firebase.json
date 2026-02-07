@@ -22,6 +22,10 @@
         "function": "nasaFeed"
       },
       {
+        "source": "/api/hod-ma-events",
+        "function": "hodMaEvents"
+      },
+      {
         "source": "/api/register-push-token",
         "function": "registerPushToken"
       },

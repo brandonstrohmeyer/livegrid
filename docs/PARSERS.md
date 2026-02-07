@@ -10,6 +10,18 @@ Each parser module:
 - Lives under `src/schedule/parsers/` and is registered in `src/schedule/parsers/registry.js`.
 - Can include fixtures and taxonomy metadata for tests.
 
+## Automatic Parser Detection (Google Sheets URLs)
+
+When a **custom Google Sheets URL** is used, the app automatically selects a parser by inspecting the CSV structure:
+
+- **HOD-MA** is selected if a header row contains both an **Activity/Event** column and a **Time/Start Time** column.
+- **NASA-SE** is selected if the sheet includes at least one **day header** (e.g., Friday/Saturday/Sunday) and at least three **time rows** with numeric durations.
+
+If no parser can be confidently detected, the load fails with:
+```
+Unable to determine parser automatically. Ensure the sheet matches NASA-SE or HOD-MA formats.
+```
+
 Parser fixtures live here:
 
 ```

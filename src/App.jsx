@@ -21,7 +21,7 @@ import {
   sendServerPush
 } from './pushNotifications'
 import { addMinutes } from './scheduleUtils.js'
-import { parseCsvSchedule, SCHEDULE_PARSERS, DEFAULT_SCHEDULE_PARSER_ID } from './schedule/parsers/registry.js'
+import { parseCsvSchedule, detectParserId, SCHEDULE_PARSERS, DEFAULT_SCHEDULE_PARSER_ID } from './schedule/parsers/registry.js'
 
 const DEFAULT_STALE_THRESHOLD_MINUTES = 5
 const createEmptySchedule = () => ({
@@ -372,8 +372,13 @@ export default function App() {
   const [rssEvents, setRssEvents] = useState([])
   const [rssLoading, setRssLoading] = useState(false)
   const [rssError, setRssError] = useState(null)
+  const [hodEvents, setHodEvents] = useState([])
+  const [hodLoading, setHodLoading] = useState(false)
+  const [hodError, setHodError] = useState(null)
   const [selectedRssEventId, setSelectedRssEventId] = useState('')
+  const [selectedHodEventId, setSelectedHodEventId] = useState('')
   const rssFetchStartedRef = useRef(false)
+  const hodFetchStartedRef = useRef(false)
   const sheetSelectionRef = useRef({ url: '', spreadsheetId: '', sheetId: null, sheetTitle: '', spreadsheetTitle: '' })
   const [forceShowStaleBanner, setForceShowStaleBanner] = useState(false)
   const upcomingNotificationTrackerRef = useRef(new Map())
@@ -415,6 +420,8 @@ export default function App() {
   const [pushSetupError, setPushSetupError] = useState(null)
   const [pushPaused, setPushPaused] = useState(false)
   const [notificationLeadInput, setNotificationLeadInput] = useState(String(notificationLeadMinutes))
+  const [authNotice, setAuthNotice] = useState(null)
+  const authNoticeTimerRef = useRef(null)
   const resolvedTimezone = useMemo(() => {
     try {
       return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
@@ -435,6 +442,14 @@ export default function App() {
   useEffect(() => {
     setDayOffsetInput(String(dayOffset))
   }, [dayOffset])
+
+  useEffect(() => {
+    return () => {
+      if (authNoticeTimerRef.current) {
+        clearTimeout(authNoticeTimerRef.current)
+      }
+    }
+  }, [])
   const appOrigin = useMemo(() => {
     if (typeof window !== 'undefined' && window.location) {
       return window.location.origin
@@ -470,6 +485,14 @@ export default function App() {
   const staleThresholdLabel = useMemo(() => (
     staleThresholdMinutes === 1 ? '1 minute' : `${staleThresholdMinutes} minutes`
   ), [staleThresholdMinutes])
+  const combinedEvents = useMemo(() => ([
+    ...rssEvents.map(ev => ({ ...ev, source: 'nasa', label: `[NASA-SE] ${ev.title}` })),
+    ...hodEvents.map(ev => ({ ...ev, source: 'hod', label: `[HOD-MA] ${ev.title}` }))
+  ]), [rssEvents, hodEvents])
+  const selectedEventId = useMemo(
+    () => selectedRssEventId || selectedHodEventId || '',
+    [selectedRssEventId, selectedHodEventId]
+  )
 
   const hasActiveSchedule = useMemo(() => {
     if (customUrl) return true
@@ -480,8 +503,6 @@ export default function App() {
   const scheduleParser = useMemo(() => (
     SCHEDULE_PARSERS.find(parser => parser.id === scheduleParserId) || SCHEDULE_PARSERS[0] || null
   ), [scheduleParserId])
-  const isNasaSeParser = scheduleParser?.id === 'nasa-se'
-  const showParserSelect = SCHEDULE_PARSERS.length > 1
 
   useEffect(() => {
     if (!scheduleParser) return
@@ -692,6 +713,15 @@ export default function App() {
   }, [rssEvents, customUrl])
 
   useEffect(() => {
+    if (!hodEvents.length || !customUrl) {
+      setSelectedHodEventId('')
+      return
+    }
+    const match = hodEvents.find(ev => ev.sheetUrl === customUrl)
+    setSelectedHodEventId(match ? match.id : '')
+  }, [hodEvents, customUrl])
+
+  useEffect(() => {
     if (!supportsNotifications) return undefined
     if (typeof navigator === 'undefined' || !navigator.permissions || !navigator.permissions.query) return undefined
     let permissionStatus
@@ -747,15 +777,22 @@ export default function App() {
   
   // Preferences sync is handled via context
 
-  // Lazy-load NASA-SE RSS events when options panel is opened
+  // Lazy-load event lists when options panel is opened
   useEffect(() => {
     if (!optionsExpanded) return
-    if (!isNasaSeParser) return
-    if (rssFetchStartedRef.current) return
-    if (typeof window === 'undefined' || typeof DOMParser === 'undefined') return
-    rssFetchStartedRef.current = true
-    fetchRssEvents()
-  }, [optionsExpanded, isNasaSeParser])
+
+    if (!rssFetchStartedRef.current) {
+      if (typeof window !== 'undefined' && typeof DOMParser !== 'undefined') {
+        rssFetchStartedRef.current = true
+        fetchRssEvents()
+      }
+    }
+
+    if (!hodFetchStartedRef.current) {
+      hodFetchStartedRef.current = true
+      fetchHodEvents()
+    }
+  }, [optionsExpanded])
   
   // Toggle body class for debug mode overflow handling and disable auto-scroll
   useEffect(() => {
@@ -802,6 +839,18 @@ export default function App() {
       setNotificationStatus(prev => (prev && prev.id === id ? null : prev))
     }, 4000)
   }, [setNotificationStatus])
+  const showAuthNotice = useCallback((message) => {
+    setAuthNotice(message)
+    if (authNoticeTimerRef.current) {
+      clearTimeout(authNoticeTimerRef.current)
+    }
+    authNoticeTimerRef.current = setTimeout(() => {
+      setAuthNotice(null)
+    }, 4000)
+  }, [])
+  const handleAppleSignInNotice = useCallback(() => {
+    showAuthNotice('Apple charges $99 for this feature, sorry.')
+  }, [showAuthNotice])
 
   const cleanupPushSubscription = useCallback(async () => {
     if (!pushToken) return
@@ -1068,6 +1117,34 @@ export default function App() {
     }
   }
 
+  // Fetch HOD-MA events from MotorsportReg and extract Google Sheets links
+  async function fetchHodEvents() {
+    try {
+      setHodLoading(true)
+      setHodError(null)
+      let hodUrl
+      if (window.location.hostname === 'localhost') {
+        // Functions emulator: http://localhost:5001/[project]/us-central1/hodMaEvents
+        hodUrl = 'http://localhost:5001/livegrid-c33c6/us-central1/hodMaEvents'
+      } else {
+        // Production rewrite
+        hodUrl = '/api/hod-ma-events'
+      }
+      const response = await fetch(hodUrl)
+      if (!response.ok) {
+        throw new Error(`Events request failed (${response.status})`)
+      }
+      const payload = await response.json().catch(() => ({}))
+      const events = Array.isArray(payload?.events) ? payload.events : []
+      setHodEvents(events)
+      setHodLoading(false)
+    } catch (err) {
+      console.error('Failed to load HOD-MA events', err)
+      setHodError('Could not load events from MotorsportReg. You can still paste a Google Sheets URL manually.')
+      setHodLoading(false)
+    }
+  }
+
   // Fetch and parse schedule
   async function fetchSchedule() {
     // No schedule selected: do not fetch and do not surface stale/errors
@@ -1094,6 +1171,7 @@ export default function App() {
       setConnectionStatus('online')
       let csvText = ''
       let sourceLabel = 'schedule.csv'
+      let parserIdToUse = scheduleParserId
 
     if (customUrl) {
       let spreadsheetId = ''
@@ -1208,6 +1286,12 @@ export default function App() {
         }
 
         sourceLabel = tabTitle || tabSpreadsheetTitle || customUrl
+
+        const detection = detectParserId({ csvText, sourceLabel })
+        parserIdToUse = detection.parserId
+        if (parserIdToUse !== scheduleParserId) {
+          setScheduleParserId(parserIdToUse)
+        }
       } else if (debugMode) {
         if (sheetDayTabs.length) {
           setSheetDayTabs([])
@@ -1238,7 +1322,7 @@ export default function App() {
 
       const parsedSchedule = parseCsvSchedule({
         csvText,
-        parserId: scheduleParserId,
+        parserId: parserIdToUse,
         dayOffset,
         sourceLabel
       })
@@ -1273,6 +1357,8 @@ export default function App() {
       // Determine error type
       if (!navigator.onLine) {
         setFetchError('No internet connection')
+      } else if (error.message && error.message.includes('Unable to determine parser automatically')) {
+        setFetchError(error.message)
       } else if (error.message && (error.message.includes('Failed to fetch') || error.message.includes('Sheets API request failed'))) {
         setFetchError('Unable to load Google Sheet. Make sure the sheet is publicly accessible ("Anyone with the link can view"). Check sharing settings and try again.')
       } else if (error.name === 'SyntaxError' || error.message.includes('parse')) {
@@ -1707,14 +1793,27 @@ export default function App() {
     }
   }
   
-  // Handle selection of an event from the NASA-SE RSS feed
-  function handleRssEventSelect(event) {
+  // Handle selection of an event from the combined event list
+  function handleEventSelect(event) {
     const eventId = event.target.value
-    setSelectedRssEventId(eventId)
-    const found = rssEvents.find(ev => ev.id === eventId)
-    if (!found) return
+    if (!eventId) {
+      setSelectedRssEventId('')
+      setSelectedHodEventId('')
+      return
+    }
 
-    setCustomUrl(found.sheetUrl)
+    const nasaMatch = rssEvents.find(ev => ev.id === eventId)
+    if (nasaMatch) {
+      setSelectedRssEventId(eventId)
+      setSelectedHodEventId('')
+      setCustomUrl(nasaMatch.sheetUrl)
+    } else {
+      const hodMatch = hodEvents.find(ev => ev.id === eventId)
+      if (!hodMatch) return
+      setSelectedHodEventId(eventId)
+      setSelectedRssEventId('')
+      setCustomUrl(hodMatch.sheetUrl)
+    }
 
     // Exit demo/debug mode and reset offsets when switching to a live sheet
     if (debugMode) {
@@ -1768,6 +1867,40 @@ export default function App() {
   
   return (
     <div style={{ display: 'flex', height: viewportHeightStyle, minHeight: viewportMinHeightStyle }}>
+      {notificationStatus && notificationStatus.message && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '16px',
+            right: '16px',
+            zIndex: 2000,
+            background: notificationStatus.type === 'error'
+              ? 'rgba(248,113,113,0.18)'
+              : notificationStatus.type === 'success'
+                ? 'rgba(16,185,129,0.18)'
+                : 'rgba(59,130,246,0.18)',
+            border: notificationStatus.type === 'error'
+              ? '1px solid rgba(248,113,113,0.5)'
+              : notificationStatus.type === 'success'
+                ? '1px solid rgba(16,185,129,0.45)'
+                : '1px solid rgba(59,130,246,0.45)',
+            color: notificationStatus.type === 'error'
+              ? '#fecaca'
+              : notificationStatus.type === 'success'
+                ? '#bbf7d0'
+                : '#bfdbfe',
+            borderRadius: '10px',
+            padding: '12px 14px',
+            fontSize: '0.85rem',
+            maxWidth: '320px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+            opacity: notificationStatus.fading ? 0 : 1,
+            transition: 'opacity 1s ease'
+          }}
+        >
+          {notificationStatus.message}
+        </div>
+      )}
       {/* React Pro Sidebar */}
       <Sidebar
         collapsed={!sidebarOpen && !isMobile}
@@ -2061,7 +2194,23 @@ export default function App() {
                     }}>
                       Sign in to sync your schedule and preferences.
                     </div>
-                    <FirebaseAuthUI />
+                    {authNotice && (
+                      <div
+                        style={{
+                          background: 'rgba(59,130,246,0.18)',
+                          border: '1px solid rgba(59,130,246,0.45)',
+                          color: '#bfdbfe',
+                          borderRadius: '8px',
+                          padding: '8px 10px',
+                          fontSize: '0.8rem',
+                          marginBottom: '10px',
+                          textAlign: 'center'
+                        }}
+                      >
+                        {authNotice}
+                      </div>
+                    )}
+                    <FirebaseAuthUI onAppleSignInClick={handleAppleSignInNotice} />
                     {authError && (
                       <div style={{marginTop: '10px', fontSize: '0.78rem', color: '#fca5a5'}}>
                         {authError.message || 'Sign-in failed. Please try again.'}
@@ -2689,67 +2838,67 @@ export default function App() {
       {optionsExpanded && (
         <div style={{marginBottom: '24px', padding: '20px', background: '#f8f9fa', borderRadius: '12px', border: '1px solid #e5e7eb', boxShadow: '0 1px 3px rgba(0,0,0,0.1)'}}>
           <div style={{marginBottom: '18px', color: '#334155', fontSize: '0.98rem', lineHeight: 1.5}}>
-             LiveGrid is in beta and does not replace the official schedule published by the event organizers. Always refer to the official event schedule.
+             LiveGrid displays schedule information from publicly available sources and is not affiliated with or endorsed by any event organizer. Always refer to the official schedule published by the event organizers.
           </div>
           <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
             <div>
-              {showParserSelect && (
-                <div style={{marginBottom: '12px'}}>
-                  <label style={{display: 'block', marginBottom: '6px', fontWeight: 500}}>
-                    Organization
-                  </label>
-                  <select
-                    value={scheduleParserId}
-                    onChange={e => setScheduleParserId(e.target.value)}
-                    style={{width: '100%', padding: '8px', fontSize: '0.9rem'}}
-                  >
-                    {SCHEDULE_PARSERS.map(parser => (
-                      <option key={parser.id} value={parser.id}>{parser.name}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {isNasaSeParser && (
-                <div style={{marginBottom: '12px'}}>
-                  <label style={{display: 'block', marginBottom: '6px', fontWeight: 500}}>
-                    Events
-                  </label>
+              <div style={{marginBottom: '12px'}}>
+                <label style={{display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '6px', fontWeight: 500}}>
+                  <span>Events</span>
                   {rssLoading && (
-                    <div style={{fontSize: '0.85rem', color: '#666'}}>
-                      Loading events from nasa-se.com...
+                    <span style={{fontSize: '0.8rem', color: '#666'}}>
+                      Loading nasa-se.com...
+                    </span>
+                  )}
+                  {hodLoading && (
+                    <span style={{fontSize: '0.8rem', color: '#666'}}>
+                      Loading MotorsportReg...
+                    </span>
+                  )}
+                </label>
+                {!rssLoading && rssError && (
+                  <div style={{
+                    fontSize: '0.8rem',
+                    color: '#c62828',
+                    background: '#ffebee',
+                    border: '1px solid #ef5350',
+                    borderRadius: '4px',
+                    padding: '8px',
+                    marginBottom: '6px'
+                  }}>
+                    {rssError}
+                  </div>
+                )}
+                {!hodLoading && hodError && (
+                  <div style={{
+                    fontSize: '0.8rem',
+                    color: '#c62828',
+                    background: '#ffebee',
+                    border: '1px solid #ef5350',
+                    borderRadius: '4px',
+                    padding: '8px',
+                    marginBottom: '6px'
+                  }}>
+                    {hodError}
+                  </div>
+                )}
+                {combinedEvents.length > 0 && (
+                  <>
+                    <select
+                      value={selectedEventId}
+                      onChange={handleEventSelect}
+                      style={{width: '100%', padding: '8px', fontSize: '0.9rem', marginBottom: '4px'}}
+                    >
+                      <option value="">Select an event...</option>
+                      {combinedEvents.map(ev => (
+                        <option key={ev.id} value={ev.id}>{ev.label}</option>
+                      ))}
+                    </select>
+                    <div style={{fontSize: '0.8rem', color: '#666'}}>
                     </div>
-                  )}
-                  {!rssLoading && rssError && (
-                    <div style={{
-                      fontSize: '0.8rem',
-                      color: '#c62828',
-                      background: '#ffebee',
-                      border: '1px solid #ef5350',
-                      borderRadius: '4px',
-                      padding: '8px'
-                    }}>
-                      {rssError}
-                    </div>
-                  )}
-                  {!rssLoading && !rssError && rssEvents.length > 0 && (
-                    <>
-                      <select
-                        value={selectedRssEventId}
-                        onChange={handleRssEventSelect}
-                        style={{width: '100%', padding: '8px', fontSize: '0.9rem', marginBottom: '4px'}}
-                      >
-                        <option value="">Select an event...</option>
-                        {rssEvents.map(ev => (
-                          <option key={ev.id} value={ev.id}>{ev.title}</option>
-                        ))}
-                      </select>
-                      <div style={{fontSize: '0.8rem', color: '#666'}}>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
+                  </>
+                )}
+              </div>
               
               <label style={{display: 'block', marginBottom: '8px', fontWeight: 500}}>
                 Google Sheets URL:

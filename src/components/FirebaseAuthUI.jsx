@@ -14,7 +14,7 @@ const googleProvider = new GoogleAuthProvider()
 googleProvider.setCustomParameters({ prompt: 'select_account' })
 const appleProvider = new OAuthProvider('apple.com')
 
-export default function FirebaseAuthUI() {
+export default function FirebaseAuthUI({ onAppleSignInClick } = {}) {
   const [showEmail, setShowEmail] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -90,6 +90,14 @@ export default function FirebaseAuthUI() {
       setLocalError(err?.message || 'Sign-in failed. Please try again.')
       setBusy(false)
     }
+  }
+
+  const handleAppleSignInClick = () => {
+    if (typeof onAppleSignInClick === 'function') {
+      onAppleSignInClick()
+      return
+    }
+    setLocalError('Apple charges $99 for this feature, sorry.')
   }
 
   const handleEmailSubmit = async (event) => {
@@ -204,7 +212,7 @@ export default function FirebaseAuthUI() {
           <button
             type="button"
             className="auth-btn"
-            onClick={() => runRedirect(appleProvider)}
+            onClick={handleAppleSignInClick}
             disabled={busy}
             aria-label="Sign in with Apple"
           >

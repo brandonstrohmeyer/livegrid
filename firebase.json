@@ -34,6 +34,10 @@
         "function": "sendPushNotification"
       },
       {
+        "source": "/api/sheets/**",
+        "function": "sheetsApi"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }

@@ -101,7 +101,10 @@ export function extractRunGroupsFromSessionName(sessionName) {
 
   normalizedName = normalizedName.replace(/test\s*&\s*tune/gi, 'Test/Tune')
 
-  if (/mock\s*race|all\s+racers\s+warmup/i.test(normalizedName)) {
+  if (/mock\s*race/i.test(normalizedName)) {
+    return ['Test/Tune']
+  }
+  if (/all\s+racers\s+warmup/i.test(normalizedName)) {
     return [...RACE_GROUPS]
   }
 
@@ -120,7 +123,11 @@ export function extractRunGroupsFromSessionName(sessionName) {
     const parts = normalizedName.split('&').map(p => p.trim()).filter(Boolean)
     let lastPrefix = null
     parts.forEach(part => {
-      if (/mock\s*race|all\s+racers\s+warmup/i.test(part)) {
+      if (/mock\s*race/i.test(part)) {
+        groups.add('Test/Tune')
+        return
+      }
+      if (/all\s+racers\s+warmup/i.test(part)) {
         RACE_GROUPS.forEach(group => groups.add(group))
         return
       }

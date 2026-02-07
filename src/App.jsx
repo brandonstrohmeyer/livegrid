@@ -31,6 +31,126 @@ const createEmptySchedule = () => ({
   days: [],
   warnings: []
 })
+
+const SHEETS_FUNCTION_NAME = 'sheetsApi'
+const rawFunctionsBaseUrl = (import.meta.env.VITE_FUNCTIONS_BASE_URL || '').trim()
+const useFunctionsEmulator = import.meta.env.DEV && import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true'
+const emulatorProjectId = (import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim()
+const emulatorBaseUrl = emulatorProjectId ? `http://localhost:5001/${emulatorProjectId}/us-central1` : ''
+const resolvedFunctionsBaseUrl = rawFunctionsBaseUrl || (useFunctionsEmulator ? emulatorBaseUrl : '')
+const functionsBaseUrl = resolvedFunctionsBaseUrl ? resolvedFunctionsBaseUrl.replace(/\/+$/, '') : ''
+
+const sheetsEndpoint = (path) => {
+  if (!functionsBaseUrl) {
+    return `/api/${path}`
+  }
+
+  if (functionsBaseUrl.endsWith(`/${SHEETS_FUNCTION_NAME}`)) {
+    return `${functionsBaseUrl}/${path}`
+  }
+
+  return `${functionsBaseUrl}/${SHEETS_FUNCTION_NAME}/${path}`
+}
+
+async function callSheetsApi(path, { method = 'GET', body } = {}) {
+  const response = await fetch(sheetsEndpoint(path), {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined
+  })
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Sheets API request failed (${response.status}): ${errorText}`)
+  }
+  const payload = await response.json().catch(() => ({}))
+  if (path.includes('/tabs')) {
+    console.log('[sheets-ui] /tabs response', payload)
+  }
+  return payload
+}
+
+function csvEscape(value) {
+  if (value === undefined || value === null) return ''
+  const str = String(value)
+  if (/[",\n\r]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`
+  }
+  return str
+}
+
+function rowsToCsv(headers, rows) {
+  const lines = []
+  if (Array.isArray(headers) && headers.length) {
+    lines.push(headers.map(csvEscape).join(','))
+  }
+  if (Array.isArray(rows)) {
+    rows.forEach(row => {
+      lines.push((Array.isArray(row) ? row : []).map(csvEscape).join(','))
+    })
+  }
+  return lines.join('\n')
+}
+
+function scoreTabTitle(title) {
+  if (!title) return 0
+  const value = title.toLowerCase()
+  let score = 0
+  if (value.includes('schedule')) score += 6
+  if (value.includes('run')) score += 3
+  if (value.includes('grid')) score += 3
+  if (value.includes('session')) score += 2
+  if (value.includes('hpde')) score += 2
+  if (value.includes('tt')) score += 2
+  if (value.includes('notes') || value.includes('info')) score -= 2
+  if (value.includes('archive') || value.includes('old')) score -= 3
+  return score
+}
+
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+function normalizeDayLabel(value) {
+  if (!value) return null
+  const text = value
+    .toString()
+    .replace(/\u00A0|\u202F/g, ' ')
+    .replace(/\u2013|\u2014/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+
+  if (/\bmonday\b|\bmon\b/.test(text)) return 'Monday'
+  if (/\btuesday\b|\btue\b|\btues\b/.test(text)) return 'Tuesday'
+  if (/\bwednesday\b|\bwed\b/.test(text)) return 'Wednesday'
+  if (/\bthursday\b|\bthu\b|\bthur\b|\bthurs\b/.test(text)) return 'Thursday'
+  if (/\bfriday\b|\bfri\b/.test(text)) return 'Friday'
+  if (/\bsaturday\b|\bsat\b/.test(text)) return 'Saturday'
+  if (/\bsunday\b|\bsun\b/.test(text)) return 'Sunday'
+  return null
+}
+
+function buildDayTabs(tabs = []) {
+  if (!Array.isArray(tabs)) return []
+  const seen = new Set()
+  const dayTabs = []
+  tabs.forEach(tab => {
+    const day = normalizeDayLabel(tab?.title || '')
+    if (!day || seen.has(day)) return
+    dayTabs.push({ day, sheetId: tab.sheetId, title: tab.title })
+    seen.add(day)
+  })
+  dayTabs.sort((a, b) => DAY_NAMES.indexOf(a.day) - DAY_NAMES.indexOf(b.day))
+  return dayTabs
+}
+
+function pickBestTab(tabs = []) {
+  if (!Array.isArray(tabs) || tabs.length === 0) return null
+  const scored = tabs.map(tab => ({
+    ...tab,
+    score: scoreTabTitle(tab.title)
+  }))
+  scored.sort((a, b) => b.score - a.score)
+  return scored[0]?.score > 0 ? scored[0] : tabs[0]
+}
 function useBreakpoint(maxWidth = 900) {
   const getInitial = () => {
     if (typeof window === 'undefined') return false
@@ -215,6 +335,8 @@ export default function App() {
   const [scheduleData, setScheduleData] = useState(createEmptySchedule)
   const [clockOffset, setClockOffset] = useState(demoOffsets.clockOffset)
   const [dayOffset, setDayOffset] = useState(demoOffsets.dayOffset)
+  const [clockOffsetInput, setClockOffsetInput] = useState(String(demoOffsets.clockOffset))
+  const [dayOffsetInput, setDayOffsetInput] = useState(String(demoOffsets.dayOffset))
   const [now, setNow] = useState(new Date())
   const [selectedGroups, setSelectedGroups] = useSyncedPreference('selectedGroups', () => (isDemoMode ? ['HPDE 1', 'TT Omega'] : ['All']))
   const [selectedDay, setSelectedDay] = useSyncedPreference('selectedDay', () => (isDemoMode ? 'Saturday' : null))
@@ -243,6 +365,7 @@ export default function App() {
   const [runGroupsExpanded, setRunGroupsExpanded] = useState(false)
   const [optionsExpanded, setOptionsExpanded] = useState(() => (isDemoMode ? false : !customUrl))
   const [sheetName, setSheetName] = useState('')
+  const [sheetDayTabs, setSheetDayTabs] = useState([])
   const [connectionStatus, setConnectionStatus] = useState('online') // 'online', 'offline', 'error'
   const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState(null)
   const [fetchError, setFetchError] = useState(null)
@@ -251,6 +374,7 @@ export default function App() {
   const [rssError, setRssError] = useState(null)
   const [selectedRssEventId, setSelectedRssEventId] = useState('')
   const rssFetchStartedRef = useRef(false)
+  const sheetSelectionRef = useRef({ url: '', spreadsheetId: '', sheetId: null, sheetTitle: '', spreadsheetTitle: '' })
   const [forceShowStaleBanner, setForceShowStaleBanner] = useState(false)
   const upcomingNotificationTrackerRef = useRef(new Map())
   const pushSyncPromiseRef = useRef(null)
@@ -303,6 +427,14 @@ export default function App() {
   useEffect(() => {
     setNotificationLeadInput(String(notificationLeadMinutes))
   }, [notificationLeadMinutes])
+
+  useEffect(() => {
+    setClockOffsetInput(String(clockOffset))
+  }, [clockOffset])
+
+  useEffect(() => {
+    setDayOffsetInput(String(dayOffset))
+  }, [dayOffset])
   const appOrigin = useMemo(() => {
     if (typeof window !== 'undefined' && window.location) {
       return window.location.origin
@@ -364,12 +496,44 @@ export default function App() {
     return now.getTime() - lastSuccessfulFetch.getTime() > staleThresholdMs
   }, [hasActiveSchedule, lastSuccessfulFetch, now, staleThresholdMs])
 
-  const availableDays = useMemo(() => scheduleData.days || [], [scheduleData])
-  const groups = useMemo(() => (
-    scheduleData.runGroups && scheduleData.runGroups.length > 0 ? scheduleData.runGroups : ['All']
-  ), [scheduleData])
+  const dayTabSelectionKey = useMemo(() => (
+    customUrl && sheetDayTabs.length > 0 ? (selectedDay || '') : ''
+  ), [customUrl, sheetDayTabs, selectedDay])
+
+  const availableDays = useMemo(() => {
+    if (sheetDayTabs.length > 0) {
+      return sheetDayTabs.map(entry => entry.day)
+    }
+    return scheduleData.days || []
+  }, [sheetDayTabs, scheduleData])
+
+  useEffect(() => {
+    if (customUrl) {
+      console.log('[sheets-ui] availableDays', { availableDays, sheetDayTabs })
+    }
+  }, [customUrl, availableDays, sheetDayTabs])
   const sessions = useMemo(() => scheduleData.sessions || [], [scheduleData])
   const activities = useMemo(() => scheduleData.activities || [], [scheduleData])
+  const groups = useMemo(() => {
+    const baseGroups = scheduleData.runGroups && scheduleData.runGroups.length > 0
+      ? scheduleData.runGroups
+      : ['All']
+    if (!selectedDay || !sessions.length) return baseGroups
+
+    const dayGroups = new Set()
+    let hasDaySessions = false
+    sessions.forEach(session => {
+      if (!session || !session.day || session.day !== selectedDay) return
+      hasDaySessions = true
+      const sessionGroups = Array.isArray(session.runGroupIds) ? session.runGroupIds : []
+      sessionGroups.forEach(group => dayGroups.add(group))
+    })
+
+    if (!hasDaySessions || dayGroups.size === 0) return baseGroups
+
+    const filtered = baseGroups.filter(group => group === 'All' || dayGroups.has(group))
+    return filtered.includes('All') ? filtered : ['All', ...filtered]
+  }, [scheduleData, sessions, selectedDay])
   const rows = useMemo(() => {
     if (!sessions.length) return []
     if (selectedDay && availableDays.includes(selectedDay)) {
@@ -928,85 +1092,162 @@ export default function App() {
     try {
       setFetchError(null)
       setConnectionStatus('online')
-      let csvPath
-      if (customUrl) {
-        // Convert Google Sheets edit URL to CSV export URL
-        let url = customUrl
-        const editMatch = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
-        if (editMatch) {
-          const spreadsheetId = editMatch[1]
-          
-          // Fetch sheet name from the HTML page
-          if (!sheetName) {
-            try {
-              const htmlResponse = await fetch(`https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`)
-              const htmlText = await htmlResponse.text()
-              const titleMatch = htmlText.match(/<title>([^<]+)<\/title>/)
-              if (titleMatch) {
-                const fullTitle = titleMatch[1]
-                // Check if it's an error page
-                if (fullTitle.includes('Page Not Found') || fullTitle.includes('Error')) {
-                  throw new Error('Google Sheet not found or not accessible')
-                }
-                // Remove " - Google Sheets" suffix if present
-                const cleanTitle = fullTitle.replace(/\s*-\s*Google Sheets\s*$/, '')
-                setSheetName(cleanTitle)
-              }
-            } catch (e) {
-              console.log('Could not fetch sheet name:', e)
-              // Don't set error here, let the CSV fetch fail and handle it
-            }
-          }
-          
-          // Extract sheet name from URL if present (gid parameter)
-          const gidMatch = url.match(/[#&]gid=(\d+)/)
-          if (gidMatch) {
-            // If gid is present, we'd need to map it to sheet name, but for now use default
-            url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv`
-          } else {
-            // Check if it's already a proper export URL
-            if (!url.includes('/export?') && !url.includes('/gviz/tq?')) {
-              url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv`
-            }
+      let csvText = ''
+      let sourceLabel = 'schedule.csv'
+
+    if (customUrl) {
+      let spreadsheetId = ''
+      let sheetId = null
+      let sheetTitle = ''
+      let spreadsheetTitle = ''
+      let dayTabs = []
+      console.log('[sheets-ui] Fetch start', {
+        customUrl,
+        selectedDay,
+        sheetSelection: sheetSelectionRef.current,
+        sheetDayTabs
+      })
+
+        const cached = sheetSelectionRef.current
+        if (cached.url === customUrl) {
+          spreadsheetId = cached.spreadsheetId || ''
+          sheetTitle = cached.sheetTitle || ''
+          spreadsheetTitle = cached.spreadsheetTitle || ''
+          if (Number.isFinite(cached.sheetId)) {
+            sheetId = cached.sheetId
           }
         }
-        csvPath = url
+
+        if (!spreadsheetId) {
+          const resolved = await callSheetsApi('sheets/resolve', {
+            method: 'POST',
+            body: { url: customUrl }
+          })
+          spreadsheetId = resolved?.spreadsheetId || ''
+        }
+
+        if (!spreadsheetId) {
+          throw new Error('Unable to resolve spreadsheet ID from URL.')
+        }
+
+        const gidMatch = customUrl.match(/[#&]gid=(\d+)/)
+        if (gidMatch) {
+          sheetId = Number(gidMatch[1])
+        }
+
+        const loadTabs = async () => {
+          console.log('[sheets-ui] Fetching tabs', { spreadsheetId })
+          const tabsResponse = await callSheetsApi(`sheets/${spreadsheetId}/tabs`)
+          const tabs = Array.isArray(tabsResponse) ? tabsResponse : (tabsResponse?.tabs || [])
+          const resolvedSpreadsheetTitle = Array.isArray(tabsResponse) ? '' : (tabsResponse?.spreadsheetTitle || '')
+          console.log('[sheets-ui] Tabs payload', {
+            spreadsheetId,
+            spreadsheetTitle: resolvedSpreadsheetTitle,
+            tabTitles: tabs.map(tab => tab?.title).filter(Boolean),
+            tabIds: tabs.map(tab => tab?.sheetId).filter(id => Number.isFinite(id))
+          })
+          return { tabs, spreadsheetTitle: resolvedSpreadsheetTitle }
+        }
+
+        const { tabs, spreadsheetTitle: tabsSpreadsheetTitle } = await loadTabs()
+        dayTabs = buildDayTabs(tabs)
+        console.log('[sheets-ui] Day tabs', { dayTabs })
+        setSheetDayTabs(dayTabs)
+        if (tabsSpreadsheetTitle) {
+          spreadsheetTitle = tabsSpreadsheetTitle
+        }
+
+        if (dayTabs.length > 0) {
+          const preferred = dayTabs.find(entry => entry.day === selectedDay)
+            || dayTabs.find(entry => entry.day === DAY_NAMES[nowWithOffset.getDay()])
+            || dayTabs[0]
+          console.log('[sheets-ui] Day tab selection', {
+            selectedDay,
+            nowDay: DAY_NAMES[nowWithOffset.getDay()],
+            preferred
+          })
+          if (!preferred) {
+            throw new Error('No day tabs found in the Google Sheet.')
+          }
+          sheetId = preferred.sheetId
+          sheetTitle = preferred.title || sheetTitle
+        } else if (!Number.isFinite(sheetId)) {
+          console.log('[sheets-ui] No day tabs detected, falling back to best tab', { selectedDay, tabsCount: tabs.length })
+          const chosen = pickBestTab(tabs)
+          if (!chosen) {
+            throw new Error('No tabs found in the Google Sheet.')
+          }
+          sheetId = chosen.sheetId
+          sheetTitle = chosen.title || sheetTitle
+        }
+
+        const tabResponse = await callSheetsApi(`sheets/${spreadsheetId}/tab/${sheetId}`)
+        const headers = Array.isArray(tabResponse?.headers) ? tabResponse.headers : []
+        const rows = Array.isArray(tabResponse?.rows) ? tabResponse.rows : []
+        if (!headers.length && !rows.length) {
+          throw new Error('Sheet returned no data.')
+        }
+
+        const tabTitle = tabResponse?.sheetTitle || sheetTitle || `Sheet ${sheetId}`
+        const tabSpreadsheetTitle = tabResponse?.spreadsheetTitle || spreadsheetTitle || ''
+        const displayTitle = tabSpreadsheetTitle
+          ? `${tabSpreadsheetTitle} - ${tabTitle}`
+          : tabTitle
+        csvText = rowsToCsv(headers, rows)
+        if (displayTitle) {
+          console.log('[sheets-ui] Display title', { displayTitle, tabTitle, tabSpreadsheetTitle })
+          setSheetName(displayTitle)
+        }
+
+        sheetSelectionRef.current = {
+          url: customUrl,
+          spreadsheetId,
+          sheetId,
+          sheetTitle: tabTitle,
+          spreadsheetTitle: tabSpreadsheetTitle
+        }
+
+        sourceLabel = tabTitle || tabSpreadsheetTitle || customUrl
       } else if (debugMode) {
-        // Debug mode: allow local CSV files
-        csvPath = selectedCsvFile === 'schedule.csv' ? '/schedule.csv' : `/test-schedules/${selectedCsvFile}`
+        if (sheetDayTabs.length) {
+          setSheetDayTabs([])
+        }
+        const csvPath = selectedCsvFile === 'schedule.csv' ? '/schedule.csv' : `/test-schedules/${selectedCsvFile}`
+        const response = await fetch(csvPath)
+
+        if (!response.ok) {
+          if (response.status === 404) {
+            throw new Error('Sheet not found (404). Please check the URL and make sure the sheet is publicly accessible ("Anyone with the link can view"), then try again.')
+          }
+          throw new Error(`Failed to load sheet (${response.status}): ${response.statusText}`)
+        }
+
+        csvText = await response.text()
+
+        if (csvText.trim().startsWith('<!DOCTYPE') || csvText.trim().startsWith('<html')) {
+          throw new Error('Received HTML instead of CSV. Sheet may not be publicly accessible.')
+        }
+
+        sourceLabel = selectedCsvFile
       } else {
-        // No URL and not in debug mode - this shouldn't happen due to early return
+        if (sheetDayTabs.length) {
+          setSheetDayTabs([])
+        }
         return
       }
-      const response = await fetch(csvPath)
-      
-      // Check if response is ok
-      if (!response.ok) {
-        if (response.status === 404) {
-          throw new Error('Sheet not found (404). Please check the URL and make sure the sheet is publicly accessible ("Anyone with the link can view"), then try again.')
-        }
-        throw new Error(`Failed to load sheet (${response.status}): ${response.statusText}`)
-      }
-      
-      const text = await response.text()
-      
-      // Check if we got HTML error page instead of CSV
-      if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
-        throw new Error('Received HTML instead of CSV. Sheet may not be publicly accessible.')
-      }
-      
+
       const parsedSchedule = parseCsvSchedule({
-        csvText: text,
+        csvText,
         parserId: scheduleParserId,
-        dayOffset
+        dayOffset,
+        sourceLabel
       })
       setScheduleData(parsedSchedule)
       
       const days = parsedSchedule.days || []
       
       // Auto-select day based on current/mocked time (only if no day is currently selected or if auto-scroll is enabled)
-      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-      const todayName = dayNames[nowWithOffset.getDay()]
+      const todayName = DAY_NAMES[nowWithOffset.getDay()]
       const defaultDay = days.includes(todayName) ? todayName : days[0]
       
       // Only auto-select day if: no day selected yet, or auto-scroll is enabled (user wants automatic updates)
@@ -1032,7 +1273,7 @@ export default function App() {
       // Determine error type
       if (!navigator.onLine) {
         setFetchError('No internet connection')
-      } else if (error.message && error.message.includes('Failed to fetch')) {
+      } else if (error.message && (error.message.includes('Failed to fetch') || error.message.includes('Sheets API request failed'))) {
         setFetchError('Unable to load Google Sheet. Make sure the sheet is publicly accessible ("Anyone with the link can view"). Check sharing settings and try again.')
       } else if (error.name === 'SyntaxError' || error.message.includes('parse')) {
         setFetchError('Error parsing schedule data. Make sure the Google Sheet follows the correct format.')
@@ -1055,7 +1296,7 @@ export default function App() {
     fetchSchedule()
     const timer = setInterval(fetchSchedule, 30000)
     return () => clearInterval(timer)
-  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasActiveSchedule, scheduleParserId])
+  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasActiveSchedule, scheduleParserId, dayTabSelectionKey])
   
   useEffect(() => {
     upcomingNotificationTrackerRef.current.clear()
@@ -2263,8 +2504,28 @@ export default function App() {
                 min={-720}
                 max={720}
                 step={1}
-                value={clockOffset}
-                onChange={e => setClockOffset(Number(e.target.value))}
+                value={clockOffsetInput}
+                onChange={e => {
+                  const value = e.target.value
+                  setClockOffsetInput(value)
+                  if (value === '' || value === '-' || value === '+') return
+                  const parsed = Number(value)
+                  if (!Number.isNaN(parsed)) {
+                    setClockOffset(parsed)
+                  }
+                }}
+                onBlur={() => {
+                  if (clockOffsetInput === '' || clockOffsetInput === '-' || clockOffsetInput === '+') {
+                    setClockOffsetInput(String(clockOffset))
+                    return
+                  }
+                  const parsed = Number(clockOffsetInput)
+                  if (Number.isNaN(parsed)) {
+                    setClockOffsetInput(String(clockOffset))
+                    return
+                  }
+                  setClockOffset(parsed)
+                }}
                 style={{padding: '6px', width: '80px'}}
               />
               <button
@@ -2285,8 +2546,28 @@ export default function App() {
                 min={-7}
                 max={7}
                 step={1}
-                value={dayOffset}
-                onChange={e => setDayOffset(Number(e.target.value))}
+                value={dayOffsetInput}
+                onChange={e => {
+                  const value = e.target.value
+                  setDayOffsetInput(value)
+                  if (value === '' || value === '-' || value === '+') return
+                  const parsed = Number(value)
+                  if (!Number.isNaN(parsed)) {
+                    setDayOffset(parsed)
+                  }
+                }}
+                onBlur={() => {
+                  if (dayOffsetInput === '' || dayOffsetInput === '-' || dayOffsetInput === '+') {
+                    setDayOffsetInput(String(dayOffset))
+                    return
+                  }
+                  const parsed = Number(dayOffsetInput)
+                  if (Number.isNaN(parsed)) {
+                    setDayOffsetInput(String(dayOffset))
+                    return
+                  }
+                  setDayOffset(parsed)
+                }}
                 style={{padding: '6px', width: '80px'}}
               />
               <button

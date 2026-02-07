@@ -26,11 +26,15 @@ npm run test:run
 - Ensures run group extraction is consistent
 - Verifies session counts per day
 
-### Parser Fixture Tests (nasaSeParser.fixtures.test.js)
+### Parser Fixture Tests
 
-- Validates the normalized schedule contract
-- Runs anomaly checks (warn-first)
-- Aggregates warnings and prints a summary table
+- `nasaSeParser.fixtures.test.js`
+- `hodMaParser.fixtures.test.js`
+
+These tests:
+- Validate the normalized schedule contract
+- Run anomaly checks (warn-first)
+- Aggregate warnings and print a summary table
 
 Parser-specific CSV rules live in `docs/PARSERS.md`.
 

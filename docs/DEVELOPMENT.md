@@ -111,6 +111,7 @@ Flow:
 4. Add fixtures under `src/schedule/parsers/<id>/fixtures/` and a `manifest.json`.
 5. Add a focused parser test under `src/schedule/parsers/`.
 6. Document the CSV rules in `docs/PARSERS.md`.
+7. Use the HOD-MA parser (`src/schedule/parsers/hodMaParser.js`) as a reference implementation.
 
 ## CSV Format Guidelines
 

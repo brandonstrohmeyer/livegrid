@@ -18,7 +18,7 @@ export default defineConfig({
       manifest: {
         name: 'LiveGrid',
         short_name: 'LiveGrid',
-        description: 'Live NASA session tracker with synced preferences and notifications.',
+        description: 'Live track day session tracker with synced preferences and notifications.',
         start_url: '/',
         scope: '/',
         display: 'standalone',

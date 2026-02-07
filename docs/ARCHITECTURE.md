@@ -33,8 +33,14 @@ nasa-session-dashboard/
         nasaSeParser.js
         nasaSeParser.test.js
         nasaSeRules.js
+        hodMaParser.js
+        hodMaParser.test.js
+        hodMaRules.js
         registry.js
         nasa-se/
+          fixtures/
+          groupTaxonomy.js
+        hod-ma/
           fixtures/
           groupTaxonomy.js
       testing/
@@ -144,6 +150,14 @@ Enable notifications
   -> registerPushToken (Cloud Function)
   -> Store in Firestore
 ```
+
+## Caching (Sheets)
+
+Sheet data is cached in the Functions layer only; the client always calls `/api/sheets/...` and never reads Firestore directly.
+
+- **In-memory cache**: Per-function-instance `Map` caches (`sheetMetadataCache`, `sheetValuesCache`). Fast but lost on restart. TTLs are set in `functions/src/index.ts` (`SHEETS_METADATA_TTL_MS`, `SHEETS_VALUES_TTL_MS`).
+- **Firestore cache**: Persistent cache in `sheetMetadata` and `sheetSources`. Used when in-memory cache misses or expires. Values are stored as `{ cells: [...] }` objects to avoid Firestore nested-array restrictions.
+- **Upstream fetch**: If caches miss or are stale, Functions fetch from the Google Sheets API, normalize headers/rows, then write back to Firestore.
 
 ## Notification Flow (Client-Driven)
 

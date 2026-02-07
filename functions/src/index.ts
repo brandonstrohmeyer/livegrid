@@ -1,4 +1,6 @@
 import * as admin from 'firebase-admin'
+// Use explicit Firestore exports to avoid admin.firestore.FieldValue being undefined in the emulator runtime.
+import { FieldValue, Timestamp } from 'firebase-admin/firestore'
 import { onRequest, onCall, HttpsError } from 'firebase-functions/v2/https'
 import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { createHash } from 'crypto'
@@ -13,10 +15,55 @@ const appPublicUrl = process.env.APP_PUBLIC_URL || defaultHost
 
 const scheduledCollection = db.collection('scheduledNotifications')
 const usersCollection = db.collection('users')
+const sheetMetadataCollection = db.collection('sheetMetadata')
+const sheetSourcesCollection = db.collection('sheetSources')
 
 const SCHEDULER_REGION = 'us-central1'
 const LEASE_MS = 2 * 60 * 1000
 const DISPATCH_LIMIT = 200
+
+const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets'
+const SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY || process.env.SHEETS_API_KEY || ''
+const SHEETS_METADATA_TTL_MS = 15 * 60 * 1000
+const SHEETS_VALUES_TTL_MS = 30 * 1000
+const SHEETS_DEFAULT_RANGE_END = 'Z'
+const SHEETS_WIDE_RANGE_END = 'AZ'
+const SHEETS_RATE_LIMIT_WINDOW_MS = 60 * 1000
+const SHEETS_RATE_LIMIT_MAX = 60
+
+type SheetTab = {
+  sheetId: number
+  title: string
+}
+
+type SheetMetadata = {
+  spreadsheetId: string
+  spreadsheetTitle: string | null
+  tabs: SheetTab[]
+  fetchedAt: number
+}
+
+type SheetValues = {
+  spreadsheetId: string
+  spreadsheetTitle: string | null
+  sheetId: number
+  sheetTitle: string
+  headers: string[]
+  rows: string[][]
+  fetchedAt: number
+  contentHash: string
+}
+
+type CacheEntry<T> = {
+  value: T
+  expiresAt: number
+}
+
+const sheetMetadataCache = new Map<string, CacheEntry<SheetMetadata>>()
+const sheetValuesCache = new Map<string, CacheEntry<SheetValues>>()
+const sheetMetadataInFlight = new Map<string, Promise<SheetMetadata>>()
+const sheetValuesInFlight = new Map<string, Promise<SheetValues>>()
+const sheetRateLimit = new Map<string, { count: number; resetAt: number }>()
 
 async function authenticate(req: { get: (name: string) => string | undefined }) {
   const authHeader = req.get('authorization') || ''
@@ -49,6 +96,10 @@ function tokenFingerprint(token?: string) {
   }
 }
 
+function buildRequestId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 function buildNotifId({
   uid,
   eventId,
@@ -69,7 +120,8 @@ function buildNotifId({
 function parseTimestamp(isoUtc: string) {
   const date = new Date(isoUtc)
   if (Number.isNaN(date.getTime())) return null
-  return admin.firestore.Timestamp.fromDate(date)
+  // Timestamp from firebase-admin/firestore avoids the emulator crash seen with admin.firestore.Timestamp.
+  return Timestamp.fromDate(date)
 }
 
 function isTransientMessagingError(code?: string) {
@@ -193,13 +245,13 @@ export const registerPushToken = onRequest({ cors: true, region: SCHEDULER_REGIO
       clientInfo: clientInfo || null,
       timezone,
       appVersion,
-      lastSeenAt: admin.firestore.FieldValue.serverTimestamp()
+      lastSeenAt: FieldValue.serverTimestamp()
     }, { merge: true })
 
     if (uid) {
       await usersCollection.doc(uid).set({
-        tokens: admin.firestore.FieldValue.arrayUnion(token),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        tokens: FieldValue.arrayUnion(token),
+        updatedAt: FieldValue.serverTimestamp()
       }, { merge: true })
       console.log('[registerPushToken] Linked token to user doc', { uid, tokenHash })
     } else {
@@ -239,8 +291,8 @@ export const unregisterPushToken = onRequest({ cors: true, region: SCHEDULER_REG
 
     if (uid) {
       await usersCollection.doc(uid).set({
-        tokens: admin.firestore.FieldValue.arrayRemove(token),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        tokens: FieldValue.arrayRemove(token),
+        updatedAt: FieldValue.serverTimestamp()
       }, { merge: true })
     }
 
@@ -316,7 +368,7 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
     throw new HttpsError('invalid-argument', 'desiredNotifications must be an array')
   }
 
-  const now = admin.firestore.FieldValue.serverTimestamp()
+  const now = FieldValue.serverTimestamp()
   const desiredMap = new Map<string, DesiredNotification>()
   const notifIds: string[] = []
   const fireAtTimes: string[] = []
@@ -424,7 +476,7 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
   return { status: 'ok', count: desiredMap.size }
 })
 
-async function leaseNotification(docRef: FirebaseFirestore.DocumentReference, now: admin.firestore.Timestamp) {
+async function leaseNotification(docRef: FirebaseFirestore.DocumentReference, now: Timestamp) {
   let leased = false
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(docRef)
@@ -434,7 +486,7 @@ async function leaseNotification(docRef: FirebaseFirestore.DocumentReference, no
     if (data.leaseUntil && data.leaseUntil.toMillis() > now.toMillis()) return
     tx.update(docRef, {
       status: 'sending',
-      leaseUntil: admin.firestore.Timestamp.fromMillis(now.toMillis() + LEASE_MS),
+      leaseUntil: Timestamp.fromMillis(now.toMillis() + LEASE_MS),
       updatedAt: now
     })
     leased = true
@@ -445,7 +497,7 @@ async function leaseNotification(docRef: FirebaseFirestore.DocumentReference, no
 export const scheduledNotificationDispatcher = onSchedule(
   { schedule: 'every 1 minutes', timeZone: 'UTC', region: SCHEDULER_REGION },
   async () => {
-    const now = admin.firestore.Timestamp.now()
+    const now = Timestamp.now()
 
     const snapshot = await scheduledCollection
       .where('fireAt', '<=', now)
@@ -620,8 +672,8 @@ export const scheduledNotificationDispatcher = onSchedule(
 
         if (invalidTokens.length) {
           await usersCollection.doc(uid).set({
-            tokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            tokens: FieldValue.arrayRemove(...invalidTokens),
+            updatedAt: FieldValue.serverTimestamp()
           }, { merge: true })
         }
 
@@ -656,8 +708,8 @@ export const scheduledNotificationDispatcher = onSchedule(
             status: 'pending',
             leaseUntil: null,
             updatedAt: now,
-            fireAt: admin.firestore.Timestamp.fromMillis(now.toMillis() + 60 * 1000),
-            retryCount: admin.firestore.FieldValue.increment(1),
+            fireAt: Timestamp.fromMillis(now.toMillis() + 60 * 1000),
+            retryCount: FieldValue.increment(1),
             successCount: response.successCount,
             failureCount: response.failureCount,
             transientFailures
@@ -682,10 +734,559 @@ export const scheduledNotificationDispatcher = onSchedule(
           status: 'pending',
           leaseUntil: null,
           updatedAt: now,
-          fireAt: admin.firestore.Timestamp.fromMillis(now.toMillis() + 60 * 1000),
-          retryCount: admin.firestore.FieldValue.increment(1)
+          fireAt: Timestamp.fromMillis(now.toMillis() + 60 * 1000),
+          retryCount: FieldValue.increment(1)
         })
       }
     }
   }
 )
+
+class SheetsError extends Error {
+  status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+function getClientIp(req: { get: (name: string) => string | undefined; ip?: string }) {
+  const forwarded = req.get('x-forwarded-for') || ''
+  const ip = forwarded.split(',')[0]?.trim()
+  return ip || req.ip || 'unknown'
+}
+
+function rateLimitSheets(req: { get: (name: string) => string | undefined; ip?: string }, res: any) {
+  const ip = getClientIp(req)
+  const now = Date.now()
+  const existing = sheetRateLimit.get(ip)
+  if (existing && now < existing.resetAt) {
+    if (existing.count >= SHEETS_RATE_LIMIT_MAX) {
+      res.status(429).json({ error: 'Too many requests' })
+      return false
+    }
+    existing.count += 1
+    return true
+  }
+  sheetRateLimit.set(ip, { count: 1, resetAt: now + SHEETS_RATE_LIMIT_WINDOW_MS })
+  return true
+}
+
+function getCachedValue<T>(cache: Map<string, CacheEntry<T>>, key: string) {
+  const entry = cache.get(key)
+  if (!entry) return null
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key)
+    return null
+  }
+  return entry.value
+}
+
+function setCachedValue<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, ttlMs: number) {
+  cache.set(key, { value, expiresAt: Date.now() + ttlMs })
+}
+
+function redactSheetsUrl(rawUrl: string) {
+  if (!rawUrl) return rawUrl
+  try {
+    const url = new URL(rawUrl)
+    if (url.searchParams.has('key')) {
+      url.searchParams.set('key', 'REDACTED')
+    }
+    return url.toString()
+  } catch (err) {
+    return rawUrl.replace(/key=[^&]+/g, 'key=REDACTED')
+  }
+}
+
+async function readResponseBody(response: any) {
+  try {
+    return await response.text()
+  } catch (err) {
+    console.warn('[sheetsApi] Failed to read upstream response body', err)
+    return ''
+  }
+}
+
+function withInFlight<T>(map: Map<string, Promise<T>>, key: string, task: () => Promise<T>) {
+  const existing = map.get(key)
+  if (existing) return existing
+  const promise = task().finally(() => map.delete(key))
+  map.set(key, promise)
+  return promise
+}
+
+function extractSpreadsheetId(input: string) {
+  if (!input || typeof input !== 'string') return null
+  const trimmed = input.trim()
+  const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
+  if (match) return match[1]
+  if (/^[a-zA-Z0-9-_]{20,}$/.test(trimmed)) return trimmed
+  return null
+}
+
+function formatSheetRange(sheetTitle: string, range: string) {
+  const safeTitle = sheetTitle.replace(/'/g, "''")
+  return `'${safeTitle}'!${range}`
+}
+
+function normalizeSheetValues(values: any[][]) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return { headers: [], rows: [] }
+  }
+
+  const rawHeaders = Array.isArray(values[0]) ? values[0] : []
+  const maxRowLength = values.reduce((max, row) => {
+    if (!Array.isArray(row)) return max
+    return Math.max(max, row.length)
+  }, 0)
+  const width = Math.max(rawHeaders.length, maxRowLength)
+
+  const headers = Array.from({ length: width }).map((_, idx) => {
+    const value = rawHeaders[idx]
+    return value === undefined || value === null ? '' : String(value)
+  })
+
+  const rows = values.slice(1).map(row => {
+    const normalizedRow = Array.from({ length: width }).map((_, idx) => {
+      const value = Array.isArray(row) ? row[idx] : ''
+      return value === undefined || value === null ? '' : String(value)
+    })
+    return normalizedRow
+  })
+
+  return { headers, rows }
+}
+
+function shouldWidenRange(values: any[][]) {
+  if (!Array.isArray(values) || values.length === 0) return false
+  const header = Array.isArray(values[0]) ? values[0] : []
+  if (header.length < 26) return false
+  const lastCell = header[25]
+  if (lastCell === undefined || lastCell === null) return false
+  return String(lastCell).trim().length > 0
+}
+
+async function fetchSheetMetadataFromApi(spreadsheetId: string): Promise<SheetMetadata> {
+  if (!SHEETS_API_KEY) {
+    throw new SheetsError(500, 'Sheets API key is not configured')
+  }
+
+  const params = new URLSearchParams({
+    key: SHEETS_API_KEY,
+    includeGridData: 'false'
+  })
+  const url = `${SHEETS_API_BASE}/${spreadsheetId}?${params.toString()}`
+  const requestStart = Date.now()
+  console.log('[sheetsApi] Metadata fetch', {
+    spreadsheetId,
+    url: redactSheetsUrl(url)
+  })
+  const response = await fetch(url)
+  const durationMs = Date.now() - requestStart
+
+  if (response.status === 404) {
+    const body = await readResponseBody(response)
+    console.warn('[sheetsApi] Metadata fetch failed', {
+      spreadsheetId,
+      status: response.status,
+      durationMs,
+      bodySnippet: body.slice(0, 400)
+    })
+    throw new SheetsError(404, 'Spreadsheet not found')
+  }
+  if (response.status === 403) {
+    const body = await readResponseBody(response)
+    console.warn('[sheetsApi] Metadata fetch failed', {
+      spreadsheetId,
+      status: response.status,
+      durationMs,
+      bodySnippet: body.slice(0, 400)
+    })
+    throw new SheetsError(403, 'Spreadsheet is not publicly accessible')
+  }
+  if (!response.ok) {
+    const body = await readResponseBody(response)
+    console.warn('[sheetsApi] Metadata fetch failed', {
+      spreadsheetId,
+      status: response.status,
+      durationMs,
+      bodySnippet: body.slice(0, 400)
+    })
+    throw new SheetsError(502, `Sheets API error (${response.status})`)
+  }
+
+  const data = await response.json()
+  console.log('[sheetsApi] Metadata payload raw', JSON.stringify({ spreadsheetId, metadata: data }))
+  console.log('[sheetsApi] Metadata fetch ok', {
+    spreadsheetId,
+    status: response.status,
+    durationMs,
+    tabCount: Array.isArray(data?.sheets) ? data.sheets.length : 0
+  })
+  const tabs: SheetTab[] = Array.isArray(data?.sheets)
+    ? data.sheets
+        .map((sheet: any) => ({
+          sheetId: sheet?.properties?.sheetId,
+          title: sheet?.properties?.title
+        }))
+        .filter((sheet: SheetTab) => typeof sheet.sheetId === 'number' && typeof sheet.title === 'string')
+    : []
+
+  return {
+    spreadsheetId: data?.spreadsheetId || spreadsheetId,
+    spreadsheetTitle: data?.properties?.title || null,
+    tabs,
+    fetchedAt: Date.now()
+  }
+}
+
+async function fetchSheetValuesRange(spreadsheetId: string, sheetTitle: string, rangeEnd: string) {
+  if (!SHEETS_API_KEY) {
+    throw new SheetsError(500, 'Sheets API key is not configured')
+  }
+
+  const range = formatSheetRange(sheetTitle, `A:${rangeEnd}`)
+  const params = new URLSearchParams()
+  params.append('key', SHEETS_API_KEY)
+  params.append('majorDimension', 'ROWS')
+  params.append('valueRenderOption', 'FORMATTED_VALUE')
+  params.append('dateTimeRenderOption', 'FORMATTED_STRING')
+  params.append('ranges', range)
+
+  const url = `${SHEETS_API_BASE}/${spreadsheetId}/values:batchGet?${params.toString()}`
+  const requestStart = Date.now()
+  console.log('[sheetsApi] Values fetch', {
+    spreadsheetId,
+    sheetTitle,
+    rangeEnd,
+    url: redactSheetsUrl(url)
+  })
+  const response = await fetch(url)
+  const durationMs = Date.now() - requestStart
+
+  if (response.status === 404) {
+    const body = await readResponseBody(response)
+    console.warn('[sheetsApi] Values fetch failed', {
+      spreadsheetId,
+      sheetTitle,
+      rangeEnd,
+      status: response.status,
+      durationMs,
+      bodySnippet: body.slice(0, 400)
+    })
+    throw new SheetsError(404, 'Spreadsheet values not found')
+  }
+  if (response.status === 403) {
+    const body = await readResponseBody(response)
+    console.warn('[sheetsApi] Values fetch failed', {
+      spreadsheetId,
+      sheetTitle,
+      rangeEnd,
+      status: response.status,
+      durationMs,
+      bodySnippet: body.slice(0, 400)
+    })
+    throw new SheetsError(403, 'Spreadsheet is not publicly accessible')
+  }
+  if (!response.ok) {
+    const body = await readResponseBody(response)
+    console.warn('[sheetsApi] Values fetch failed', {
+      spreadsheetId,
+      sheetTitle,
+      rangeEnd,
+      status: response.status,
+      durationMs,
+      bodySnippet: body.slice(0, 400)
+    })
+    throw new SheetsError(502, `Sheets API error (${response.status})`)
+  }
+
+  const data = await response.json()
+  console.log('[sheetsApi] Values fetch ok', {
+    spreadsheetId,
+    sheetTitle,
+    rangeEnd,
+    status: response.status,
+    durationMs,
+    valueRanges: Array.isArray(data?.valueRanges) ? data.valueRanges.length : 0
+  })
+  const valueRanges = Array.isArray(data?.valueRanges) ? data.valueRanges : []
+  const values = Array.isArray(valueRanges[0]?.values) ? valueRanges[0].values : []
+  return values as any[][]
+}
+
+async function fetchSheetValuesFromApi(spreadsheetId: string, sheetTitle: string) {
+  const baseValues = await fetchSheetValuesRange(spreadsheetId, sheetTitle, SHEETS_DEFAULT_RANGE_END)
+  if (shouldWidenRange(baseValues)) {
+    return await fetchSheetValuesRange(spreadsheetId, sheetTitle, SHEETS_WIDE_RANGE_END)
+  }
+  return baseValues
+}
+
+async function getSheetMetadata(spreadsheetId: string, options: { forceRefresh?: boolean } = {}) {
+  const cacheKey = spreadsheetId
+  if (!options.forceRefresh) {
+    const cached = getCachedValue(sheetMetadataCache, cacheKey)
+    if (cached) {
+      console.log('[sheetsApi] Metadata cache hit', {
+        spreadsheetId,
+        ageMs: Date.now() - cached.fetchedAt,
+        tabCount: cached.tabs.length
+      })
+      return cached
+    }
+  }
+
+  if (!options.forceRefresh) {
+    const snap = await sheetMetadataCollection.doc(spreadsheetId).get()
+    if (snap.exists) {
+      const data = snap.data() as any
+      const fetchedAt = data?.lastMetadataFetchAt?.toMillis?.() || 0
+      const tabs = Array.isArray(data?.tabs) ? data.tabs : []
+      if (fetchedAt && Date.now() - fetchedAt < SHEETS_METADATA_TTL_MS && tabs.length) {
+        console.log('[sheetsApi] Metadata firestore hit', {
+          spreadsheetId,
+          ageMs: Date.now() - fetchedAt,
+          tabCount: tabs.length
+        })
+        const metadata: SheetMetadata = {
+          spreadsheetId,
+          spreadsheetTitle: data?.spreadsheetTitle || null,
+          tabs,
+          fetchedAt
+        }
+        setCachedValue(sheetMetadataCache, cacheKey, metadata, SHEETS_METADATA_TTL_MS)
+        return metadata
+      }
+    }
+  }
+
+  return withInFlight(sheetMetadataInFlight, cacheKey, async () => {
+    const metadata = await fetchSheetMetadataFromApi(spreadsheetId)
+    setCachedValue(sheetMetadataCache, cacheKey, metadata, SHEETS_METADATA_TTL_MS)
+    await sheetMetadataCollection.doc(spreadsheetId).set({
+      spreadsheetId: metadata.spreadsheetId,
+      spreadsheetTitle: metadata.spreadsheetTitle,
+      tabs: metadata.tabs,
+      lastMetadataFetchAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    }, { merge: true })
+    return metadata
+  })
+}
+
+function sheetDocId(spreadsheetId: string, sheetId: number) {
+  return `${spreadsheetId}__${sheetId}`
+}
+
+async function getSheetValues(spreadsheetId: string, sheetId: number) {
+  const cacheKey = `${spreadsheetId}:${sheetId}`
+  const cached = getCachedValue(sheetValuesCache, cacheKey)
+  if (cached) {
+    console.log('[sheetsApi] Values cache hit', {
+      spreadsheetId,
+      sheetId,
+      ageMs: Date.now() - cached.fetchedAt,
+      rows: cached.rows.length
+    })
+    return cached
+  }
+
+  const fallbackSnap = await sheetSourcesCollection.doc(sheetDocId(spreadsheetId, sheetId)).get()
+  let fallback: SheetValues | null = null
+  if (fallbackSnap.exists) {
+    const data = fallbackSnap.data() as any
+    const fetchedAt = data?.lastValuesFetchAt?.toMillis?.() || 0
+    fallback = {
+      spreadsheetId,
+      spreadsheetTitle: data?.spreadsheetTitle || null,
+      sheetId,
+      sheetTitle: data?.sheetTitle || 'Sheet',
+      headers: Array.isArray(data?.headers) ? data.headers : [],
+      rows: Array.isArray(data?.rows)
+        ? data.rows.map((row: any) => (Array.isArray(row?.cells) ? row.cells.map(String) : []))
+        : [],
+      fetchedAt,
+      contentHash: data?.contentHash || ''
+    }
+    if (fetchedAt && Date.now() - fetchedAt < SHEETS_VALUES_TTL_MS) {
+      console.log('[sheetsApi] Values firestore hit', {
+        spreadsheetId,
+        sheetId,
+        ageMs: Date.now() - fetchedAt,
+        rows: fallback.rows.length
+      })
+      setCachedValue(sheetValuesCache, cacheKey, fallback, SHEETS_VALUES_TTL_MS)
+      return fallback
+    }
+  }
+
+  try {
+    return await withInFlight(sheetValuesInFlight, cacheKey, async () => {
+      let metadata = await getSheetMetadata(spreadsheetId)
+      let tab = metadata.tabs.find(entry => entry.sheetId === sheetId)
+      if (!tab) {
+        metadata = await getSheetMetadata(spreadsheetId, { forceRefresh: true })
+        tab = metadata.tabs.find(entry => entry.sheetId === sheetId)
+      }
+      if (!tab) {
+        throw new SheetsError(404, 'Sheet tab not found')
+      }
+
+      const spreadsheetTitle = metadata.spreadsheetTitle || null
+      const rawValues = await fetchSheetValuesFromApi(spreadsheetId, tab.title)
+      const normalized = normalizeSheetValues(rawValues)
+      const contentHash = createHash('sha256')
+        .update(JSON.stringify({ headers: normalized.headers, rows: normalized.rows }))
+        .digest('hex')
+
+      const result: SheetValues = {
+        spreadsheetId,
+        spreadsheetTitle,
+        sheetId,
+        sheetTitle: tab.title,
+        headers: normalized.headers,
+        rows: normalized.rows,
+        fetchedAt: Date.now(),
+        contentHash
+      }
+
+      setCachedValue(sheetValuesCache, cacheKey, result, SHEETS_VALUES_TTL_MS)
+      await sheetSourcesCollection.doc(sheetDocId(spreadsheetId, sheetId)).set({
+        spreadsheetId,
+        spreadsheetTitle,
+        sheetId,
+        sheetTitle: tab.title,
+        headers: normalized.headers,
+        rows: normalized.rows.map(cells => ({ cells })),
+        contentHash,
+        isStale: false,
+        lastValuesFetchAt: FieldValue.serverTimestamp(),
+        lastSuccessfulParseAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp()
+      }, { merge: true })
+
+      return result
+    })
+  } catch (err: any) {
+    console.warn('[sheetsApi] Values fetch failed', {
+      spreadsheetId,
+      sheetId,
+      error: err?.message || err
+    })
+    if (fallback) {
+      console.warn('[sheetsApi] Using stale values', {
+        spreadsheetId,
+        sheetId,
+        ageMs: Date.now() - fallback.fetchedAt,
+        rows: fallback.rows.length
+      })
+      await sheetSourcesCollection.doc(sheetDocId(spreadsheetId, sheetId)).set({
+        isStale: true,
+        staleReason: err?.message || 'upstream_error',
+        staleAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp()
+      }, { merge: true })
+      return fallback
+    }
+    throw err
+  }
+}
+
+export const sheetsApi = onRequest({ cors: true, region: SCHEDULER_REGION, secrets: ['SHEETS_API_KEY'] }, async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('')
+    return
+  }
+
+  if (!rateLimitSheets(req, res)) return
+
+  try {
+    const requestId = buildRequestId()
+    res.set('x-request-id', requestId)
+    let path = (req.path || '').replace(/^\/+/, '')
+    if (path.startsWith('api/')) {
+      path = path.slice(4)
+    }
+    console.log('[sheetsApi] Request', {
+      requestId,
+      method: req.method,
+      path,
+      ip: getClientIp(req),
+      userAgent: req.get('user-agent') || 'unknown',
+      hasApiKey: Boolean(SHEETS_API_KEY)
+    })
+
+    if (req.method === 'POST' && path === 'sheets/resolve') {
+      const { url } = req.body || {}
+      const spreadsheetId = extractSpreadsheetId(url)
+      console.log('[sheetsApi] Resolve request', { requestId, spreadsheetId, hasUrl: Boolean(url) })
+      if (!spreadsheetId) {
+        res.status(400).json({ error: 'Invalid Google Sheets URL' })
+        return
+      }
+      res.json({ spreadsheetId })
+      return
+    }
+
+    const tabsMatch = path.match(/^sheets\/([^/]+)\/tabs$/)
+    if (req.method === 'GET' && tabsMatch) {
+      const spreadsheetId = tabsMatch[1]
+      console.log('[sheetsApi] Tabs request', { requestId, spreadsheetId })
+      const metadata = await getSheetMetadata(spreadsheetId)
+      console.log('[sheetsApi] Tabs response', { requestId, spreadsheetId, tabCount: metadata.tabs.length })
+      res.json({
+        spreadsheetId: metadata.spreadsheetId,
+        spreadsheetTitle: metadata.spreadsheetTitle,
+        tabs: metadata.tabs
+      })
+      return
+    }
+
+    const tabMatch = path.match(/^sheets\/([^/]+)\/tab\/([^/]+)$/)
+    if (req.method === 'GET' && tabMatch) {
+      const spreadsheetId = tabMatch[1]
+      const sheetIdRaw = tabMatch[2]
+      const sheetId = Number(sheetIdRaw)
+      console.log('[sheetsApi] Tab values request', { requestId, spreadsheetId, sheetId })
+      if (!Number.isFinite(sheetId)) {
+        res.status(400).json({ error: 'sheetId must be a number' })
+        return
+      }
+      const values = await getSheetValues(spreadsheetId, sheetId)
+      console.log('[sheetsApi] Tab values response', {
+        requestId,
+        spreadsheetId,
+        sheetId,
+        spreadsheetTitle: values.spreadsheetTitle,
+        headers: values.headers.length,
+        rows: values.rows.length
+      })
+      res.json({
+        spreadsheetId: values.spreadsheetId,
+        spreadsheetTitle: values.spreadsheetTitle,
+        sheetId: values.sheetId,
+        sheetTitle: values.sheetTitle,
+        headers: values.headers,
+        rows: values.rows
+      })
+      return
+    }
+
+    res.status(404).json({ error: 'Not found' })
+  } catch (err: any) {
+    if (err instanceof SheetsError) {
+      console.warn('[sheetsApi] Sheets error', {
+        status: err.status,
+        message: err.message
+      })
+      res.status(err.status).json({ error: err.message })
+      return
+    }
+    console.error('[sheetsApi] Unexpected error', err)
+    res.status(500).json({ error: 'Internal error' })
+  }
+})
+

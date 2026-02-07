@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "vite",
+    "emulators": "firebase emulators:start --only functions,hosting,firestore --project livegrid-c33c6",
+    "dev:full": "powershell -Command \"Get-Content .env | ForEach-Object { if ($_ -match '^[^#].*?=') { $parts = $_ -split '=', 2; $name = $parts[0].Trim(); $value = $parts[1].Trim().Trim('\"'); if ($name -eq 'SHEETS_API_KEY') { Set-Item -Path ('Env:' + $name) -Value $value } } }; npx npm-run-all -p --print-label dev emulators\"",
     "prebuild": "node increment-patch.js",
     "build": "vite build",
     "build:patch": "npm run build --bump=patch",

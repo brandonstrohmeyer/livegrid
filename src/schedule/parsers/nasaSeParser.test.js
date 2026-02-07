@@ -49,7 +49,7 @@ Saturday,,,,
     expect(classroom.relatedRunGroupIds).toContain('HPDE 1')
   })
 
-  it('maps Mock Race and All Racers Warmup to Thunder/Lightning', () => {
+  it('maps Mock Race to Test/Tune and All Racers Warmup to Thunder/Lightning', () => {
     const csv = `Saturday,,,,
 8:00 AM,20,Mock Race #1,,,
 8:20 AM,20,ALL RACERS WARMUP,,,`
@@ -57,9 +57,9 @@ Saturday,,,,
     const mockRace = schedule.sessions.find(s => /mock race/i.test(s.session))
     const warmup = schedule.sessions.find(s => /all racers warmup/i.test(s.session))
 
-    expect(mockRace.runGroupIds).toContain('Thunder Race')
-    expect(mockRace.runGroupIds).toContain('Lightning Race')
-    expect(mockRace.runGroupIds).not.toContain('Mock Race')
+    expect(mockRace.runGroupIds).toContain('Test/Tune')
+    expect(mockRace.runGroupIds).not.toContain('Thunder Race')
+    expect(mockRace.runGroupIds).not.toContain('Lightning Race')
     expect(warmup.runGroupIds).toContain('Thunder Race')
     expect(warmup.runGroupIds).toContain('Lightning Race')
   })

@@ -34,6 +34,6 @@
  * @typedef {Object} ScheduleParser
  * @property {string} id - Unique parser ID.
  * @property {string} name - Display name for the parser.
- * @property {(params: { csvText: string, dayOffset?: number }) => NormalizedSchedule} parseCsv
+ * @property {(params: { csvText: string, dayOffset?: number, sourceLabel?: string }) => NormalizedSchedule} parseCsv
  * @property {Object} [groupTaxonomy] - Optional taxonomy metadata used for mapping tests.
  */

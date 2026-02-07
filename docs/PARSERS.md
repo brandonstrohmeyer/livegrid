@@ -47,7 +47,6 @@ The parser normalizes common label variants into a stable set:
 - **Race**
   - `Thunder` => `Thunder Race`
   - `Lightning` => `Lightning Race`
-  - `Mock Race` maps to **both** `Thunder Race` and `Lightning Race`.
   - `All Racers Warmup` maps to **both** `Thunder Race` and `Lightning Race`.
   - `Santa's Toy Run Fun Race` maps to **all race groups**.
 - **Toyota**
@@ -56,6 +55,7 @@ The parser normalizes common label variants into a stable set:
   - `IC` or `Instructor Clinic` maps to `Instructor Clinic`.
 - **Test/Tune**
   - `Test & Tune` and `Test/Tune` normalize to `Test/Tune`.
+  - `Mock Race` maps to `Test/Tune`.
 
 The final `runGroups` list always includes `All` as the first entry and is sorted afterward.
 
@@ -86,3 +86,69 @@ Combined sessions like `All Racers Warmup` are instead mapped to existing race g
 
 - The parser is tolerant of missing AM/PM and uses `parseTimeToToday` rules from `scheduleUtils.js`.
 - Day ordering can be Fri/Sat/Sun or any other contiguous day block.
+
+## HOD-MA Parser
+
+- **Parser ID**: `hod-ma`
+- **Parser entry**: `src/schedule/parsers/hodMaParser.js`
+- **Rules/helpers**: `src/schedule/parsers/hodMaRules.js`
+- **Group taxonomy (tests)**: `src/schedule/parsers/hod-ma/groupTaxonomy.js`
+
+### CSV Expectations
+
+HOD schedules typically include a header row with:
+
+- **Activity** or **Event**
+- **Time** or **Start Time**
+- **WHO**
+- **Where / Notes** (or **Location / Notes**)
+
+Files are usually single-day schedules. If a day name is not present in the CSV
+text, the parser infers the day from the filename (e.g., `Sat`, `Sunday`), else
+falls back to `Day 1`.
+
+### Run Group Normalization
+
+Canonical groups:
+
+- `A - Novice`
+- `B - Intermediate`
+- `C - Advanced`
+- `D - Expert`
+- `OUT Motorsports`
+- `P&P`
+
+Normalization rules:
+
+- `C/D` => `C - Advanced` + `D - Expert`
+- `A/B` => `A - Novice` + `B - Intermediate`
+- `B+C+D` => `B - Intermediate` + `C - Advanced` + `D - Expert`
+- `A1` => `A - Novice`
+- `OUT Motorsports` and `P&P` preserved as standalone groups
+
+### Session Classification
+
+**On-track sessions**
+
+- Any row whose `WHO` column includes a run group (A/B/C/D abbreviations, C/D, A/B, OUT, P&P), which normalize to the full labels.
+- If `WHO` is missing or does not contain group labels, the parser also looks for run-group
+  labels in the Activity text and the Where/Notes column (e.g., Party Mode notes like `B+C+D`).
+- Special session names like `Party Mode`, `Happy Hour`, `Shush Session`, and `Charity Parade Laps`
+  can be detected from the Activity, WHO, or Where/Notes columns and are used as the session title.
+- Special sessions (`Happy Hour`, `Party Mode`, `Shush Session`, `Charity Parade Laps`)
+  are treated as on-track sessions, and run groups are derived from `WHO`.
+
+**Classroom activities**
+
+- Rows containing `Classroom`, `Novice`, or `A‑Novice` are classified as classroom.
+- Classroom activities are linked to run group `A - Novice`.
+
+**Meeting activities**
+
+- Rows containing `Meeting` or `Breakout Meetings` are classified as meetings.
+- If `WHO` indicates **ALL**, the meeting is linked to all run groups.
+
+**Other rows**
+
+- Gate opens, check-in, lunch, dinner, etc. are kept as sessions if they have a time,
+  but they do not add run groups unless the `WHO` field contains group labels.

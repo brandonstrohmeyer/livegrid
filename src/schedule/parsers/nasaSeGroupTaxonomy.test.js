@@ -20,10 +20,15 @@ describe('NASA-SE Group Taxonomy Mapping', () => {
     expect(expanded).toContain('All Time Trial')
   })
 
-  it('maps Mock Race and All Racers Warmup labels when race groups are selected', () => {
-    const scheduleRunGroups = ['Mock Race', 'All Racers Warmup', 'Thunder Race', 'Lightning Race']
-    const expanded = expandSelectedGroups(['Thunder Race'], nasaSeGroupTaxonomy, scheduleRunGroups)
+  it('maps Mock Race when Test/Tune is selected', () => {
+    const scheduleRunGroups = ['Mock Race', 'Test/Tune']
+    const expanded = expandSelectedGroups(['Test/Tune'], nasaSeGroupTaxonomy, scheduleRunGroups)
     expect(expanded).toContain('Mock Race')
+  })
+
+  it('maps All Racers Warmup labels when race groups are selected', () => {
+    const scheduleRunGroups = ['All Racers Warmup', 'Thunder Race', 'Lightning Race']
+    const expanded = expandSelectedGroups(['Thunder Race'], nasaSeGroupTaxonomy, scheduleRunGroups)
     expect(expanded).toContain('All Racers Warmup')
   })
 })

@@ -25,9 +25,11 @@ Returns true if a CSV row contains a time entry.
 
 Returns the registered parser for an organization.
 
-### parseCsvSchedule({ csvText, parserId, dayOffset })
+### parseCsvSchedule({ csvText, parserId, dayOffset, sourceLabel })
 
 Parses CSV text using the selected parser and returns a `NormalizedSchedule`.
+`sourceLabel` is optional metadata (like a filename) that parsers can use for
+day inference when the CSV text does not contain explicit day names.
 
 Parsers may also expose `groupTaxonomy` metadata for mapping tests.
 
@@ -35,7 +37,7 @@ Parsers may also expose `groupTaxonomy` metadata for mapping tests.
 
 - `id`: unique parser ID
 - `name`: display name
-- `parseCsv({ csvText, dayOffset })`: returns `NormalizedSchedule`
+- `parseCsv({ csvText, dayOffset, sourceLabel })`: returns `NormalizedSchedule`
 - `groupTaxonomy` (optional): mapping hints for related-group tests
 
 ## Normalized Schedule Model (src/schedule/types.js)

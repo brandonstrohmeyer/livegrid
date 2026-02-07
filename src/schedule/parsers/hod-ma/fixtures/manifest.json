@@ -1,0 +1,19 @@
+{
+  "parserId": "hod-ma",
+  "fixtures": [
+    { "file": "AMP Feb 20-22 LIVE Scheduler Template - Saturday.csv", "label": "AMP Feb 20-22 Saturday" },
+    { "file": "AMP Feb 20-22 LIVE Scheduler Template - Sunday.csv", "label": "AMP Feb 20-22 Sunday" },
+    { "file": "Live Schedule CMP 8_2-3 - Sat.csv", "label": "CMP 8/2-3 Saturday" },
+    { "file": "Live Schedule CMP 8_2-3 - Sun.csv", "label": "CMP 8/2-3 Sunday" },
+    { "file": "Live Schedule RA 8_9-10 - Sat.csv", "label": "Road Atlanta 8/9-10 Saturday" },
+    { "file": "Live Schedule RA 8_9-10 - Sun.csv", "label": "Road Atlanta 8/9-10 Sunday" },
+    { "file": "NCCAR Live Scheduler - Saturday July 5 (3RG).csv", "label": "NCCAR July 5 Saturday" },
+    { "file": "NCCAR Live Scheduler - Sunday July 5 (3RG).csv", "label": "NCCAR July 5 Sunday" },
+    { "file": "NCCAR Live Scheduler Sept 5-7 - Saturday Sept 6.csv", "label": "NCCAR Sept 6 Saturday" },
+    { "file": "NCCAR Live Scheduler Sept 5-7 - Sunday Sept 7.csv", "label": "NCCAR Sept 7 Sunday" },
+    { "file": "NCM Live Scheduler - Saturday 6-28.csv", "label": "NCM June 28 Saturday" },
+    { "file": "NCM Live Scheduler - Sunday 6-29-1.csv", "label": "NCM June 29 Sunday" },
+    { "file": "Schedule - VIR 11_28-29 - Saturday.csv", "label": "VIR Nov 29 Saturday" },
+    { "file": "Schedule - VIR 11_28-29 - Sunday.csv", "label": "VIR Nov 30 Sunday" }
+  ]
+}

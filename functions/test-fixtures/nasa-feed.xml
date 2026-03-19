@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>NASA-SE Test Feed</title>
+    <item>
+      <title>Test Event Apr 3-4 2026</title>
+      <pubDate>Mon, 02 Feb 2026 12:00:00 GMT</pubDate>
+      <link>https://nasa-se.com/events/test-event-12345/</link>
+      <guid>test-guid-12345</guid>
+      <content:encoded><![CDATA[
+        <p><a href="https://docs.google.com/spreadsheets/d/TEST_SHEET_ID/edit">Live schedule</a></p>
+      ]]></content:encoded>
+    </item>
+  </channel>
+</rss>

@@ -193,13 +193,13 @@ Limitations:
 ### Meeting Detection
 
 - HPDE meeting when any HPDE group is selected.
-- TT Drivers meeting when any TT group is selected.
+- TT Drivers meeting when any TT group is selected **and** the schedule row explicitly indicates a meeting (e.g., `TT Drivers Meeting` or `TT Drivers Mtg`).
 - All Racers meeting when any race group is selected.
 
 ### Session Matching
 
 - TT ALL matches both TT Alpha and TT Omega.
-- TT Drivers matches both TT Alpha and TT Omega.
+- TT Drivers matches both TT Alpha and TT Omega when used as a run-group label in an on-track session.
 - Mock Race and All Racers Warmup map to both Thunder and Lightning race groups.
 - Combined sessions like "HPDE 3* & 4" match both groups.
 

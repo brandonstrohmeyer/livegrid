@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react'
 import Papa from 'papaparse'
+import { log } from './logging.js'
 
 function parseTimeToToday(timeStr) {
   if (!timeStr) return null
@@ -147,7 +148,7 @@ export default function App() {
       setCurrentDay(filteredRows.length > 0 ? filteredRows[0].day : null)
       setLastFetch(new Date())
     } catch (e) {
-      console.error('Failed to fetch or parse schedule', e)
+      log.error('schedule.fetch_or_parse_failed', undefined, e)
     }
   }
 

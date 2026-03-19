@@ -5,6 +5,7 @@ import { validateScheduleContract } from '../testing/contract.js'
 import { loadFixtures } from '../testing/fixtures.js'
 import { runAnomalyChecks } from '../testing/anomalyChecks.js'
 import { hodMaGroupTaxonomy } from './hod-ma/groupTaxonomy.js'
+import { log } from '../../logging.js'
 
 const STRICT_MODE = process.env.LIVEGRID_TEST_STRICT === '1'
 
@@ -54,14 +55,10 @@ describe('HOD-MA Fixture Validation', () => {
       Codes: [...new Set(item.warnings.map(w => w.code))].join(', ')
     }))
 
-    console.warn('\n[parser warnings] HOD-MA fixture anomalies detected:')
-    console.table(summaryRows)
-
-    warningsSummary.forEach(item => {
-      console.warn(`\n${item.fixture}`)
-      item.warnings.forEach(warning => {
-        console.warn(`- [${warning.code}] ${warning.message}`)
-      })
+    log.warn('tests.parser_warnings', {
+      parser: 'hod-ma',
+      summary: summaryRows,
+      warnings: warningsSummary
     })
   })
 })

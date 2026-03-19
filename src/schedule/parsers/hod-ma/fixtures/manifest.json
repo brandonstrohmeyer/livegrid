@@ -1,6 +1,11 @@
 {
   "parserId": "hod-ma",
   "fixtures": [
+    {
+      "file": "AMP Feb 20-22 LIVE Scheduler Template - Friday.csv",
+      "label": "AMP Feb 20-22 Friday (no track sessions)",
+      "overrides": { "allowEmptySessions": true, "allowNoClassroom": true, "allowNoMeetings": true }
+    },
     { "file": "AMP Feb 20-22 LIVE Scheduler Template - Saturday.csv", "label": "AMP Feb 20-22 Saturday" },
     { "file": "AMP Feb 20-22 LIVE Scheduler Template - Sunday.csv", "label": "AMP Feb 20-22 Sunday" },
     { "file": "Live Schedule CMP 8_2-3 - Sat.csv", "label": "CMP 8/2-3 Saturday" },

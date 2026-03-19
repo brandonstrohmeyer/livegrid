@@ -10,6 +10,7 @@ import React, {
 import { doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore'
 import { firestore, ensureFirestorePersistence } from '../firebaseClient'
 import { useAuth } from './AuthContext'
+import { log } from '../logging.js'
 
 const LOCAL_STORAGE_KEY = 'nasaDashboardPrefs'
 const legacyKeys = {
@@ -44,14 +45,14 @@ function readLocalPrefs() {
       return JSON.parse(raw)
     }
   } catch (err) {
-    console.warn('[prefs] Failed to parse local prefs', err)
+    log.warn('prefs.parse_failed', undefined, err)
   }
   const legacy = readLegacyPrefs()
   if (Object.keys(legacy).length) {
     try {
       window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(legacy))
     } catch (err) {
-      console.warn('[prefs] Failed to migrate legacy prefs', err)
+      log.warn('prefs.legacy_migration_failed', undefined, err)
     }
   }
   return legacy
@@ -62,7 +63,7 @@ function writeLocalPrefs(prefs) {
   try {
     window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(prefs))
   } catch (err) {
-    console.warn('[prefs] Unable to persist local prefs', err)
+    log.warn('prefs.persist_failed', undefined, err)
   }
 }
 
@@ -119,7 +120,7 @@ export function PreferencesProvider({ children }) {
             { merge: true }
           )
         } catch (err) {
-          console.error('[prefs] Failed to sync to Firestore', err)
+          log.error('prefs.firestore_sync_failed', { uid: user.uid }, err)
         }
       }, 350)
     },
@@ -162,7 +163,7 @@ export function PreferencesProvider({ children }) {
               lastClient: clientIdRef.current
             },
             { merge: true }
-          ).catch(err => console.error('[prefs] Failed to seed Firestore doc', err))
+          ).catch(err => log.error('prefs.firestore_seed_failed', { uid: user.uid }, err))
           return
         }
         const data = snapshot.data() || {}
@@ -170,7 +171,7 @@ export function PreferencesProvider({ children }) {
         setLoading(false)
       },
       err => {
-        console.error('[prefs] Snapshot error', err)
+        log.error('prefs.snapshot_error', { uid: user.uid }, err)
         setLoading(false)
       }
     )

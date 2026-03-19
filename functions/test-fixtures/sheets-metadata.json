@@ -1,0 +1,20 @@
+{
+  "spreadsheetId": "TEST_SHEET_ID",
+  "properties": {
+    "title": "Test Schedule Sheet"
+  },
+  "sheets": [
+    {
+      "properties": {
+        "sheetId": 123,
+        "title": "Schedule"
+      }
+    },
+    {
+      "properties": {
+        "sheetId": 456,
+        "title": "Notes"
+      }
+    }
+  ]
+}

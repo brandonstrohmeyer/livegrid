@@ -42,6 +42,10 @@ npm run build --bump=minor
 npm run build --bump=major
 ```
 
+## Logging
+
+Logging is expected to use explicit severity and structured context. Follow the severity rules and examples in `docs/LOGGING.md`.
+
 ## Environment Variables
 
 Create a `.env.local` (or `.env`) file with your Firebase configuration:
@@ -58,6 +62,9 @@ VITE_FIREBASE_VAPID_KEY=...
 
 # Optional when developing against the Functions emulator
 VITE_FUNCTIONS_BASE_URL=http://localhost:5001/<project-id>/us-central1
+
+# Optional logging control
+VITE_LOG_LEVEL=debug
 ```
 
 Notes:

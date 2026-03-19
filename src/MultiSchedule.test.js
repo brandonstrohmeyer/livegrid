@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { parseNasaSeCsv } from './schedule/parsers/nasaSeParser.js'
 import fs from 'fs'
 import { loadFixtures } from './schedule/testing/fixtures.js'
+import { log } from './logging.js'
 
 describe('Multi-Schedule Validation', () => {
   const fixtures = loadFixtures('nasa-se')
@@ -21,7 +22,7 @@ describe('Multi-Schedule Validation', () => {
         const csvContent = fs.readFileSync(fixture.filePath, 'utf-8')
         schedule = parseNasaSeCsv({ csvText: csvContent })
       } catch (err) {
-        console.error(`Error parsing ${fixture.file}:`, err.message)
+        log.error('tests.parse_failed', { fixture: fixture.file }, err)
       }
 
       it('should parse without errors', () => {

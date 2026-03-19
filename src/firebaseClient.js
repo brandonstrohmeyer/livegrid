@@ -7,6 +7,7 @@ import {
   enableIndexedDbPersistence,
   enableMultiTabIndexedDbPersistence
 } from 'firebase/firestore'
+import { log } from './logging.js'
 
 const runtimeAuthDomain =
   import.meta.env.VITE_FIREBASE_AUTH_DOMAIN ||
@@ -27,11 +28,10 @@ const missingConfig = Object.entries(firebaseConfig)
   .map(([key]) => key)
 
 if (missingConfig.length) {
-  console.warn(
-    '[firebase] Missing config values for:',
-    missingConfig.join(', '),
-    '\nSet the corresponding VITE_FIREBASE_* env vars to enable auth + sync.'
-  )
+  log.warn('firebase.config_missing', {
+    missingKeys: missingConfig,
+    hint: 'Set the corresponding VITE_FIREBASE_* env vars to enable auth + sync.'
+  })
 }
 
 const isFirebaseConfigured = missingConfig.length === 0
@@ -46,7 +46,7 @@ if (isFirebaseConfigured) {
   firestore = getFirestore(firebaseApp)
   functions = getFunctions(firebaseApp, 'us-central1')
 } else {
-  console.info('[firebase] Client SDK disabled: missing config values')
+  log.info('firebase.client_disabled', { reason: 'missing_config' })
 }
 
 const useEmulators =
@@ -58,14 +58,14 @@ if (useEmulators && auth && firestore) {
   try {
     connectAuthEmulator(auth, authHost, { disableWarnings: true })
   } catch (err) {
-    console.warn('[firebase] Failed to connect auth emulator', err)
+    log.warn('firebase.emulator_auth_connect_failed', { host: authHost }, err)
   }
   try {
     const [host, portString] = firestoreHost.split(':')
     const port = Number(portString || 8080)
     connectFirestoreEmulator(firestore, host, port)
   } catch (err) {
-    console.warn('[firebase] Failed to connect firestore emulator', err)
+    log.warn('firebase.emulator_firestore_connect_failed', { host: firestoreHost }, err)
   }
 }
 
@@ -73,7 +73,7 @@ if (useEmulators && functions) {
   try {
     connectFunctionsEmulator(functions, 'localhost', 5001)
   } catch (err) {
-    console.warn('[firebase] Failed to connect functions emulator', err)
+    log.warn('firebase.emulator_functions_connect_failed', { host: 'localhost:5001' }, err)
   }
 }
 
@@ -85,14 +85,14 @@ export function ensureFirestorePersistence({ multiTab = true } = {}) {
     const enable = multiTab ? enableMultiTabIndexedDbPersistence : enableIndexedDbPersistence
     persistencePromise = enable(firestore).catch(err => {
       if (multiTab && err.code === 'failed-precondition') {
-        console.warn('[firebase] Multi-tab persistence failed, retrying single tab mode')
+        log.warn('firebase.persistence_multi_tab_failed', { fallback: 'single_tab' }, err)
         return enableIndexedDbPersistence(firestore)
       }
       if (err.code === 'unimplemented') {
-        console.warn('[firebase] IndexedDB persistence unavailable in this browser.')
+        log.warn('firebase.persistence_unavailable', { reason: 'unimplemented' }, err)
         return null
       }
-      console.error('[firebase] Failed to enable persistence', err)
+      log.error('firebase.persistence_enable_failed', undefined, err)
       return null
     })
   }

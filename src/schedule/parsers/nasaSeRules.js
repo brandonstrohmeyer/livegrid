@@ -68,7 +68,6 @@ export function shouldExcludeFromRunGroups(sessionName) {
   if (/Instructors/i.test(sessionName)) return true
   if (/Awards/i.test(sessionName)) return true
   if (/TT\s+ALL/i.test(sessionName)) return true
-  if (/TT\s+Drivers/i.test(sessionName)) return true
   return false
 }
 
@@ -116,6 +115,10 @@ export function extractRunGroupsFromSessionName(sessionName) {
 
   if (shouldExcludeFromRunGroups(normalizedName)) return []
 
+  if (/^(all\s*)?tt\s*drivers\s*$/i.test(normalizedName)) {
+    return [...TT_GROUPS]
+  }
+
   const groups = new Set()
   const hpdeMatches = [...normalizedName.matchAll(/HPDE\s*\d+/ig)]
 
@@ -132,6 +135,10 @@ export function extractRunGroupsFromSessionName(sessionName) {
         return
       }
       if (/tt\s*practice|warmup|^tt$/i.test(part)) {
+        TT_GROUPS.forEach(group => groups.add(group))
+        return
+      }
+      if (/tt\s*drivers/i.test(part)) {
         TT_GROUPS.forEach(group => groups.add(group))
         return
       }
@@ -211,6 +218,11 @@ function dedupeActivities(activities) {
   return result
 }
 
+function isTtDriversMeetingText(text) {
+  if (!text) return false
+  return /tt\s*drivers?/i.test(text) && /meeting|mtg/i.test(text)
+}
+
 /**
  * Build meeting activities (HPDE, TT Drivers, All Racers).
  */
@@ -242,7 +254,7 @@ export function buildMeetingActivities(rows, runGroups, dayOffset = 0) {
       return
     }
 
-    if (/tt drivers/i.test(noteText) || /tt drivers/i.test(sessionText)) {
+    if (isTtDriversMeetingText(noteText) || isTtDriversMeetingText(sessionText)) {
       if (ttGroups.length === 0 || !start) return
       activities.push({
         type: 'meeting',

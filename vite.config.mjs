@@ -2,6 +2,29 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
+function manualChunks(id) {
+  const normalized = id.replace(/\\/g, '/')
+  if (!normalized.includes('/node_modules/')) return undefined
+
+  if (normalized.includes('/node_modules/react/') || normalized.includes('/node_modules/react-dom/')) {
+    return 'react'
+  }
+  if (normalized.includes('/node_modules/firebase/') || normalized.includes('/node_modules/@firebase/')) {
+    return 'firebase'
+  }
+  if (normalized.includes('/node_modules/papaparse/') || normalized.includes('/node_modules/fast-xml-parser/')) {
+    return 'schedule'
+  }
+  if (
+    normalized.includes('/node_modules/react-icons/') ||
+    normalized.includes('/node_modules/react-pro-sidebar/') ||
+    normalized.includes('/node_modules/viewportify/')
+  ) {
+    return 'ui'
+  }
+  return 'vendor'
+}
+
 export default defineConfig({
   plugins: [
     react(),
@@ -40,4 +63,11 @@ export default defineConfig({
       }
     })
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks
+      }
+    }
+  }
 })

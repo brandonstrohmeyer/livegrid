@@ -4,11 +4,89 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore'
 import { onRequest, onCall, HttpsError } from 'firebase-functions/v2/https'
 import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { createHash } from 'crypto'
+import { readFileSync } from 'fs'
+import path from 'path'
+import { log } from './logging'
 
 admin.initializeApp()
 
 const db = admin.firestore()
-const messaging = admin.messaging()
+const TEST_MODE = process.env.LIVEGRID_TEST_MODE === 'true'
+const TEST_FIXTURES_DIR = process.env.LIVEGRID_TEST_FIXTURES_DIR || ''
+const useStubMessaging = TEST_MODE && (process.env.LIVEGRID_TEST_MESSAGING || 'stub') === 'stub'
+
+function resolveFixturePath(name: string) {
+  if (!TEST_MODE || !TEST_FIXTURES_DIR) return null
+  const baseDir = path.isAbsolute(TEST_FIXTURES_DIR)
+    ? TEST_FIXTURES_DIR
+    : path.resolve(__dirname, '..', '..', TEST_FIXTURES_DIR)
+  return path.join(baseDir, name)
+}
+
+function readFixtureText(name: string) {
+  const filePath = resolveFixturePath(name)
+  if (!filePath) return null
+  try {
+    return readFileSync(filePath, 'utf8')
+  } catch (err) {
+    return null
+  }
+}
+
+function readFixtureJson<T = any>(name: string): T | null {
+  const raw = readFixtureText(name)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as T
+  } catch (err) {
+    return null
+  }
+}
+
+function assertTestMode(res: any) {
+  if (TEST_MODE) return true
+  res.status(404).json({ error: 'Not found' })
+  return false
+}
+
+type MessagingClient = Pick<admin.messaging.Messaging, 'sendEachForMulticast'>
+
+function createStubMessaging(): MessagingClient {
+  return {
+    async sendEachForMulticast(message) {
+      const tokens = Array.isArray(message?.tokens) ? message.tokens : []
+      const responses = tokens.map(token => {
+        if (token.includes('invalid')) {
+          return {
+            success: false,
+            error: { code: 'messaging/registration-token-not-registered', message: 'invalid token' }
+          }
+        }
+        if (token.includes('transient')) {
+          return {
+            success: false,
+            error: { code: 'messaging/internal-error', message: 'transient error' }
+          }
+        }
+        if (token.includes('fail')) {
+          return {
+            success: false,
+            error: { code: 'messaging/unknown-error', message: 'forced failure' }
+          }
+        }
+        return {
+          success: true,
+          messageId: `test-${tokenFingerprint(token) || Math.random().toString(36).slice(2, 10)}`
+        }
+      })
+      const successCount = responses.filter(resp => resp.success).length
+      const failureCount = responses.length - successCount
+      return { responses, successCount, failureCount } as any
+    }
+  }
+}
+
+const messaging: MessagingClient = useStubMessaging ? createStubMessaging() : admin.messaging()
 
 const defaultHost = process.env.GCLOUD_PROJECT ? `https://${process.env.GCLOUD_PROJECT}.web.app` : 'https://livegrid.stro.io'
 const appPublicUrl = process.env.APP_PUBLIC_URL || defaultHost
@@ -17,10 +95,13 @@ const scheduledCollection = db.collection('scheduledNotifications')
 const usersCollection = db.collection('users')
 const sheetMetadataCollection = db.collection('sheetMetadata')
 const sheetSourcesCollection = db.collection('sheetSources')
+const eventCacheCollection = db.collection('eventCache')
 
 const SCHEDULER_REGION = 'us-central1'
 const LEASE_MS = 2 * 60 * 1000
 const DISPATCH_LIMIT = 200
+const NOTIFICATION_TTL_DAYS = 30
+const NOTIFICATION_TTL_MS = NOTIFICATION_TTL_DAYS * 24 * 60 * 60 * 1000
 
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets'
 const SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY || process.env.SHEETS_API_KEY || ''
@@ -33,6 +114,8 @@ const SHEETS_RATE_LIMIT_MAX = 60
 const HOD_MA_ORG_URL = 'https://www.motorsportreg.com/orgs/hooked-on-driving/mid-atlantic'
 const HOD_MA_EVENT_LIMIT = 20
 const HOD_MA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+const EVENT_CACHE_STALE_DAYS = 14
+const EVENT_CACHE_MAX = 200
 
 type SheetTab = {
   sheetId: number
@@ -76,7 +159,7 @@ async function authenticate(req: { get: (name: string) => string | undefined }) 
     const decoded = await admin.auth().verifyIdToken(token)
     return decoded.uid
   } catch (err: any) {
-    console.warn('[functions] Failed to verify auth token', err?.message || err)
+    log.warn('auth.verify_failed', undefined, err)
     return null
   }
 }
@@ -94,7 +177,7 @@ function tokenFingerprint(token?: string) {
   try {
     return createHash('sha256').update(token).digest('hex').slice(0, 12)
   } catch (err) {
-    console.warn('[functions] Failed to hash token for logging', err)
+    log.warn('auth.token_hash_failed', undefined, err)
     return 'hash_error'
   }
 }
@@ -158,6 +241,116 @@ function extractEventTitle(html: string, fallbackUrl: string) {
   return titleFromEventUrl(fallbackUrl)
 }
 
+function stripCdata(value: string) {
+  return value.replace(/^<!\[CDATA\[/i, '').replace(/\]\]>$/i, '').trim()
+}
+
+function extractXmlTag(xml: string, tag: string) {
+  const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i')
+  const match = xml.match(regex)
+  if (!match?.[1]) return null
+  return stripCdata(match[1]).trim()
+}
+
+function extractPreferredSheetUrlFromHtml(html: string) {
+  if (!html) return null
+  const anchorRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
+  let match: RegExpExecArray | null
+  while ((match = anchorRegex.exec(html))) {
+    const href = match[1] || ''
+    const text = decodeHtmlEntities(match[2] || '').toLowerCase()
+    if (!href.includes('docs.google.com/spreadsheets')) continue
+    if (text.includes('live') && text.includes('schedule')) {
+      return decodeHtmlEntities(href)
+    }
+  }
+  return extractSheetUrlFromHtml(html)
+}
+
+const MONTH_INDEX: Record<string, number> = {
+  jan: 0, january: 0,
+  feb: 1, february: 1,
+  mar: 2, march: 2,
+  apr: 3, april: 3,
+  may: 4,
+  jun: 5, june: 5,
+  jul: 6, july: 6,
+  aug: 7, august: 7,
+  sep: 8, sept: 8, september: 8,
+  oct: 9, october: 9,
+  nov: 10, november: 10,
+  dec: 11, december: 11
+}
+
+function buildUtcDate(year: number, monthIndex: number, day: number) {
+  return new Date(Date.UTC(year, monthIndex, day, 0, 0, 0))
+}
+
+function parseDateRangeFromText(text: string, fallbackDate?: Date | null) {
+  if (!text) return null
+  const normalized = text.replace(/\u2013|\u2014/g, '-')
+  const fallbackYear = fallbackDate?.getUTCFullYear?.() ?? fallbackDate?.getFullYear?.() ?? new Date().getUTCFullYear()
+
+  const monthRegex = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b[^0-9]*([0-9]{1,2})(?:\s*-\s*([0-9]{1,2}))?(?:[^0-9]+([0-9]{4}))?/i
+  const monthMatch = normalized.match(monthRegex)
+  if (monthMatch) {
+    const monthName = monthMatch[1].toLowerCase()
+    const monthIndex = MONTH_INDEX[monthName]
+    const startDay = parseInt(monthMatch[2], 10)
+    const endDay = monthMatch[3] ? parseInt(monthMatch[3], 10) : startDay
+    const year = monthMatch[4] ? parseInt(monthMatch[4], 10) : fallbackYear
+    if (!Number.isNaN(startDay) && monthIndex != null && !Number.isNaN(year)) {
+      const start = buildUtcDate(year, monthIndex, startDay)
+      const end = buildUtcDate(year, monthIndex, endDay)
+      return { start, end }
+    }
+  }
+
+  const numericRegex = /\b(\d{1,2})[\/-](\d{1,2})(?:\s*-\s*(\d{1,2}))?(?:[\/-](\d{2,4}))?/i
+  const numericMatch = normalized.match(numericRegex)
+  if (numericMatch) {
+    const month = parseInt(numericMatch[1], 10)
+    const startDay = parseInt(numericMatch[2], 10)
+    const endDay = numericMatch[3] ? parseInt(numericMatch[3], 10) : startDay
+    let year = numericMatch[4] ? parseInt(numericMatch[4], 10) : fallbackYear
+    if (year < 100) year += 2000
+    if (!Number.isNaN(month) && !Number.isNaN(startDay) && !Number.isNaN(year)) {
+      const monthIndex = Math.min(Math.max(month - 1, 0), 11)
+      const start = buildUtcDate(year, monthIndex, startDay)
+      const end = buildUtcDate(year, monthIndex, endDay)
+      return { start, end }
+    }
+  }
+
+  return null
+}
+
+function resolveEventDateRange({
+  title,
+  html,
+  fallbackDate
+}: {
+  title: string
+  html?: string | null
+  fallbackDate?: Date | null
+}) {
+  const fromTitle = parseDateRangeFromText(title, fallbackDate)
+  if (fromTitle) return fromTitle
+  if (html) {
+    const fromHtml = parseDateRangeFromText(html, fallbackDate)
+    if (fromHtml) return fromHtml
+  }
+  if (fallbackDate) {
+    const day = buildUtcDate(
+      fallbackDate.getUTCFullYear?.() ?? fallbackDate.getFullYear(),
+      fallbackDate.getUTCMonth?.() ?? fallbackDate.getMonth(),
+      fallbackDate.getUTCDate?.() ?? fallbackDate.getDate()
+    )
+    return { start: day, end: day }
+  }
+  return null
+}
+
 function buildRequestId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
@@ -184,6 +377,11 @@ function parseTimestamp(isoUtc: string) {
   if (Number.isNaN(date.getTime())) return null
   // Timestamp from firebase-admin/firestore avoids the emulator crash seen with admin.firestore.Timestamp.
   return Timestamp.fromDate(date)
+}
+
+function computeNotificationExpiry(fireAt: Timestamp | null) {
+  if (!fireAt) return null
+  return Timestamp.fromMillis(fireAt.toMillis() + NOTIFICATION_TTL_MS)
 }
 
 function isTransientMessagingError(code?: string) {
@@ -237,6 +435,188 @@ function buildMessage({ tokenList, title, body, data, tag }: {
   }
 }
 
+type NormalizedEvent = {
+  source: 'nasa' | 'hod'
+  eventId: string
+  title: string
+  sheetUrl: string
+  eventUrl: string | null
+  startDate: Date
+  endDate: Date
+  sourceUpdatedAt: Date | null
+}
+
+function buildEventId(source: string, seed: string) {
+  return `${source}-${createHash('sha256').update(seed).digest('hex').slice(0, 24)}`
+}
+
+function normalizeNasaEvents(rssXml: string) {
+  const items = Array.from(rssXml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)).map(match => match[1])
+  const now = Date.now()
+  const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000
+  const events: NormalizedEvent[] = []
+
+  items.forEach((itemXml, index) => {
+    const titleRaw = extractXmlTag(itemXml, 'title') || `Event ${index + 1}`
+    const title = decodeHtmlEntities(titleRaw).trim()
+    const pubDateStr = extractXmlTag(itemXml, 'pubDate') || extractXmlTag(itemXml, 'dc:date')
+    const pubDate = pubDateStr ? new Date(pubDateStr) : null
+    if (!pubDate || Number.isNaN(pubDate.getTime())) return
+    if (now - pubDate.getTime() > sixtyDaysMs) return
+
+    const content = extractXmlTag(itemXml, 'content:encoded')
+      || extractXmlTag(itemXml, 'description')
+      || ''
+    const sheetUrl = extractPreferredSheetUrlFromHtml(content)
+    if (!sheetUrl) return
+
+    const eventUrl = extractXmlTag(itemXml, 'link')
+    const guid = extractXmlTag(itemXml, 'guid') || eventUrl || title
+    const eventId = buildEventId('nasa', guid)
+
+    const range = resolveEventDateRange({ title, html: content, fallbackDate: pubDate })
+    if (!range) return
+
+    events.push({
+      source: 'nasa',
+      eventId,
+      title,
+      sheetUrl,
+      eventUrl: eventUrl || null,
+      startDate: range.start,
+      endDate: range.end,
+      sourceUpdatedAt: pubDate
+    })
+  })
+
+  return events
+}
+
+function normalizeHodEvents(events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string }>) {
+  const normalized: NormalizedEvent[] = []
+  events.forEach((event, index) => {
+    const { eventUrl, title, sheetUrl, html } = event
+    const idMatch = eventUrl.match(/-(\d{5,})(?:\/)?$/)
+    const eventIdSeed = idMatch && idMatch[1] ? `hod-${idMatch[1]}` : `${eventUrl}-${index}`
+    const eventId = buildEventId('hod', eventIdSeed)
+    const range = resolveEventDateRange({ title, html })
+    const fallback = new Date()
+    const startDate = range?.start || fallback
+    const endDate = range?.end || startDate
+
+    normalized.push({
+      source: 'hod',
+      eventId,
+      title,
+      sheetUrl,
+      eventUrl,
+      startDate,
+      endDate,
+      sourceUpdatedAt: null
+    })
+  })
+  return normalized
+}
+
+async function refreshEventCacheForSource(source: 'nasa' | 'hod', events: NormalizedEvent[]) {
+  const now = Timestamp.now()
+  const batch = db.batch()
+  const seen = new Set<string>()
+
+  events.forEach(event => {
+    const docId = `${event.source}:${event.eventId}`
+    seen.add(docId)
+    const docRef = eventCacheCollection.doc(docId)
+    const payloadHash = createHash('sha256').update(JSON.stringify({
+      title: event.title,
+      sheetUrl: event.sheetUrl,
+      eventUrl: event.eventUrl,
+      startDate: event.startDate.toISOString(),
+      endDate: event.endDate.toISOString()
+    })).digest('hex')
+
+    batch.set(docRef, {
+      source: event.source,
+      eventId: event.eventId,
+      title: event.title,
+      sheetUrl: event.sheetUrl,
+      eventUrl: event.eventUrl,
+      label: event.source === 'nasa' ? `[NASA-SE] ${event.title}` : `[HOD-MA] ${event.title}`,
+      startDate: Timestamp.fromDate(event.startDate),
+      endDate: Timestamp.fromDate(event.endDate),
+      sourceUpdatedAt: event.sourceUpdatedAt ? Timestamp.fromDate(event.sourceUpdatedAt) : null,
+      updatedAt: now,
+      lastSeenAt: now,
+      contentHash: payloadHash,
+      isActive: true
+    }, { merge: true })
+  })
+
+  if (events.length) {
+    await batch.commit()
+  }
+
+  const staleCutoff = Timestamp.fromMillis(now.toMillis() - EVENT_CACHE_STALE_DAYS * 24 * 60 * 60 * 1000)
+  const staleSnap = await eventCacheCollection
+    .where('source', '==', source)
+    .where('lastSeenAt', '<', staleCutoff)
+    .where('isActive', '==', true)
+    .get()
+
+  if (!staleSnap.empty) {
+    const staleBatch = db.batch()
+    staleSnap.docs.forEach(doc => {
+      staleBatch.set(doc.ref, { isActive: false, updatedAt: now }, { merge: true })
+    })
+    await staleBatch.commit()
+  }
+}
+
+async function fetchHodEventDetails() {
+  const fixtureOrg = readFixtureText('hod-org.html')
+  const fixtureEvent = readFixtureText('hod-event.html')
+  if (fixtureOrg && fixtureEvent) {
+    const eventLinks = extractEventLinksFromOrg(fixtureOrg).slice(0, HOD_MA_EVENT_LIMIT)
+    const events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string }> = []
+    for (const eventUrl of eventLinks) {
+      const sheetUrl = extractSheetUrlFromHtml(fixtureEvent)
+      if (!sheetUrl) continue
+      const title = extractEventTitle(fixtureEvent, eventUrl)
+      events.push({ eventUrl, title, sheetUrl, html: fixtureEvent })
+    }
+    return events
+  }
+
+  const upstream = await fetch(HOD_MA_ORG_URL, {
+    headers: { 'User-Agent': HOD_MA_USER_AGENT }
+  })
+  if (!upstream.ok) {
+    throw new Error(`HOD org fetch failed (${upstream.status})`)
+  }
+  const body = await upstream.text()
+  const eventLinks = extractEventLinksFromOrg(body).slice(0, HOD_MA_EVENT_LIMIT)
+  const events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string }> = []
+
+  for (const eventUrl of eventLinks) {
+    try {
+      const eventResp = await fetch(eventUrl, {
+        headers: { 'User-Agent': HOD_MA_USER_AGENT }
+      })
+      if (!eventResp.ok) continue
+      const eventHtml = await eventResp.text()
+      const sheetUrl = extractSheetUrlFromHtml(eventHtml)
+      if (!sheetUrl) continue
+
+      const title = extractEventTitle(eventHtml, eventUrl)
+      events.push({ eventUrl, title, sheetUrl, html: eventHtml })
+    } catch (err) {
+      log.warn('hod_ma.event_inspect_failed', { eventUrl }, err)
+    }
+  }
+
+  return events
+}
+
 // Simple proxy for the NASA-SE RSS feed so the frontend can avoid CORS issues.
 export const nasaFeed = onRequest({ cors: true, region: SCHEDULER_REGION }, async (req, res) => {
   if (req.method === 'OPTIONS') {
@@ -249,9 +629,16 @@ export const nasaFeed = onRequest({ cors: true, region: SCHEDULER_REGION }, asyn
   }
 
   try {
+    const fixture = readFixtureText('nasa-feed.xml')
+    if (fixture) {
+      res.set('Content-Type', 'application/rss+xml; charset=utf-8')
+      res.status(200).send(fixture)
+      return
+    }
+
     const upstream = await fetch('https://nasa-se.com/feed/')
     if (!upstream.ok) {
-      console.error('Upstream feed error', upstream.status, upstream.statusText)
+      log.error('nasa_feed.upstream_error', { status: upstream.status, statusText: upstream.statusText })
       res.status(502).send('Failed to fetch upstream feed')
       return
     }
@@ -261,7 +648,7 @@ export const nasaFeed = onRequest({ cors: true, region: SCHEDULER_REGION }, asyn
     res.set('Content-Type', contentType)
     res.status(200).send(body)
   } catch (err) {
-    console.error('Error proxying nasa-se feed', err)
+    log.error('nasa_feed.proxy_failed', undefined, err)
     res.status(500).send('Error fetching feed')
   }
 })
@@ -277,13 +664,32 @@ export const hodMaEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, a
   }
 
   try {
+    const fixtureOrg = readFixtureText('hod-org.html')
+    const fixtureEvent = readFixtureText('hod-event.html')
+    if (fixtureOrg && fixtureEvent) {
+      const eventLinks = extractEventLinksFromOrg(fixtureOrg).slice(0, HOD_MA_EVENT_LIMIT)
+      const events = []
+      for (const eventUrl of eventLinks) {
+        const sheetUrl = extractSheetUrlFromHtml(fixtureEvent)
+        if (!sheetUrl) continue
+        const title = extractEventTitle(fixtureEvent, eventUrl)
+        const idMatch = eventUrl.match(/-(\d{5,})(?:\/)?$/)
+        const eventId: string = idMatch && idMatch[1]
+          ? `hod-${idMatch[1]}`
+          : `hod-${events.length + 1}`
+        events.push({ eventId, title, sheetUrl, eventUrl })
+      }
+      res.status(200).json({ events })
+      return
+    }
+
     const upstream = await fetch(HOD_MA_ORG_URL, {
       headers: {
         'User-Agent': HOD_MA_USER_AGENT
       }
     })
     if (!upstream.ok) {
-      console.error('Upstream HOD-MA org error', upstream.status, upstream.statusText)
+      log.error('hod_ma.upstream_org_error', { status: upstream.status, statusText: upstream.statusText })
       res.status(502).json({ error: 'Failed to fetch upstream events' })
       return
     }
@@ -314,15 +720,133 @@ export const hodMaEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, a
           eventUrl
         })
       } catch (err) {
-        console.warn('Failed to inspect HOD-MA event', eventUrl, err)
+        log.warn('hod_ma.event_inspect_failed', { eventUrl }, err)
       }
     }
 
     res.status(200).json({ events })
   } catch (err) {
-    console.error('Error fetching HOD-MA events', err)
+    log.error('hod_ma.fetch_failed', undefined, err)
     res.status(500).json({ error: 'Error fetching events' })
   }
+})
+
+export const refreshEventCache = onSchedule(
+  { schedule: 'every 60 minutes', timeZone: 'UTC', region: SCHEDULER_REGION },
+  async () => {
+    try {
+      const nasaFixture = readFixtureText('nasa-feed.xml')
+      let rssXml = ''
+      if (nasaFixture) {
+        rssXml = nasaFixture
+      } else {
+        const nasaResp = await fetch('https://nasa-se.com/feed/')
+        if (!nasaResp.ok) {
+          log.warn('event_cache.nasa_feed_error', { status: nasaResp.status, statusText: nasaResp.statusText })
+        }
+        rssXml = nasaResp.ok ? await nasaResp.text() : ''
+      }
+      const nasaEvents = rssXml ? normalizeNasaEvents(rssXml) : []
+
+      const hodRaw = await fetchHodEventDetails()
+      const hodEvents = normalizeHodEvents(hodRaw)
+
+      await Promise.all([
+        refreshEventCacheForSource('nasa', nasaEvents),
+        refreshEventCacheForSource('hod', hodEvents)
+      ])
+
+      log.info('event_cache.refresh_complete', {
+        nasa: nasaEvents.length,
+        hod: hodEvents.length
+      })
+    } catch (err: any) {
+      log.error('event_cache.refresh_failed', undefined, err)
+    }
+  }
+)
+
+export const cachedEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('')
+    return
+  }
+  if (req.method !== 'GET') {
+    res.status(405).send('Method not allowed')
+    return
+  }
+
+  try {
+    const sourceParam = (req.query?.source || '').toString().trim()
+    let query: FirebaseFirestore.Query = eventCacheCollection
+    if (sourceParam === 'nasa' || sourceParam === 'hod') {
+      query = query.where('source', '==', sourceParam)
+    }
+    query = query.orderBy('startDate').limit(EVENT_CACHE_MAX)
+
+    const snapshot = await query.get()
+    const events = snapshot.docs
+      .filter(doc => (doc.data() as any)?.isActive !== false)
+      .map(doc => {
+        const data = doc.data() as any
+        return {
+          id: doc.id,
+          source: data.source,
+          eventId: data.eventId,
+          title: data.title,
+        sheetUrl: data.sheetUrl,
+        eventUrl: data.eventUrl || null,
+        label: data.label,
+        startDate: data.startDate?.toDate?.().toISOString?.() || null,
+        endDate: data.endDate?.toDate?.().toISOString?.() || null,
+        updatedAt: data.updatedAt?.toDate?.().toISOString?.() || null
+      }
+    })
+
+    res.status(200).json({
+      events,
+      count: events.length,
+      fetchedAt: new Date().toISOString()
+    })
+  } catch (err: any) {
+    log.error('event_cache.read_failed', undefined, err)
+    res.status(500).json({ error: 'Failed to read cached events' })
+  }
+})
+
+export const testSeedEventCache = onRequest({ cors: true, region: SCHEDULER_REGION }, async (req, res) => {
+  if (!assertTestMode(res)) return
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('')
+    return
+  }
+  if (req.method !== 'POST') {
+    res.status(405).send('Method not allowed')
+    return
+  }
+
+  const body = req.body || {}
+  const source = body.source === 'hod' ? 'hod' : 'nasa'
+  const eventId = body.eventId || `event-${Date.now()}`
+  const docId = `${source}:${eventId}`
+  const startDate = body.startDateIso ? new Date(body.startDateIso) : new Date()
+  const endDate = body.endDateIso ? new Date(body.endDateIso) : startDate
+
+  await eventCacheCollection.doc(docId).set({
+    source,
+    eventId,
+    title: body.title || 'Test Event',
+    sheetUrl: body.sheetUrl || 'https://docs.google.com/spreadsheets/d/TEST_SHEET_ID/edit',
+    eventUrl: body.eventUrl || null,
+    label: body.label || `[${source.toUpperCase()}] Test Event`,
+    startDate: Timestamp.fromDate(startDate),
+    endDate: Timestamp.fromDate(endDate),
+    updatedAt: Timestamp.now(),
+    lastSeenAt: Timestamp.now(),
+    isActive: true
+  })
+
+  res.json({ status: 'ok', id: docId })
 })
 
 export const registerPushToken = onRequest({ cors: true, region: SCHEDULER_REGION }, async (req, res) => {
@@ -350,7 +874,7 @@ export const registerPushToken = onRequest({ cors: true, region: SCHEDULER_REGIO
     isStandalone: clientInfo.isStandalone ?? null,
     displayMode: clientInfo.displayMode || null
   } : null
-  console.log('[registerPushToken] Request', {
+  log.info('push_token.register_request', {
     uid: uid || null,
     tokenHash,
     platform,
@@ -374,15 +898,15 @@ export const registerPushToken = onRequest({ cors: true, region: SCHEDULER_REGIO
         tokens: FieldValue.arrayUnion(token),
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true })
-      console.log('[registerPushToken] Linked token to user doc', { uid, tokenHash })
+      log.info('push_token.linked_to_user', { uid, tokenHash })
     } else {
-      console.warn('[registerPushToken] Missing auth uid; token not linked to user doc', { tokenHash })
+      log.warn('push_token.missing_auth_uid', { tokenHash })
     }
 
-    console.log('[registerPushToken] Stored token', { uid: uid || null, tokenHash })
+    log.info('push_token.stored', { uid: uid || null, tokenHash })
     res.json({ status: 'registered' })
   } catch (err) {
-    console.error('Failed to store push token', err)
+    log.error('push_token.store_failed', { tokenHash }, err)
     res.status(500).json({ error: 'Failed to store token' })
   }
 })
@@ -405,7 +929,7 @@ export const unregisterPushToken = onRequest({ cors: true, region: SCHEDULER_REG
 
   const uid = await authenticate(req)
   const tokenHash = tokenFingerprint(token)
-  console.log('[unregisterPushToken] Request', { uid: uid || null, tokenHash })
+  log.info('push_token.unregister_request', { uid: uid || null, tokenHash })
 
   try {
     await db.collection('notificationTokens').doc(token).delete()
@@ -417,10 +941,10 @@ export const unregisterPushToken = onRequest({ cors: true, region: SCHEDULER_REG
       }, { merge: true })
     }
 
-    console.log('[unregisterPushToken] Deleted token', { uid: uid || null, tokenHash })
+    log.info('push_token.deleted', { uid: uid || null, tokenHash })
     res.json({ status: 'deleted' })
   } catch (err) {
-    console.error('Failed to delete push token', err)
+    log.error('push_token.delete_failed', { tokenHash }, err)
     res.status(500).json({ error: 'Failed to delete token' })
   }
 })
@@ -453,11 +977,15 @@ export const sendPushNotification = onRequest({ cors: true, region: SCHEDULER_RE
 
   try {
     const response = await messaging.sendEachForMulticast(message)
-    console.log('[sendPushNotification] FCM response:', response)
+    log.info('push.send_response', {
+      requestedBy: uid || null,
+      successCount: response?.successCount ?? null,
+      failureCount: response?.failureCount ?? null,
+      messageId: response?.responses?.[0]?.messageId || null
+    })
     res.json({ status: 'sent', id: response?.responses?.[0]?.messageId || null, requestedBy: uid || null })
   } catch (err: any) {
-    console.error('Failed to send push message', err)
-    if (err?.stack) console.error('Stack:', err.stack)
+    log.error('push.send_failed', { requestedBy: uid || null }, err)
     res.status(500).json({ error: 'Failed to send push message', details: err?.message || err })
   }
 })
@@ -481,7 +1009,11 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
 
   const uid = request.auth.uid
   const { eventId, desiredNotifications } = request.data || {}
-  console.log('[syncScheduledNotifications] Request', { uid, eventId, count: Array.isArray(desiredNotifications) ? desiredNotifications.length : 0 })
+  log.info('notifications.sync_request', {
+    uid,
+    eventId,
+    count: Array.isArray(desiredNotifications) ? desiredNotifications.length : 0
+  })
   if (!eventId || typeof eventId !== 'string') {
     throw new HttpsError('invalid-argument', 'eventId is required')
   }
@@ -523,9 +1055,6 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
   desiredMap.forEach((item, notifId) => {
     const existing = existingById.get(notifId)
     const existingStatus = existing?.data()?.status
-    if (existing?.exists && existingStatus === 'sent') {
-      return
-    }
 
     const fireAt = parseTimestamp(item.fireAtIsoUtc)
     if (!fireAt) {
@@ -533,6 +1062,14 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
     }
 
     const docRef = scheduledCollection.doc(notifId)
+    if (existing?.exists && existingStatus === 'sent') {
+      const existingExpiresAt = existing?.data()?.expiresAt
+      if (existingExpiresAt) {
+        return
+      }
+      batch.set(docRef, { expiresAt: computeNotificationExpiry(fireAt), updatedAt: now }, { merge: true })
+      return
+    }
     const payload = {
       title: item.payload.title,
       body: item.payload.body,
@@ -544,6 +1081,7 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
       eventId,
       runGroupId: item.runGroupId,
       fireAt,
+      expiresAt: computeNotificationExpiry(fireAt),
       dedupeKey: notifId,
       payload,
       updatedAt: now
@@ -586,7 +1124,7 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
   await batch.commit()
 
   const sortedFireAt = fireAtTimes.filter(Boolean).sort()
-  console.log('[syncScheduledNotifications] Synced', {
+  log.info('notifications.sync_complete', {
     uid,
     eventId,
     count: desiredMap.size,
@@ -603,7 +1141,8 @@ async function leaseNotification(docRef: FirebaseFirestore.DocumentReference, no
     const snap = await tx.get(docRef)
     if (!snap.exists) return
     const data = snap.data() as any
-    if (data.status !== 'pending') return
+    const status = data.status ?? 'pending'
+    if (status !== 'pending' && status !== 'sending') return
     if (data.leaseUntil && data.leaseUntil.toMillis() > now.toMillis()) return
     tx.update(docRef, {
       status: 'sending',
@@ -615,195 +1154,247 @@ async function leaseNotification(docRef: FirebaseFirestore.DocumentReference, no
   return leased
 }
 
-export const scheduledNotificationDispatcher = onSchedule(
-  { schedule: 'every 1 minutes', timeZone: 'UTC', region: SCHEDULER_REGION },
-  async () => {
-    const now = Timestamp.now()
+function normalizeTimestamp(value: any) {
+  if (!value) return Timestamp.now()
+  if (value instanceof Timestamp) return value
+  if (typeof value?.toMillis === 'function') return Timestamp.fromMillis(value.toMillis())
+  if (value instanceof Date) return Timestamp.fromDate(value)
+  return Timestamp.now()
+}
 
-    const snapshot = await scheduledCollection
-      .where('fireAt', '<=', now)
-      .orderBy('fireAt')
-      .limit(DISPATCH_LIMIT * 3)
-      .get()
+export async function dispatchScheduledNotifications(now: Timestamp | Date | { toMillis?: () => number }) {
+  const normalizedNow = normalizeTimestamp(now)
+  const dispatchLimit = DISPATCH_LIMIT * 4
+  const pendingSnap = await scheduledCollection
+    .where('status', '==', 'pending')
+    .where('fireAt', '<=', normalizedNow)
+    .orderBy('fireAt')
+    .limit(dispatchLimit)
+    .get()
 
-    if (snapshot.empty) {
-      try {
-        const nextSnap = await scheduledCollection
-          .orderBy('fireAt')
-          .limit(1)
-          .get()
-        if (nextSnap.empty) {
-          console.log('[scheduledNotificationDispatcher] No notifications scheduled at', now.toDate().toISOString())
-        } else {
-          const nextDoc = nextSnap.docs[0]
-          const nextData = nextDoc.data() as any
-          const nextFireAt = nextData.fireAt?.toDate?.().toISOString?.() || null
-          console.log('[scheduledNotificationDispatcher] No notifications due at', now.toDate().toISOString(), 'next scheduled at', nextFireAt, 'status', nextData.status, 'doc', nextDoc.id)
-        }
-      } catch (err: any) {
-        console.warn('[scheduledNotificationDispatcher] Failed to check next scheduled notification', err?.message || err)
+  // Firestore queries for `status == null` do not match missing fields.
+  // Pull a small candidate window by fireAt and then filter in-memory.
+  const missingStatusCandidatesSnap = await scheduledCollection
+    .where('fireAt', '<=', normalizedNow)
+    .orderBy('fireAt')
+    .limit(DISPATCH_LIMIT)
+    .get()
+  const missingStatusDocs = missingStatusCandidatesSnap.docs.filter(doc => {
+    const status = (doc.data() as any)?.status
+    return status === null || status === undefined
+  })
+
+  const sendingSnap = await scheduledCollection
+    .where('status', '==', 'sending')
+    .where('fireAt', '<=', normalizedNow)
+    .orderBy('fireAt')
+    .limit(DISPATCH_LIMIT)
+    .get()
+
+  const docsById = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>()
+  pendingSnap.docs.forEach(doc => docsById.set(doc.id, doc))
+  missingStatusDocs.forEach(doc => docsById.set(doc.id, doc))
+  sendingSnap.docs.forEach(doc => docsById.set(doc.id, doc))
+
+  const docs = Array.from(docsById.values()).sort((a, b) => {
+    const aFireAt = (a.data() as any)?.fireAt?.toMillis?.() ?? 0
+    const bFireAt = (b.data() as any)?.fireAt?.toMillis?.() ?? 0
+    return aFireAt - bFireAt
+  })
+
+  if (!docs.length) {
+    try {
+      const nextSnap = await scheduledCollection
+        .where('status', '==', 'pending')
+        .orderBy('fireAt')
+        .limit(1)
+        .get()
+      if (nextSnap.empty) {
+        log.debug('scheduler.no_notifications_scheduled', { now: normalizedNow.toDate().toISOString() })
+      } else {
+        const nextDoc = nextSnap.docs[0]
+        const nextData = nextDoc.data() as any
+        const nextFireAt = nextData.fireAt?.toDate?.().toISOString?.() || null
+        log.debug('scheduler.no_notifications_due', {
+          now: normalizedNow.toDate().toISOString(),
+          nextFireAt,
+          nextStatus: nextData.status || null,
+          nextDocId: nextDoc.id
+        })
       }
-      return
+    } catch (err: any) {
+      log.warn('scheduler.next_check_failed', undefined, err)
+    }
+    return
+  }
+
+  log.info('scheduler.fetched', { count: docs.length, now: normalizedNow.toDate().toISOString() })
+
+  for (const doc of docs) {
+    const data = doc.data() as any
+    const status = data.status ?? 'pending'
+    if (status !== 'pending' && status !== 'sending') {
+      log.debug('scheduler.skip_non_pending', { docId: doc.id, status })
+      continue
     }
 
-    console.log('[scheduledNotificationDispatcher] Fetched', snapshot.size, 'docs at', now.toDate().toISOString())
+    if (status === 'sending' && data.leaseUntil && data.leaseUntil.toMillis() > normalizedNow.toMillis()) {
+      log.debug('scheduler.skip_lease', { docId: doc.id })
+      continue
+    }
 
-    for (const doc of snapshot.docs) {
-      const data = doc.data() as any
-      if (data.status !== 'pending') {
-        console.log('[scheduledNotificationDispatcher] Skip non-pending doc', doc.id, data.status)
-        continue
+    const leased = await leaseNotification(doc.ref, normalizedNow)
+    if (!leased) {
+      log.debug('scheduler.skip_lease', { docId: doc.id })
+      continue
+    }
+    const uid = data.uid as string
+    const payload = data.payload || {}
+    const title = payload.title || 'LiveGrid'
+    const body = payload.body || ''
+    const dataPayload = payload.data || {}
+    const tag = dataPayload.tag || data.dedupeKey
+
+    try {
+      const userDoc = await usersCollection.doc(uid).get()
+      const tokens: string[] = userDoc.exists && Array.isArray(userDoc.data()?.tokens) ? userDoc.data()!.tokens : []
+      if (!userDoc.exists) {
+        log.warn('scheduler.missing_user_doc', { uid, docId: doc.id })
       }
 
-      const leased = await leaseNotification(doc.ref, now)
-      if (!leased) {
-        console.log('[scheduledNotificationDispatcher] Skip lease for doc', doc.id)
-        continue
-      }
-      const uid = data.uid as string
-      const payload = data.payload || {}
-      const title = payload.title || 'LiveGrid'
-      const body = payload.body || ''
-      const dataPayload = payload.data || {}
-      const tag = dataPayload.tag || data.dedupeKey
-
-      try {
-        const userDoc = await usersCollection.doc(uid).get()
-        const tokens: string[] = userDoc.exists && Array.isArray(userDoc.data()?.tokens) ? userDoc.data()!.tokens : []
-        if (!userDoc.exists) {
-          console.log('[scheduledNotificationDispatcher] Missing user doc for uid', uid, 'doc', doc.id)
-        }
-
-        if (!tokens.length) {
-          const reason = userDoc.exists ? 'no_tokens' : 'missing_user_doc'
-          console.log('[scheduledNotificationDispatcher] Undeliverable notification', {
-            uid,
-            docId: doc.id,
-            reason,
-            userDocExists: userDoc.exists,
-            tokensCount: tokens.length
-          })
+      if (!tokens.length) {
+        const reason = userDoc.exists ? 'no_tokens' : 'missing_user_doc'
+        log.error('scheduler.undeliverable', {
+          uid,
+          docId: doc.id,
+          reason,
+          userDocExists: userDoc.exists,
+          tokensCount: tokens.length
+        })
           await doc.ref.update({
             status: 'undeliverable',
             undeliverableReason: reason,
-            undeliverableAt: now,
+            undeliverableAt: normalizedNow,
             leaseUntil: null,
-            updatedAt: now
+            updatedAt: normalizedNow
           })
           continue
         }
 
-        const tokenDocs = tokens.length
-          ? await db.getAll(...tokens.map(tokenValue => db.collection('notificationTokens').doc(tokenValue)))
-          : []
-        const tokenMeta = tokenDocs.map((snap, idx) => {
-          const tokenValue = tokens[idx]
-          const hash = tokenFingerprint(tokenValue)
-          if (!snap.exists) {
-            return { tokenHash: hash, missingTokenDoc: true }
-          }
-          const data = snap.data() as any
-          const client = data?.clientInfo || {}
-          const lastSeenAt = data?.lastSeenAt?.toDate?.()?.toISOString?.() || null
-          return {
-            tokenHash: hash,
-            platform: data?.platform || null,
-            appVersion: data?.appVersion || null,
-            timezone: data?.timezone || null,
-            os: client?.os || null,
-            browser: client?.browser || null,
-            deviceClass: client?.deviceClass || null,
-            isStandalone: client?.isStandalone ?? null,
-            displayMode: client?.displayMode || null,
-            lastSeenAt,
-            tokenUid: data?.uid || null,
-            missingTokenDoc: false
-          }
-        })
-        if (tokenMeta.length) {
-          console.log('[scheduledNotificationDispatcher] Token metadata', {
-            docId: doc.id,
-            uid,
-            tokens: tokenMeta
-          })
+      const tokenDocs = tokens.length
+        ? await db.getAll(...tokens.map(tokenValue => db.collection('notificationTokens').doc(tokenValue)))
+        : []
+      const tokenMeta = tokenDocs.map((snap, idx) => {
+        const tokenValue = tokens[idx]
+        const hash = tokenFingerprint(tokenValue)
+        if (!snap.exists) {
+          return { tokenHash: hash, missingTokenDoc: true }
         }
-        const tokenMetaByHash = new Map(tokenMeta.map(entry => [entry.tokenHash, entry]))
-
-        const message = buildMessage({
-          tokenList: tokens,
-          title,
-          body,
-          data: dataPayload,
-          tag
-        })
-
-        const response = await messaging.sendEachForMulticast(message)
-
-        const invalidTokens: string[] = []
-        let transientFailures = 0
-        const failureDetails: Array<{
-          tokenHash: string | null
-          code?: string
-          message?: string
-          platform?: string | null
-          deviceClass?: string | null
-          os?: string | null
-          browser?: string | null
-          isStandalone?: boolean | null
-        }> = []
-
-        response.responses.forEach((resp, idx) => {
-          if (resp.success) return
-          const code = resp.error?.code
-          const tokenHash = tokenFingerprint(tokens[idx])
-          const meta = tokenHash ? tokenMetaByHash.get(tokenHash) : null
-          failureDetails.push({
-            tokenHash,
-            code,
-            message: resp.error?.message,
-            platform: meta?.platform ?? null,
-            deviceClass: meta?.deviceClass ?? null,
-            os: meta?.os ?? null,
-            browser: meta?.browser ?? null,
-            isStandalone: meta?.isStandalone ?? null
-          })
-          if (isInvalidTokenError(code)) {
-            invalidTokens.push(tokens[idx])
-          } else if (isTransientMessagingError(code)) {
-            transientFailures += 1
-          }
-        })
-
-        console.log('[scheduledNotificationDispatcher] Dispatch result', {
+        const data = snap.data() as any
+        const client = data?.clientInfo || {}
+        const lastSeenAt = data?.lastSeenAt?.toDate?.()?.toISOString?.() || null
+        return {
+          tokenHash: hash,
+          platform: data?.platform || null,
+          appVersion: data?.appVersion || null,
+          timezone: data?.timezone || null,
+          os: client?.os || null,
+          browser: client?.browser || null,
+          deviceClass: client?.deviceClass || null,
+          isStandalone: client?.isStandalone ?? null,
+          displayMode: client?.displayMode || null,
+          lastSeenAt,
+          tokenUid: data?.uid || null,
+          missingTokenDoc: false
+        }
+      })
+      if (tokenMeta.length) {
+        log.debug('scheduler.token_metadata', {
           docId: doc.id,
           uid,
-          tokenCount: tokens.length,
-          successCount: response.successCount,
-          failureCount: response.failureCount,
-          invalidTokens: invalidTokens.length,
-          transientFailures
+          tokens: tokenMeta
         })
-        if (failureDetails.length) {
-          console.log('[scheduledNotificationDispatcher] Token failures', {
-            docId: doc.id,
-            uid,
-            failures: failureDetails
-          })
-        }
+      }
+      const tokenMetaByHash = new Map(tokenMeta.map(entry => [entry.tokenHash, entry]))
 
-        if (invalidTokens.length) {
-          await usersCollection.doc(uid).set({
-            tokens: FieldValue.arrayRemove(...invalidTokens),
-            updatedAt: FieldValue.serverTimestamp()
-          }, { merge: true })
-        }
+      const message = buildMessage({
+        tokenList: tokens,
+        title,
+        body,
+        data: dataPayload,
+        tag
+      })
 
-        if (response.successCount === tokens.length) {
+      const response = await messaging.sendEachForMulticast(message)
+
+      const invalidTokens: string[] = []
+      let transientFailures = 0
+      const failureDetails: Array<{
+        tokenHash: string | null
+        code?: string
+        message?: string
+        platform?: string | null
+        deviceClass?: string | null
+        os?: string | null
+        browser?: string | null
+        isStandalone?: boolean | null
+      }> = []
+
+      response.responses.forEach((resp, idx) => {
+        if (resp.success) return
+        const code = resp.error?.code
+        const tokenHash = tokenFingerprint(tokens[idx])
+        const meta = tokenHash ? tokenMetaByHash.get(tokenHash) : null
+        failureDetails.push({
+          tokenHash,
+          code,
+          message: resp.error?.message,
+          platform: meta?.platform ?? null,
+          deviceClass: meta?.deviceClass ?? null,
+          os: meta?.os ?? null,
+          browser: meta?.browser ?? null,
+          isStandalone: meta?.isStandalone ?? null
+        })
+        if (isInvalidTokenError(code)) {
+          invalidTokens.push(tokens[idx])
+        } else if (isTransientMessagingError(code)) {
+          transientFailures += 1
+        }
+      })
+
+      log.info('scheduler.dispatch_result', {
+        docId: doc.id,
+        uid,
+        tokenCount: tokens.length,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        invalidTokens: invalidTokens.length,
+        transientFailures
+      })
+      if (failureDetails.length) {
+        log.warn('scheduler.token_failures', {
+          docId: doc.id,
+          uid,
+          failures: failureDetails
+        })
+      }
+
+      if (invalidTokens.length) {
+        await usersCollection.doc(uid).set({
+          tokens: FieldValue.arrayRemove(...invalidTokens),
+          updatedAt: FieldValue.serverTimestamp()
+        }, { merge: true })
+      }
+
+      const baseExpiry = computeNotificationExpiry(data.fireAt || null)
+
+      if (response.successCount === tokens.length) {
           await doc.ref.update({
             status: 'sent',
-            sentAt: now,
+            sentAt: normalizedNow,
             leaseUntil: null,
-            updatedAt: now,
+            updatedAt: normalizedNow,
+            expiresAt: baseExpiry,
             successCount: response.successCount,
             failureCount: response.failureCount,
             transientFailures
@@ -814,54 +1405,80 @@ export const scheduledNotificationDispatcher = onSchedule(
         if (response.successCount > 0) {
           await doc.ref.update({
             status: 'partial',
-            sentAt: now,
+            sentAt: normalizedNow,
             leaseUntil: null,
-            updatedAt: now,
+            updatedAt: normalizedNow,
+            expiresAt: baseExpiry,
             successCount: response.successCount,
             failureCount: response.failureCount,
             transientFailures
           })
-          continue
-        }
+        continue
+      }
 
-        if (transientFailures > 0) {
+      if (transientFailures > 0) {
+          const retryFireAt = Timestamp.fromMillis(normalizedNow.toMillis() + 60 * 1000)
           await doc.ref.update({
             status: 'pending',
             leaseUntil: null,
-            updatedAt: now,
-            fireAt: Timestamp.fromMillis(now.toMillis() + 60 * 1000),
+            updatedAt: normalizedNow,
+            fireAt: retryFireAt,
+            expiresAt: computeNotificationExpiry(retryFireAt),
             retryCount: FieldValue.increment(1),
             successCount: response.successCount,
             failureCount: response.failureCount,
             transientFailures
           })
-          continue
-        }
+        continue
+      }
 
-        const undeliverableReason = invalidTokens.length === tokens.length ? 'invalid_tokens' : 'all_failed'
+      const undeliverableReason = invalidTokens.length === tokens.length ? 'invalid_tokens' : 'all_failed'
         await doc.ref.update({
           status: 'undeliverable',
           undeliverableReason,
-          undeliverableAt: now,
+          undeliverableAt: normalizedNow,
           leaseUntil: null,
-          updatedAt: now,
+          updatedAt: normalizedNow,
+          expiresAt: baseExpiry,
           successCount: response.successCount,
           failureCount: response.failureCount,
           transientFailures
         })
       } catch (err: any) {
-        console.error('[scheduler] Failed to dispatch notification', doc.id, err?.message || err)
+        log.error('scheduler.dispatch_failed', { docId: doc.id }, err)
+        const retryFireAt = Timestamp.fromMillis(normalizedNow.toMillis() + 60 * 1000)
         await doc.ref.update({
           status: 'pending',
           leaseUntil: null,
-          updatedAt: now,
-          fireAt: Timestamp.fromMillis(now.toMillis() + 60 * 1000),
+          updatedAt: normalizedNow,
+          fireAt: retryFireAt,
+          expiresAt: computeNotificationExpiry(retryFireAt),
           retryCount: FieldValue.increment(1)
         })
       }
-    }
+  }
+}
+
+export const scheduledNotificationDispatcher = onSchedule(
+  { schedule: 'every 1 minutes', timeZone: 'UTC', region: SCHEDULER_REGION },
+  async () => {
+    await dispatchScheduledNotifications(Timestamp.now())
   }
 )
+
+export const testDispatchScheduledNotifications = onRequest({ cors: true, region: SCHEDULER_REGION }, async (req, res) => {
+  if (!assertTestMode(res)) return
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('')
+    return
+  }
+  if (req.method !== 'POST') {
+    res.status(405).send('Method not allowed')
+    return
+  }
+  await dispatchScheduledNotifications(Timestamp.now())
+  res.json({ status: 'ok' })
+})
 
 class SheetsError extends Error {
   status: number
@@ -925,7 +1542,7 @@ async function readResponseBody(response: any) {
   try {
     return await response.text()
   } catch (err) {
-    console.warn('[sheetsApi] Failed to read upstream response body', err)
+    log.warn('sheets.read_response_body_failed', undefined, err)
     return ''
   }
 }
@@ -990,6 +1607,24 @@ function shouldWidenRange(values: any[][]) {
 }
 
 async function fetchSheetMetadataFromApi(spreadsheetId: string): Promise<SheetMetadata> {
+  const fixture = readFixtureJson<any>('sheets-metadata.json')
+  if (fixture) {
+    const tabs: SheetTab[] = Array.isArray(fixture?.sheets)
+      ? fixture.sheets
+          .map((sheet: any) => ({
+            sheetId: sheet?.properties?.sheetId,
+            title: sheet?.properties?.title
+          }))
+          .filter((sheet: SheetTab) => typeof sheet.sheetId === 'number' && typeof sheet.title === 'string')
+      : []
+    return {
+      spreadsheetId: fixture?.spreadsheetId || spreadsheetId,
+      spreadsheetTitle: fixture?.properties?.title || null,
+      tabs,
+      fetchedAt: Date.now()
+    }
+  }
+
   if (!SHEETS_API_KEY) {
     throw new SheetsError(500, 'Sheets API key is not configured')
   }
@@ -1000,7 +1635,7 @@ async function fetchSheetMetadataFromApi(spreadsheetId: string): Promise<SheetMe
   })
   const url = `${SHEETS_API_BASE}/${spreadsheetId}?${params.toString()}`
   const requestStart = Date.now()
-  console.log('[sheetsApi] Metadata fetch', {
+  log.info('sheets.metadata_fetch_start', {
     spreadsheetId,
     url: redactSheetsUrl(url)
   })
@@ -1009,7 +1644,7 @@ async function fetchSheetMetadataFromApi(spreadsheetId: string): Promise<SheetMe
 
   if (response.status === 404) {
     const body = await readResponseBody(response)
-    console.warn('[sheetsApi] Metadata fetch failed', {
+    log.warn('sheets.metadata_fetch_failed', {
       spreadsheetId,
       status: response.status,
       durationMs,
@@ -1019,7 +1654,7 @@ async function fetchSheetMetadataFromApi(spreadsheetId: string): Promise<SheetMe
   }
   if (response.status === 403) {
     const body = await readResponseBody(response)
-    console.warn('[sheetsApi] Metadata fetch failed', {
+    log.warn('sheets.metadata_fetch_failed', {
       spreadsheetId,
       status: response.status,
       durationMs,
@@ -1029,7 +1664,7 @@ async function fetchSheetMetadataFromApi(spreadsheetId: string): Promise<SheetMe
   }
   if (!response.ok) {
     const body = await readResponseBody(response)
-    console.warn('[sheetsApi] Metadata fetch failed', {
+    log.warn('sheets.metadata_fetch_failed', {
       spreadsheetId,
       status: response.status,
       durationMs,
@@ -1039,8 +1674,8 @@ async function fetchSheetMetadataFromApi(spreadsheetId: string): Promise<SheetMe
   }
 
   const data = await response.json()
-  console.log('[sheetsApi] Metadata payload raw', JSON.stringify({ spreadsheetId, metadata: data }))
-  console.log('[sheetsApi] Metadata fetch ok', {
+  log.debug('sheets.metadata_payload', { spreadsheetId, metadata: data })
+  log.info('sheets.metadata_fetch_ok', {
     spreadsheetId,
     status: response.status,
     durationMs,
@@ -1064,6 +1699,13 @@ async function fetchSheetMetadataFromApi(spreadsheetId: string): Promise<SheetMe
 }
 
 async function fetchSheetValuesRange(spreadsheetId: string, sheetTitle: string, rangeEnd: string) {
+  const fixture = readFixtureJson<any>('sheets-values.json')
+  if (fixture) {
+    const valueRanges = Array.isArray(fixture?.valueRanges) ? fixture.valueRanges : []
+    const values = Array.isArray(valueRanges[0]?.values) ? valueRanges[0].values : []
+    return values as any[][]
+  }
+
   if (!SHEETS_API_KEY) {
     throw new SheetsError(500, 'Sheets API key is not configured')
   }
@@ -1078,7 +1720,7 @@ async function fetchSheetValuesRange(spreadsheetId: string, sheetTitle: string, 
 
   const url = `${SHEETS_API_BASE}/${spreadsheetId}/values:batchGet?${params.toString()}`
   const requestStart = Date.now()
-  console.log('[sheetsApi] Values fetch', {
+  log.info('sheets.values_fetch_start', {
     spreadsheetId,
     sheetTitle,
     rangeEnd,
@@ -1089,7 +1731,7 @@ async function fetchSheetValuesRange(spreadsheetId: string, sheetTitle: string, 
 
   if (response.status === 404) {
     const body = await readResponseBody(response)
-    console.warn('[sheetsApi] Values fetch failed', {
+    log.warn('sheets.values_fetch_failed', {
       spreadsheetId,
       sheetTitle,
       rangeEnd,
@@ -1101,7 +1743,7 @@ async function fetchSheetValuesRange(spreadsheetId: string, sheetTitle: string, 
   }
   if (response.status === 403) {
     const body = await readResponseBody(response)
-    console.warn('[sheetsApi] Values fetch failed', {
+    log.warn('sheets.values_fetch_failed', {
       spreadsheetId,
       sheetTitle,
       rangeEnd,
@@ -1113,7 +1755,7 @@ async function fetchSheetValuesRange(spreadsheetId: string, sheetTitle: string, 
   }
   if (!response.ok) {
     const body = await readResponseBody(response)
-    console.warn('[sheetsApi] Values fetch failed', {
+    log.warn('sheets.values_fetch_failed', {
       spreadsheetId,
       sheetTitle,
       rangeEnd,
@@ -1125,7 +1767,7 @@ async function fetchSheetValuesRange(spreadsheetId: string, sheetTitle: string, 
   }
 
   const data = await response.json()
-  console.log('[sheetsApi] Values fetch ok', {
+  log.info('sheets.values_fetch_ok', {
     spreadsheetId,
     sheetTitle,
     rangeEnd,
@@ -1151,7 +1793,7 @@ async function getSheetMetadata(spreadsheetId: string, options: { forceRefresh?:
   if (!options.forceRefresh) {
     const cached = getCachedValue(sheetMetadataCache, cacheKey)
     if (cached) {
-      console.log('[sheetsApi] Metadata cache hit', {
+      log.debug('sheets.metadata_cache_hit', {
         spreadsheetId,
         ageMs: Date.now() - cached.fetchedAt,
         tabCount: cached.tabs.length
@@ -1167,7 +1809,7 @@ async function getSheetMetadata(spreadsheetId: string, options: { forceRefresh?:
       const fetchedAt = data?.lastMetadataFetchAt?.toMillis?.() || 0
       const tabs = Array.isArray(data?.tabs) ? data.tabs : []
       if (fetchedAt && Date.now() - fetchedAt < SHEETS_METADATA_TTL_MS && tabs.length) {
-        console.log('[sheetsApi] Metadata firestore hit', {
+        log.debug('sheets.metadata_firestore_hit', {
           spreadsheetId,
           ageMs: Date.now() - fetchedAt,
           tabCount: tabs.length
@@ -1206,7 +1848,7 @@ async function getSheetValues(spreadsheetId: string, sheetId: number) {
   const cacheKey = `${spreadsheetId}:${sheetId}`
   const cached = getCachedValue(sheetValuesCache, cacheKey)
   if (cached) {
-    console.log('[sheetsApi] Values cache hit', {
+    log.debug('sheets.values_cache_hit', {
       spreadsheetId,
       sheetId,
       ageMs: Date.now() - cached.fetchedAt,
@@ -1233,7 +1875,7 @@ async function getSheetValues(spreadsheetId: string, sheetId: number) {
       contentHash: data?.contentHash || ''
     }
     if (fetchedAt && Date.now() - fetchedAt < SHEETS_VALUES_TTL_MS) {
-      console.log('[sheetsApi] Values firestore hit', {
+      log.debug('sheets.values_firestore_hit', {
         spreadsheetId,
         sheetId,
         ageMs: Date.now() - fetchedAt,
@@ -1292,13 +1934,9 @@ async function getSheetValues(spreadsheetId: string, sheetId: number) {
       return result
     })
   } catch (err: any) {
-    console.warn('[sheetsApi] Values fetch failed', {
-      spreadsheetId,
-      sheetId,
-      error: err?.message || err
-    })
+    log.warn('sheets.values_fetch_failed', { spreadsheetId, sheetId }, err)
     if (fallback) {
-      console.warn('[sheetsApi] Using stale values', {
+      log.warn('sheets.values_stale_used', {
         spreadsheetId,
         sheetId,
         ageMs: Date.now() - fallback.fetchedAt,
@@ -1331,7 +1969,7 @@ export const sheetsApi = onRequest({ cors: true, region: SCHEDULER_REGION, secre
     if (path.startsWith('api/')) {
       path = path.slice(4)
     }
-    console.log('[sheetsApi] Request', {
+    log.info('sheets.request', {
       requestId,
       method: req.method,
       path,
@@ -1343,7 +1981,7 @@ export const sheetsApi = onRequest({ cors: true, region: SCHEDULER_REGION, secre
     if (req.method === 'POST' && path === 'sheets/resolve') {
       const { url } = req.body || {}
       const spreadsheetId = extractSpreadsheetId(url)
-      console.log('[sheetsApi] Resolve request', { requestId, spreadsheetId, hasUrl: Boolean(url) })
+      log.info('sheets.resolve_request', { requestId, spreadsheetId, hasUrl: Boolean(url) })
       if (!spreadsheetId) {
         res.status(400).json({ error: 'Invalid Google Sheets URL' })
         return
@@ -1355,9 +1993,9 @@ export const sheetsApi = onRequest({ cors: true, region: SCHEDULER_REGION, secre
     const tabsMatch = path.match(/^sheets\/([^/]+)\/tabs$/)
     if (req.method === 'GET' && tabsMatch) {
       const spreadsheetId = tabsMatch[1]
-      console.log('[sheetsApi] Tabs request', { requestId, spreadsheetId })
+      log.info('sheets.tabs_request', { requestId, spreadsheetId })
       const metadata = await getSheetMetadata(spreadsheetId)
-      console.log('[sheetsApi] Tabs response', { requestId, spreadsheetId, tabCount: metadata.tabs.length })
+      log.info('sheets.tabs_response', { requestId, spreadsheetId, tabCount: metadata.tabs.length })
       res.json({
         spreadsheetId: metadata.spreadsheetId,
         spreadsheetTitle: metadata.spreadsheetTitle,
@@ -1371,13 +2009,13 @@ export const sheetsApi = onRequest({ cors: true, region: SCHEDULER_REGION, secre
       const spreadsheetId = tabMatch[1]
       const sheetIdRaw = tabMatch[2]
       const sheetId = Number(sheetIdRaw)
-      console.log('[sheetsApi] Tab values request', { requestId, spreadsheetId, sheetId })
+      log.info('sheets.tab_values_request', { requestId, spreadsheetId, sheetId })
       if (!Number.isFinite(sheetId)) {
         res.status(400).json({ error: 'sheetId must be a number' })
         return
       }
       const values = await getSheetValues(spreadsheetId, sheetId)
-      console.log('[sheetsApi] Tab values response', {
+      log.info('sheets.tab_values_response', {
         requestId,
         spreadsheetId,
         sheetId,
@@ -1399,14 +2037,14 @@ export const sheetsApi = onRequest({ cors: true, region: SCHEDULER_REGION, secre
     res.status(404).json({ error: 'Not found' })
   } catch (err: any) {
     if (err instanceof SheetsError) {
-      console.warn('[sheetsApi] Sheets error', {
+      log.warn('sheets.error', {
         status: err.status,
         message: err.message
       })
       res.status(err.status).json({ error: err.message })
       return
     }
-    console.error('[sheetsApi] Unexpected error', err)
+    log.error('sheets.unexpected_error', undefined, err)
     res.status(500).json({ error: 'Internal error' })
   }
 })

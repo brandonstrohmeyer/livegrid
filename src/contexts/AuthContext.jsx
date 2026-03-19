@@ -11,6 +11,7 @@ import {
   signInWithRedirect
 } from 'firebase/auth'
 import { auth } from '../firebaseClient'
+import { log } from '../logging.js'
 
 const AuthContext = createContext({
   user: null,
@@ -46,7 +47,7 @@ export function AuthProvider({ children }) {
       setLoading(false)
       return () => {}
     }
-    console.info('[auth] Init', {
+    log.info('auth.init', {
       isStandalonePwa: isStandalonePwa(),
       isIosSafari: isIosSafari(),
       authDomain: auth?.config?.authDomain
@@ -56,31 +57,31 @@ export function AuthProvider({ children }) {
     const setup = async () => {
       try {
         if (isStandalonePwa() || isIosSafari()) {
-          console.info('[auth] Setting persistence: indexedDBLocalPersistence')
+          log.info('auth.persistence_set', { mode: 'indexedDBLocalPersistence' })
           try {
             await setPersistence(auth, indexedDBLocalPersistence)
           } catch (err) {
-            console.warn('[auth] Failed to set IndexedDB persistence, falling back', err)
+            log.warn('auth.persistence_indexeddb_failed', undefined, err)
             try {
-              console.info('[auth] Setting persistence: browserLocalPersistence')
+              log.info('auth.persistence_set', { mode: 'browserLocalPersistence' })
               await setPersistence(auth, browserLocalPersistence)
             } catch (fallbackErr) {
-              console.warn('[auth] Failed to set local persistence, falling back', fallbackErr)
-              console.info('[auth] Setting persistence: browserSessionPersistence')
+              log.warn('auth.persistence_local_failed', undefined, fallbackErr)
+              log.info('auth.persistence_set', { mode: 'browserSessionPersistence' })
               await setPersistence(auth, browserSessionPersistence)
             }
           }
         } else {
-          console.info('[auth] Setting persistence: browserLocalPersistence')
+          log.info('auth.persistence_set', { mode: 'browserLocalPersistence' })
           await setPersistence(auth, browserLocalPersistence)
         }
       } catch (err) {
-        console.warn('[auth] Failed to set persistence on init', err)
+        log.warn('auth.persistence_init_failed', undefined, err)
       }
 
       if (!active) return
       unsub = onAuthStateChanged(auth, firebaseUser => {
-        console.info('[auth] Auth state changed', { uid: firebaseUser?.uid || null })
+        log.info('auth.state_changed', { uid: firebaseUser?.uid || null })
         setUser(firebaseUser)
         setLoading(false)
       })
@@ -89,10 +90,10 @@ export function AuthProvider({ children }) {
     const init = async () => {
       await setup()
       if (!active) return
-      console.info('[auth] Checking redirect result...')
+      log.info('auth.redirect_check')
       try {
         const result = await getRedirectResult(auth)
-        console.info('[auth] Redirect result', {
+        log.info('auth.redirect_result', {
           hasUser: Boolean(result?.user),
           providerId: result?.providerId || null
         })
@@ -103,7 +104,7 @@ export function AuthProvider({ children }) {
         setError(null)
       } catch (err) {
         if (active) {
-          console.error('[auth] Redirect sign-in failed', err)
+          log.error('auth.redirect_failed', undefined, err)
           setError(err)
         }
       }
@@ -126,7 +127,7 @@ export function AuthProvider({ children }) {
     try {
       return signInWithRedirect(auth, provider)
     } catch (err) {
-      console.error('[auth] Redirect sign-in failed', err)
+      log.error('auth.redirect_failed', undefined, err)
       setError(err)
       throw err
     }

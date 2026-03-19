@@ -1,6 +1,6 @@
 # NASA Session Dashboard
 
-A real-time racing schedule dashboard for NASA (National Auto Sport Association) events. Displays live session tracking, meeting notifications, and run group filtering designed for paddock display on kiosks or laptops.
+A real-time racing schedule dashboard for motorsport events which rely on Google Sheets. Displays live session tracking, meeting notifications, and run group filtering designed for paddock display on kiosks or laptops.
 
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
 
@@ -18,11 +18,8 @@ A real-time racing schedule dashboard for NASA (National Auto Sport Association)
 ## Quick Start
 
 ```bash
-# Install dependencies
-npm install
-
-# Start development server
-npm run dev
+firebase login --reauth
+npm run dev:full
 ```
 
 Open http://localhost:5173 in your browser.
@@ -58,6 +55,7 @@ Parsers are modular and each organization can define its own CSV format. See:
 - **[API Reference](docs/API.md)** - Function signatures and usage
 - **[Parsers](docs/PARSERS.md)** - Parser rules and CSV format details
 - **[Testing](docs/TESTING.md)** - Test structure and running tests
+- **[Logging](docs/LOGGING.md)** - Severity rules and logging conventions
 
 ## Tech Stack
 
@@ -114,6 +112,23 @@ npm test
 ```
 
 See [docs/TESTING.md](docs/TESTING.md) for detailed test documentation.
+
+### Test Pipeline (Pre-Deploy)
+
+Run the full verification suite before any `firebase deploy`:
+
+```bash
+npm run test:predeploy
+```
+
+This runs, in order:
+
+1. `npm run test:run` (unit/component tests)
+2. `npm run test:build` (frontend + functions build via `build:ci`, no version bump)
+3. `npm run test:integration` (emulators + integration + rules)
+4. `npm run test:e2e` (Playwright against preview + emulators)
+
+See [docs/TESTING.md](docs/TESTING.md) for full details and environment notes.
 
 ## Deployment
 

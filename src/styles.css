@@ -146,12 +146,17 @@ footer button:hover{background:rgba(0,0,0,0.08);}
 	border-radius: 12px;
 	box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 	overflow: visible;
+	cursor: pointer;
 }
 
 .mobile-card-header{
 	padding: 12px 14px;
 	background: #fff;
 	border-bottom: 1px solid #eef2f7;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
 }
 
 .mobile-card-label{
@@ -160,6 +165,12 @@ footer button:hover{background:rgba(0,0,0,0.08);}
 	letter-spacing: 0.06em;
 	text-transform: uppercase;
 	color: #6b7280;
+}
+
+.mobile-card-toggle{
+	font-size: 0.78rem;
+	font-weight: 600;
+	color: #0b74de;
 }
 
 .mobile-card-body{
@@ -191,6 +202,60 @@ footer button:hover{background:rgba(0,0,0,0.08);}
 	font-size: 0.9rem;
 	font-weight: 700;
 	color: #0b557f;
+}
+
+.mobile-upcoming{
+	padding: 0 14px 14px;
+	border-top: 1px solid #eef2f7;
+}
+
+.mobile-upcoming-title{
+	margin-top: 10px;
+	font-size: 0.78rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: #6b7280;
+}
+
+.mobile-upcoming-list{
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.mobile-upcoming-item{
+	padding: 8px 10px;
+	border-radius: 10px;
+	border: 1px solid #e5e7eb;
+	background: #f8f9fc;
+}
+
+.mobile-upcoming-line{
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.mobile-upcoming-time{
+	font-size: 0.9rem;
+	font-weight: 700;
+	color: #0b74de;
+}
+
+.mobile-upcoming-name{
+	font-size: 0.95rem;
+	font-weight: 600;
+	color: #0b2336;
+}
+
+.mobile-upcoming-empty{
+	margin-top: 10px;
+	font-size: 0.85rem;
+	font-weight: 600;
+	color: #64748b;
 }
 
 /* Auth UI */

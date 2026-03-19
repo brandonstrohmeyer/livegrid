@@ -30,6 +30,19 @@ Saturday,,,,
     expect(session.runGroupIds).toContain('TT Omega')
   })
 
+  it('treats TT Drivers as on-track groups without creating a meeting', () => {
+    const csv = `Saturday,,,,
+4:40 PM,20,HPDE 4* & 3 & TT Drivers,,,`
+    const schedule = parseNasaSeCsv({ csvText: csv })
+    const session = schedule.sessions.find(s => s.session === 'HPDE 4* & 3 & TT Drivers')
+    expect(session.runGroupIds).toContain('HPDE 3')
+    expect(session.runGroupIds).toContain('HPDE 4')
+    expect(session.runGroupIds).toContain('TT Alpha')
+    expect(session.runGroupIds).toContain('TT Omega')
+    const meeting = schedule.activities.find(a => a.title === 'TT Drivers Meeting')
+    expect(meeting).toBeUndefined()
+  })
+
   it('extracts All Racers Meeting with race groups', () => {
     const csv = `Saturday,,,,
 9:00 AM,20,Thunder Race #1,,,

@@ -1,0 +1,11 @@
+{
+  "valueRanges": [
+    {
+      "values": [
+        ["Time", "HPDE 1", "TT"],
+        ["8:00 AM", "HPDE 1", "TT Alpha"],
+        ["9:00 AM", "HPDE 2", "TT Omega"]
+      ]
+    }
+  ]
+}

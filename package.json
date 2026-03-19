@@ -8,13 +8,19 @@
     "dev:full": "powershell -Command \"Get-Content .env | ForEach-Object { if ($_ -match '^[^#].*?=') { $parts = $_ -split '=', 2; $name = $parts[0].Trim(); $value = $parts[1].Trim().Trim('\"'); if ($name -eq 'SHEETS_API_KEY') { Set-Item -Path ('Env:' + $name) -Value $value } } }; npx npm-run-all -p --print-label dev emulators\"",
     "prebuild": "node increment-patch.js",
     "build": "vite build",
+    "build:ci": "vite build",
     "build:patch": "npm run build --bump=patch",
     "build:minor": "npm run build --bump=minor",
     "build:major": "npm run build --bump=major",
     "preview": "vite preview",
     "test": "vitest",
     "test:ui": "vitest --ui",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "test:integration:inner": "vitest run --config vitest.integration.config.mjs",
+    "test:integration": "cross-env LIVEGRID_TEST_MODE=true LIVEGRID_TEST_MESSAGING=stub LIVEGRID_TEST_FIXTURES_DIR=functions/test-fixtures GCLOUD_PROJECT=livegrid-c33c6 FIRESTORE_EMULATOR_HOST=localhost:8080 FIREBASE_AUTH_EMULATOR_HOST=localhost:9099 firebase emulators:exec --only functions,firestore,hosting,auth \"npm run test:integration:inner\"",
+    "test:e2e": "cross-env VITE_USE_FIREBASE_EMULATORS=true VITE_FIREBASE_PROJECT_ID=livegrid-c33c6 VITE_FUNCTIONS_BASE_URL=http://localhost:5001/livegrid-c33c6/us-central1 VITE_FIREBASE_EMULATOR_AUTH=http://localhost:9099 VITE_FIREBASE_EMULATOR_FIRESTORE=localhost:8080 firebase emulators:exec --only functions,firestore,auth \"playwright test\"",
+    "test:build": "npm run build:ci && npm --prefix functions run build",
+    "test:predeploy": "npm run test:run && npm run test:build && npm run test:integration && npm run test:e2e"
   },
   "dependencies": {
     "fast-xml-parser": "^5.3.3",
@@ -27,10 +33,17 @@
     "viewportify": "^1.0.0"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.1",
+    "@testing-library/user-event": "^14.6.1",
+    "@playwright/test": "^1.52.0",
     "@vitejs/plugin-react": "^4.0.0",
+    "cross-env": "^7.0.3",
+    "firebase-admin": "^11.11.1",
+    "firebase-functions-test": "^3.1.1",
     "jsdom": "^27.4.0",
+    "msw": "^2.7.0",
     "vite": "^5.0.0",
     "vite-plugin-pwa": "^1.2.0",
     "vitest": "^4.0.17"

@@ -54,7 +54,8 @@ The parser normalizes common label variants into a stable set:
   - `HPDE 3* & 4` maps to `HPDE 3` and `HPDE 4`.
   - `HPDE-Intro` maps to its own `HPDE-Intro` run group.
 - **Time Trial**
-  - `TT ALL`, `TT Drivers`, `All Time Trial`, `TT Practice / Warmup`, `TT Laps` map to **both** `TT Alpha` and `TT Omega`.
+  - `TT ALL`, `All Time Trial`, `TT Practice / Warmup`, `TT Laps` map to **both** `TT Alpha` and `TT Omega`.
+  - `TT Drivers` maps to **both** `TT Alpha` and `TT Omega` when it appears as a run-group label in an on-track session (e.g., combined HPDE/TT on-track rows).
   - `TT Group A` maps to `TT Alpha`, `TT Group B` maps to `TT Omega`.
 - **Race**
   - `Thunder` => `Thunder Race`
@@ -76,7 +77,7 @@ The final `runGroups` list always includes `All` as the first entry and is sorte
 Meeting activities are derived from the schedule text and notes:
 
 - **HPDE Meeting**: any row matching `HPDE Meeting`.
-- **TT Drivers Meeting**: rows containing `TT Drivers`.
+- **TT Drivers Meeting**: rows containing `TT Drivers` **and** explicit meeting wording (`Meeting` or `Mtg`) in the session title or notes.
 - **All Racers Meeting**: rows containing `All Racers Meeting`.
 
 Activities carry the related run group IDs (HPDE groups, TT groups, or race groups).

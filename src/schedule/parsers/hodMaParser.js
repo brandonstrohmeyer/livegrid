@@ -19,27 +19,49 @@ function findHeaderRow(rows) {
     const row = rows[i] || []
     const normalized = row.map(cell => normalizeHodText(cell).toLowerCase())
 
-    const activityIdx = normalized.findIndex(cell => cell === 'activity' || cell === 'event')
-    const timeIdx = normalized.findIndex(cell => cell === 'time' || cell === 'start time' || cell === 'start')
-    if (activityIdx === -1 || timeIdx === -1) continue
-
+    const activityIdx = normalized.findIndex(cell => cell === 'activity' || cell === 'event' || cell === 'session')
+    const timeIdx = normalized.findIndex(cell => cell === 'time' || cell === 'start time')
+    const startIdx = normalized.findIndex(cell => cell === 'start')
+    const endIdx = normalized.findIndex(cell => cell === 'end' || cell === 'end time')
     const whoIdx = normalized.findIndex(cell => cell === 'who')
-    const whereIdx = normalized.findIndex(cell => cell.startsWith('where') || cell.startsWith('location'))
+    const whereIdx = normalized.findIndex(cell => (
+      cell.startsWith('where') || cell.startsWith('location') || cell.includes('notes')
+    ))
+
+    const hasRangeHeader = activityIdx !== -1 && (timeIdx !== -1 || startIdx !== -1)
+    const hasSplitHeader = startIdx !== -1 && endIdx !== -1
+    if (!hasRangeHeader && !hasSplitHeader) continue
+
+    const resolvedActivityIdx = activityIdx !== -1 ? activityIdx : 0
+    const resolvedTimeIdx = timeIdx !== -1 ? timeIdx : startIdx
+    const resolvedWhoIdx = whoIdx === -1 ? resolvedActivityIdx + 1 : whoIdx
+    const resolvedWhereIdx = whereIdx === -1 ? resolvedActivityIdx + 3 : whereIdx
 
     return {
       headerIndex: i,
       columns: {
-        activityIdx,
-        timeIdx,
-        whoIdx: whoIdx === -1 ? activityIdx + 2 : whoIdx,
-        whereIdx: whereIdx === -1 ? activityIdx + 3 : whereIdx
+        activityIdx: resolvedActivityIdx,
+        timeIdx: resolvedTimeIdx,
+        startIdx,
+        endIdx,
+        timeMode: hasSplitHeader && timeIdx === -1 ? 'split' : 'range',
+        whoIdx: resolvedWhoIdx,
+        whereIdx: resolvedWhereIdx
       }
     }
   }
 
   return {
     headerIndex: null,
-    columns: { activityIdx: 0, timeIdx: 1, whoIdx: 2, whereIdx: 3 }
+    columns: {
+      activityIdx: 0,
+      timeIdx: 1,
+      startIdx: 1,
+      endIdx: -1,
+      timeMode: 'range',
+      whoIdx: 2,
+      whereIdx: 3
+    }
   }
 }
 
@@ -120,9 +142,18 @@ export function parseHodMaCsv({ csvText, dayOffset = 0, sourceLabel } = {}) {
   for (let i = startIndex; i < rows.length; i += 1) {
     const row = rows[i] || []
     const activity = normalizeHodText(row[columns.activityIdx])
-    const timeText = normalizeHodText(row[columns.timeIdx])
+    let timeText = normalizeHodText(row[columns.timeIdx])
     const who = normalizeHodText(row[columns.whoIdx])
     const where = normalizeHodText(row[columns.whereIdx])
+
+    if (columns.timeMode === 'split') {
+      const startText = normalizeHodText(row[columns.startIdx])
+      const endText = normalizeHodText(row[columns.endIdx])
+      const combined = [startText, endText].filter(Boolean).join(' - ')
+      if (combined) {
+        timeText = combined
+      }
+    }
 
     if (!timeText) continue
 

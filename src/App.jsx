@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback, useLayoutEffect } from 'react'
 import version from './version.js'
-import { XMLParser } from 'fast-xml-parser'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
 import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose } from 'react-icons/md'
 import { GiFullMotorcycleHelmet } from 'react-icons/gi'
@@ -22,6 +21,7 @@ import {
 } from './pushNotifications'
 import { addMinutes } from './scheduleUtils.js'
 import { parseCsvSchedule, detectParserId, SCHEDULE_PARSERS, DEFAULT_SCHEDULE_PARSER_ID } from './schedule/parsers/registry.js'
+import { log } from './logging.js'
 
 const DEFAULT_STALE_THRESHOLD_MINUTES = 5
 const createEmptySchedule = () => ({
@@ -64,7 +64,10 @@ async function callSheetsApi(path, { method = 'GET', body } = {}) {
   }
   const payload = await response.json().catch(() => ({}))
   if (path.includes('/tabs')) {
-    console.log('[sheets-ui] /tabs response', payload)
+    log.debug('sheets_ui.tabs_response', {
+      spreadsheetId: payload?.spreadsheetId ?? null,
+      tabCount: Array.isArray(payload?.tabs) ? payload.tabs.length : 0
+    })
   }
   return payload
 }
@@ -107,6 +110,24 @@ function scoreTabTitle(title) {
 }
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+const INACTIVITY_RESET_MS = 24 * 60 * 60 * 1000
+const LAST_SEEN_STORAGE_KEY = 'livegridLastSeenAt'
+
+function readLastSeenAt() {
+  if (typeof window === 'undefined' || !window.localStorage) return null
+  const raw = window.localStorage.getItem(LAST_SEEN_STORAGE_KEY)
+  const parsed = raw ? Number(raw) : NaN
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function writeLastSeenAt(timestamp) {
+  if (typeof window === 'undefined' || !window.localStorage) return
+  try {
+    window.localStorage.setItem(LAST_SEEN_STORAGE_KEY, String(timestamp))
+  } catch (err) {
+    log.warn('auto_reset.persist_failed', undefined, err)
+  }
+}
 
 function normalizeDayLabel(value) {
   if (!value) return null
@@ -299,6 +320,21 @@ function formatTimeUntil(milliseconds, session, nowWithOffset) {
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
 }
 
+export function getMobileSessionEndStatus(session, nowWithOffset) {
+  if (!session || !session.start || !nowWithOffset) return null
+  const end = session.end || addMinutes(session.start, session.duration || 20)
+  const diffMs = end.getTime() - nowWithOffset.getTime()
+  if (diffMs <= 0) return null
+  if (diffMs < 60000) return { text: 'Ending now', showPrefix: false }
+  const totalMinutes = Math.ceil(diffMs / 60000)
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return {
+    text: hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`,
+    showPrefix: true
+  }
+}
+
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
@@ -338,12 +374,16 @@ export default function App() {
   const [clockOffsetInput, setClockOffsetInput] = useState(String(demoOffsets.clockOffset))
   const [dayOffsetInput, setDayOffsetInput] = useState(String(demoOffsets.dayOffset))
   const [now, setNow] = useState(new Date())
-  const [selectedGroups, setSelectedGroups] = useSyncedPreference('selectedGroups', () => (isDemoMode ? ['HPDE 1', 'TT Omega'] : ['All']))
+  const [selectedGroups, setSelectedGroups, selectedGroupsLoading] = useSyncedPreference(
+    'selectedGroups',
+    () => (isDemoMode ? ['HPDE 1', 'TT Omega'] : ['All'])
+  )
   const [selectedDay, setSelectedDay] = useSyncedPreference('selectedDay', () => (isDemoMode ? 'Saturday' : null))
   const [selectedCsvFile, setSelectedCsvFile] = useSyncedPreference(
     'selectedCsvFile',
     () => (isDemoMode ? '2026 New Year, New Gear - Schedule.csv' : 'schedule.csv')
   )
+  const lastSeenRef = useRef(null)
   const [scheduleParserId, setScheduleParserId] = useSyncedPreference(
     'scheduleParserId',
     () => DEFAULT_SCHEDULE_PARSER_ID
@@ -363,6 +403,7 @@ export default function App() {
   const [showNotificationsSection, setShowNotificationsSection] = useState(false)
   const [accountPanelMaxHeight, setAccountPanelMaxHeight] = useState(null)
   const [runGroupsExpanded, setRunGroupsExpanded] = useState(false)
+  const [mobileCurrentExpanded, setMobileCurrentExpanded] = useState(false)
   const [optionsExpanded, setOptionsExpanded] = useState(() => (isDemoMode ? false : !customUrl))
   const [sheetName, setSheetName] = useState('')
   const [sheetDayTabs, setSheetDayTabs] = useState([])
@@ -377,8 +418,7 @@ export default function App() {
   const [hodError, setHodError] = useState(null)
   const [selectedRssEventId, setSelectedRssEventId] = useState('')
   const [selectedHodEventId, setSelectedHodEventId] = useState('')
-  const rssFetchStartedRef = useRef(false)
-  const hodFetchStartedRef = useRef(false)
+  const eventsFetchStartedRef = useRef(false)
   const sheetSelectionRef = useRef({ url: '', spreadsheetId: '', sheetId: null, sheetTitle: '', spreadsheetTitle: '' })
   const [forceShowStaleBanner, setForceShowStaleBanner] = useState(false)
   const upcomingNotificationTrackerRef = useRef(new Map())
@@ -402,6 +442,7 @@ export default function App() {
   const [notificationPrompting, setNotificationPrompting] = useState(false)
   const [notificationTesting, setNotificationTesting] = useState(false)
   const [mockTestMinutesInput, setMockTestMinutesInput] = useState('2')
+  const [mockTestGroupInput, setMockTestGroupInput] = useState('Mock Test')
   const [notificationStatus, setNotificationStatus] = useState(null)
   const [schedulerDebugInfo, setSchedulerDebugInfo] = useState(() => ({
     lastSyncAttemptAt: null,
@@ -426,7 +467,7 @@ export default function App() {
     try {
       return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
     } catch (error) {
-      console.warn('[notifications] Failed to resolve timezone', error)
+      log.warn('notifications.timezone_resolve_failed', undefined, error)
       return 'UTC'
     }
   }, [])
@@ -530,11 +571,17 @@ export default function App() {
 
   useEffect(() => {
     if (customUrl) {
-      console.log('[sheets-ui] availableDays', { availableDays, sheetDayTabs })
+      log.debug('sheets_ui.available_days', { availableDays, sheetDayTabs })
     }
   }, [customUrl, availableDays, sheetDayTabs])
   const sessions = useMemo(() => scheduleData.sessions || [], [scheduleData])
   const activities = useMemo(() => scheduleData.activities || [], [scheduleData])
+  const isEmptySchedule = useMemo(() => {
+    const days = Array.isArray(scheduleData.days) ? scheduleData.days : []
+    const runGroups = Array.isArray(scheduleData.runGroups) ? scheduleData.runGroups : []
+    const isDefaultRunGroups = runGroups.length === 1 && runGroups[0] === 'All'
+    return sessions.length === 0 && activities.length === 0 && days.length === 0 && isDefaultRunGroups
+  }, [scheduleData, sessions, activities])
   const groups = useMemo(() => {
     const baseGroups = scheduleData.runGroups && scheduleData.runGroups.length > 0
       ? scheduleData.runGroups
@@ -567,6 +614,8 @@ export default function App() {
   }, [sessions, selectedDay, availableDays])
 
   useEffect(() => {
+    if (selectedGroupsLoading) return
+    if (isEmptySchedule) return
     if (!groups || groups.length === 0) return
     setSelectedGroups(prev => {
       const safePrev = Array.isArray(prev) ? prev : []
@@ -575,7 +624,7 @@ export default function App() {
       if (next.includes('All') && next.length > 1) return ['All']
       return arraysEqual(safePrev, next) ? prev : next
     })
-  }, [groups, setSelectedGroups])
+  }, [groups, isEmptySchedule, selectedGroupsLoading, setSelectedGroups])
 
   const isMobile = useBreakpoint(900)
   const [hasToolbarInset, setHasToolbarInset] = useState(false)
@@ -586,6 +635,12 @@ export default function App() {
   const viewportHeightStyle = viewportHeightPx ? `${viewportHeightPx}px` : 'var(--vp-dvh, var(--vp-height, 100dvh))'
   const viewportMinHeightStyle = viewportHeightPx ? `${viewportHeightPx}px` : 'var(--vp-dvh, var(--vp-height, 100vh))'
   const safeAreaPaddingExpr = 'var(--vp-safe-bottom, env(safe-area-inset-bottom, 0px))'
+
+  useEffect(() => {
+    if (!isMobile && mobileCurrentExpanded) {
+      setMobileCurrentExpanded(false)
+    }
+  }, [isMobile, mobileCurrentExpanded])
 
   useEffect(() => {
     const updateInset = (info) => {
@@ -781,16 +836,9 @@ export default function App() {
   useEffect(() => {
     if (!optionsExpanded) return
 
-    if (!rssFetchStartedRef.current) {
-      if (typeof window !== 'undefined' && typeof DOMParser !== 'undefined') {
-        rssFetchStartedRef.current = true
-        fetchRssEvents()
-      }
-    }
-
-    if (!hodFetchStartedRef.current) {
-      hodFetchStartedRef.current = true
-      fetchHodEvents()
+    if (!eventsFetchStartedRef.current) {
+      eventsFetchStartedRef.current = true
+      fetchCachedEvents()
     }
   }, [optionsExpanded])
   
@@ -824,7 +872,7 @@ export default function App() {
     try {
       return await user.getIdToken()
     } catch (error) {
-      console.warn('[notifications] Unable to fetch auth token', error)
+      log.error('notifications.auth_token_fetch_failed', undefined, error)
       return null
     }
   }, [user])
@@ -848,6 +896,80 @@ export default function App() {
       setAuthNotice(null)
     }, 4000)
   }, [])
+  const resetActiveSheet = useCallback(() => {
+    setCustomUrl('')
+    setSheetName('')
+    setSelectedRssEventId('')
+  }, [setCustomUrl, setSelectedRssEventId, setSheetName])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined
+
+    const markSeen = () => {
+      const now = Date.now()
+      lastSeenRef.current = now
+      writeLastSeenAt(now)
+    }
+
+    const checkAndReset = () => {
+      if (!customUrl) return
+      const lastSeen = lastSeenRef.current
+      if (typeof lastSeen !== 'number') return
+      if (Date.now() - lastSeen < INACTIVITY_RESET_MS) return
+      log.info('auto_reset.clearing_active_sheet', {
+        lastSeen: new Date(lastSeen).toISOString()
+      })
+      resetActiveSheet()
+    }
+
+    if (lastSeenRef.current == null) {
+      const stored = readLastSeenAt()
+      if (typeof stored === 'number') {
+        lastSeenRef.current = stored
+      } else {
+        markSeen()
+      }
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      checkAndReset()
+      markSeen()
+    }
+
+    const handleFocus = () => {
+      checkAndReset()
+      markSeen()
+    }
+
+    const handleUserActivity = () => {
+      if (document.visibilityState !== 'visible') return
+      markSeen()
+    }
+
+    handleVisibility()
+
+    document.addEventListener('visibilitychange', handleVisibility)
+    window.addEventListener('focus', handleFocus)
+    window.addEventListener('pageshow', handleFocus)
+    window.addEventListener('keydown', handleUserActivity, { passive: true })
+    window.addEventListener('pointerdown', handleUserActivity, { passive: true })
+
+    const heartbeat = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        markSeen()
+      }
+    }, 5 * 60 * 1000)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener('focus', handleFocus)
+      window.removeEventListener('pageshow', handleFocus)
+      window.removeEventListener('keydown', handleUserActivity)
+      window.removeEventListener('pointerdown', handleUserActivity)
+      clearInterval(heartbeat)
+    }
+  }, [customUrl, resetActiveSheet])
   const handleAppleSignInNotice = useCallback(() => {
     showAuthNotice('Apple charges $99 for this feature, sorry.')
   }, [showAuthNotice])
@@ -857,7 +979,7 @@ export default function App() {
     try {
       await unregisterTokenWithServer({ token: pushToken, authToken: await getAuthToken() })
     } catch (error) {
-      console.warn('[notifications] Failed to unregister push token', error)
+      log.warn('notifications.push_token_unregister_failed', undefined, error)
     }
     await revokePushToken(pushToken)
     setPushToken(null)
@@ -888,7 +1010,7 @@ export default function App() {
         setPushSyncState('ready')
         return token
       } catch (error) {
-        console.error('[notifications] Push sync failed', error)
+        log.error('notifications.push_sync_failed', undefined, error)
         setPushSetupError(error.message)
         setPushSyncState('error')
         return null
@@ -1039,108 +1161,36 @@ export default function App() {
     </div>
   )
   
-  // Fetch NASA-SE RSS feed and extract LIVE Weekend Schedule Google Sheets URLs
-  async function fetchRssEvents() {
+  // Fetch cached events from the backend (fast path).
+  async function fetchCachedEvents() {
     try {
       setRssLoading(true)
-      setRssError(null)
-      // Use local emulator endpoint if running locally, otherwise use production rewrite
-      let rssUrl
-      if (window.location.hostname === 'localhost') {
-        // Functions emulator: http://localhost:5001/[project]/us-central1/nasaFeed
-        rssUrl = 'http://localhost:5001/livegrid-c33c6/us-central1/nasaFeed'
-      } else {
-        // Production rewrite
-        rssUrl = '/api/nasa-se-feed'
-      }
-      const response = await fetch(rssUrl)
-      if (!response.ok) {
-        throw new Error(`Feed request failed (${response.status})`)
-      }
-      const xmlText = await response.text()
-      const xmlParser = new XMLParser({ ignoreAttributes: false })
-      const feed = xmlParser.parse(xmlText)
-      const channel = feed && feed.rss && feed.rss.channel ? feed.rss.channel : null
-      if (!channel) {
-        throw new Error('Invalid RSS feed structure')
-      }
-      const rawItems = Array.isArray(channel.item) ? channel.item : (channel.item ? [channel.item] : [])
-      const items = rawItems || []
-      const events = []
-
-      const now = Date.now()
-      const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000
-      items.forEach((item, index) => {
-        // Filter out events older than 1 week
-        const pubDateStr = item.pubDate || item.date || null
-        let pubDate = pubDateStr ? new Date(pubDateStr) : null
-        if (!pubDate || (now - pubDate.getTime() > sixtyDaysMs)) return
-
-        // Decode HTML entities in the title (e.g., apostrophes)
-        let title = (item.title || '').toString().trim() || `Event ${index + 1}`;
-        const titleDoc = new DOMParser().parseFromString(title, 'text/html');
-        title = titleDoc.documentElement.textContent || title;
-
-        const html = (item['content:encoded'] || item.content || item.description || '').toString();
-        if (!html) return;
-
-        const htmlDoc = new DOMParser().parseFromString(html, 'text/html');
-        const links = Array.from(htmlDoc.getElementsByTagName('a'));
-        let sheetUrl = null;
-
-        for (const link of links) {
-          const text = (link.textContent || '').toLowerCase();
-          const href = link.getAttribute('href') || '';
-          if (!href) continue;
-          if (!href.includes('docs.google.com/spreadsheets/d/')) continue;
-          if (text.includes('live') && text.includes('schedule')) {
-            sheetUrl = href;
-            break;
-          }
-        }
-
-        if (!sheetUrl) return;
-
-        events.push({
-          id: `${title}-${index}`,
-          title,
-          sheetUrl
-        });
-      });
-
-      setRssEvents(events)
-      setRssLoading(false)
-    } catch (err) {
-      console.error('Failed to load RSS events', err)
-      setRssError('Could not load events from nasa-se.com feed. You can still paste a Google Sheets URL manually.')
-      setRssLoading(false)
-    }
-  }
-
-  // Fetch HOD-MA events from MotorsportReg and extract Google Sheets links
-  async function fetchHodEvents() {
-    try {
       setHodLoading(true)
+      setRssError(null)
       setHodError(null)
-      let hodUrl
+
+      let eventsUrl
       if (window.location.hostname === 'localhost') {
-        // Functions emulator: http://localhost:5001/[project]/us-central1/hodMaEvents
-        hodUrl = 'http://localhost:5001/livegrid-c33c6/us-central1/hodMaEvents'
+        eventsUrl = 'http://localhost:5001/livegrid-c33c6/us-central1/cachedEvents'
       } else {
-        // Production rewrite
-        hodUrl = '/api/hod-ma-events'
+        eventsUrl = '/api/cached-events'
       }
-      const response = await fetch(hodUrl)
+      const response = await fetch(eventsUrl)
       if (!response.ok) {
         throw new Error(`Events request failed (${response.status})`)
       }
       const payload = await response.json().catch(() => ({}))
       const events = Array.isArray(payload?.events) ? payload.events : []
-      setHodEvents(events)
+      setRssEvents(events.filter(ev => ev.source === 'nasa'))
+      setHodEvents(events.filter(ev => ev.source === 'hod'))
+      setRssLoading(false)
       setHodLoading(false)
     } catch (err) {
-      console.error('Failed to load HOD-MA events', err)
-      setHodError('Could not load events from MotorsportReg. You can still paste a Google Sheets URL manually.')
+      log.error('events.cache_load_failed', undefined, err)
+      const message = 'Could not load cached events. You can still paste a Google Sheets URL manually.'
+      setRssError(message)
+      setHodError(message)
+      setRssLoading(false)
       setHodLoading(false)
     }
   }
@@ -1179,7 +1229,7 @@ export default function App() {
       let sheetTitle = ''
       let spreadsheetTitle = ''
       let dayTabs = []
-      console.log('[sheets-ui] Fetch start', {
+      log.debug('sheets_ui.fetch_start', {
         customUrl,
         selectedDay,
         sheetSelection: sheetSelectionRef.current,
@@ -1214,11 +1264,11 @@ export default function App() {
         }
 
         const loadTabs = async () => {
-          console.log('[sheets-ui] Fetching tabs', { spreadsheetId })
+          log.debug('sheets_ui.tabs_fetching', { spreadsheetId })
           const tabsResponse = await callSheetsApi(`sheets/${spreadsheetId}/tabs`)
           const tabs = Array.isArray(tabsResponse) ? tabsResponse : (tabsResponse?.tabs || [])
           const resolvedSpreadsheetTitle = Array.isArray(tabsResponse) ? '' : (tabsResponse?.spreadsheetTitle || '')
-          console.log('[sheets-ui] Tabs payload', {
+          log.debug('sheets_ui.tabs_payload', {
             spreadsheetId,
             spreadsheetTitle: resolvedSpreadsheetTitle,
             tabTitles: tabs.map(tab => tab?.title).filter(Boolean),
@@ -1229,7 +1279,7 @@ export default function App() {
 
         const { tabs, spreadsheetTitle: tabsSpreadsheetTitle } = await loadTabs()
         dayTabs = buildDayTabs(tabs)
-        console.log('[sheets-ui] Day tabs', { dayTabs })
+        log.debug('sheets_ui.day_tabs', { dayTabs })
         setSheetDayTabs(dayTabs)
         if (tabsSpreadsheetTitle) {
           spreadsheetTitle = tabsSpreadsheetTitle
@@ -1239,7 +1289,7 @@ export default function App() {
           const preferred = dayTabs.find(entry => entry.day === selectedDay)
             || dayTabs.find(entry => entry.day === DAY_NAMES[nowWithOffset.getDay()])
             || dayTabs[0]
-          console.log('[sheets-ui] Day tab selection', {
+          log.debug('sheets_ui.day_tab_selection', {
             selectedDay,
             nowDay: DAY_NAMES[nowWithOffset.getDay()],
             preferred
@@ -1250,7 +1300,7 @@ export default function App() {
           sheetId = preferred.sheetId
           sheetTitle = preferred.title || sheetTitle
         } else if (!Number.isFinite(sheetId)) {
-          console.log('[sheets-ui] No day tabs detected, falling back to best tab', { selectedDay, tabsCount: tabs.length })
+          log.info('sheets_ui.day_tab_fallback', { selectedDay, tabsCount: tabs.length })
           const chosen = pickBestTab(tabs)
           if (!chosen) {
             throw new Error('No tabs found in the Google Sheet.')
@@ -1273,7 +1323,7 @@ export default function App() {
           : tabTitle
         csvText = rowsToCsv(headers, rows)
         if (displayTitle) {
-          console.log('[sheets-ui] Display title', { displayTitle, tabTitle, tabSpreadsheetTitle })
+          log.debug('sheets_ui.display_title', { displayTitle, tabTitle, tabSpreadsheetTitle })
           setSheetName(displayTitle)
         }
 
@@ -1351,7 +1401,7 @@ export default function App() {
         setOptionsExpanded(false)
       }
     } catch (error) {
-      console.error('Failed to fetch or parse schedule:', error)
+      log.error('schedule.fetch_or_parse_failed', undefined, error)
       setConnectionStatus('error')
       
       // Determine error type
@@ -1399,13 +1449,15 @@ export default function App() {
   )
 
   const mobilePrimarySession = current
-  const mobileSessionEndsIn = useMemo(() => {
-    if (!mobilePrimarySession || !mobilePrimarySession.start) return null
-    const end = mobilePrimarySession.end || addMinutes(mobilePrimarySession.start, mobilePrimarySession.duration || 20)
-    const diff = end.getTime() - nowWithOffset.getTime()
-    if (diff <= 0) return '0m'
-    return formatTimeUntil(diff, mobilePrimarySession, nowWithOffset)
-  }, [mobilePrimarySession, nowWithOffset])
+  const mobileSessionEndStatus = useMemo(
+    () => getMobileSessionEndStatus(mobilePrimarySession, nowWithOffset),
+    [mobilePrimarySession, nowWithOffset]
+  )
+  const mobileUpcomingSessions = useMemo(() => {
+    if (!rows.length) return []
+    const upcoming = rows.filter(session => session?.start && session.start > nowWithOffset)
+    return upcoming.sort((a, b) => a.start.getTime() - b.start.getTime())
+  }, [rows, nowWithOffset])
 
   const getPrimaryNextSessionEntry = () => {
     const entries = Object.entries(nextSessionsByGroup)
@@ -1419,20 +1471,18 @@ export default function App() {
     return sorted.length ? sorted[0] : null
   }
 
-  const formatMinutesUntil = minutes => {
-    if (minutes == null || Number.isNaN(minutes)) return 'unknown'
-    if (minutes <= 0) return 'now'
-    if (minutes < 1) return '<1m'
-    return `${Math.round(minutes)}m`
+  const formatMinutesValue = minutes => {
+    if (minutes == null || Number.isNaN(minutes)) return 0
+    return Math.max(0, Math.round(minutes))
   }
 
   const buildScheduledNotification = ({ group, session, leadMinutes, eventId }) => {
     if (!session || !session.start) return null
     const fireAt = new Date(session.start.getTime() - leadMinutes * 60000)
-    const minutesLabel = formatMinutesUntil(leadMinutes)
+    const minutesValue = formatMinutesValue(leadMinutes)
     const startLabel = formatTimeWithAmPm(session.start)
-    const title = `${group} ${minutesLabel === 'now' ? 'is up' : `in ${minutesLabel}`}`
-    const body = `${session.session || 'Session'} starts at ${startLabel}`
+    const title = `${group} on track in ${minutesValue}m`
+    const body = `Session starts at ${startLabel}`
     return {
       runGroupId: group,
       sessionStartIsoUtc: session.start.toISOString(),
@@ -1486,7 +1536,7 @@ export default function App() {
       })
       return true
     } catch (error) {
-      console.error('[notifications] Remote push failed', error)
+      log.error('notifications.remote_push_failed', undefined, error)
       if (reason !== 'auto') {
         setNotificationStatus({ type: 'error', message: `Unable to queue push notification: ${error.message}` })
       }
@@ -1533,7 +1583,7 @@ export default function App() {
         ...prev,
         lastSyncError: error?.message || 'Failed to sync'
       }))
-      console.error('[notifications] Forced scheduler sync failed', error)
+      log.error('notifications.force_scheduler_sync_failed', undefined, error)
     }
   }, [syncScheduledNotificationsFn, user, eventId, supportsNotifications, notificationPermission, pushToken, desiredNotifications])
 
@@ -1547,10 +1597,10 @@ export default function App() {
       }
       return
     }
-    const minutesLabel = formatMinutesUntil(etaMinutes)
+    const minutesValue = formatMinutesValue(etaMinutes)
     const startLabel = session.start ? formatTimeWithAmPm(session.start) : 'TBD'
-    const title = `${group} ${minutesLabel === 'now' ? 'is up' : `in ${minutesLabel}`}`
-    const body = `${session.session || 'Session'} starts at ${startLabel}`
+    const title = `${group} on track in ${minutesValue}m`
+    const body = `Session starts at ${startLabel}`
     const options = {
       body,
       tag: `livegrid-${group}-${session.start ? session.start.getTime() : Date.now()}`,
@@ -1655,9 +1705,10 @@ export default function App() {
       const leadMs = leadMinutes * 60000
       const sessionStart = new Date(fireAt.getTime() + leadMs)
       const mockSession = { start: sessionStart, session: 'Mock Session' }
+      const groupLabel = mockTestGroupInput.trim() || 'Mock Test'
       const mockEventId = eventId ? `${eventId}:mock` : `mock:${Date.now()}`
       const mockNotification = buildScheduledNotification({
-        group: 'Mock Test',
+        group: groupLabel,
         session: mockSession,
         leadMinutes,
         eventId: mockEventId
@@ -1707,29 +1758,65 @@ export default function App() {
     }
   }
   
-  // Auto-scroll to current session
-  useEffect(() => {
+  const scrollCurrentIntoView = useCallback((behavior = 'smooth') => {
     if (isMobile || !current || !autoScrollEnabled) return
-    
-    const idx = rows.findIndex(r => 
+    const list = listRef.current
+    if (!list) return
+
+    const idx = rows.findIndex(r =>
       r.start && current.start && r.start.getTime() === current.start.getTime()
     )
     if (idx === -1) return
-    
+
     const element = itemRefs.current[idx]
-    if (element && listRef.current) {
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    }
-    
+    if (!element) return
+
+    const targetTop = element.offsetTop - (list.clientHeight / 2) + (element.clientHeight / 2)
+    const maxTop = Math.max(0, list.scrollHeight - list.clientHeight)
+    const clampedTop = Math.max(0, Math.min(targetTop, maxTop))
+
+    list.scrollTo({ top: clampedTop, behavior })
+  }, [autoScrollEnabled, current, isMobile, rows])
+
+  // Auto-scroll to current session
+  useEffect(() => {
+    if (isMobile || !current || !autoScrollEnabled) return
+
+    scrollCurrentIntoView('smooth')
+
     // Re-center after 30 seconds
     const timer = setTimeout(() => {
-      if (element && listRef.current && autoScrollEnabled) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      if (autoScrollEnabled) {
+        scrollCurrentIntoView('smooth')
       }
     }, 30000)
-    
+
     return () => clearTimeout(timer)
-  }, [current, rows, autoScrollEnabled, isMobile])
+  }, [current, autoScrollEnabled, isMobile, scrollCurrentIntoView])
+
+  // Re-center on layout/resize changes for odd window sizes.
+  useEffect(() => {
+    if (isMobile || !autoScrollEnabled) return undefined
+    const list = listRef.current
+    if (!list) return undefined
+
+    let raf = null
+    const handleResize = () => {
+      if (!autoScrollEnabled) return
+      if (raf != null) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => scrollCurrentIntoView('auto'))
+    }
+
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(handleResize) : null
+    if (observer) observer.observe(list)
+    window.addEventListener('resize', handleResize)
+
+    return () => {
+      if (observer) observer.disconnect()
+      window.removeEventListener('resize', handleResize)
+      if (raf != null) cancelAnimationFrame(raf)
+    }
+  }, [autoScrollEnabled, isMobile, scrollCurrentIntoView])
 
   useEffect(() => {
     if (!syncScheduledNotificationsFn) return
@@ -1773,7 +1860,7 @@ export default function App() {
         ...prev,
         lastSyncError: error?.message || 'Failed to sync'
       }))
-      console.error('[notifications] Failed to sync scheduled notifications', error)
+      log.error('notifications.sync_failed', undefined, error)
     })
   }, [eventId, notificationLeadMinutes, desiredNotifications, notificationPermission, pushToken, supportsNotifications, syncScheduledNotificationsFn, user])
   
@@ -2784,6 +2871,19 @@ export default function App() {
                 </button>
                 <div style={{display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap'}}>
                   <input
+                    type="text"
+                    value={mockTestGroupInput}
+                    onChange={e => setMockTestGroupInput(e.target.value)}
+                    onBlur={() => {
+                      if (mockTestGroupInput.trim() === '') {
+                        setMockTestGroupInput('Mock Test')
+                      }
+                    }}
+                    placeholder="Run group label"
+                    aria-label="Mock run group label"
+                    style={{width: '160px', padding: '4px 6px', borderRadius: '5px', border: '1px solid #94a3b8'}}
+                  />
+                  <input
                     type="number"
                     min={1}
                     max={120}
@@ -2932,11 +3032,7 @@ export default function App() {
                 <button
                   type="button"
                   title="Reset active sheet"
-                  onClick={() => {
-                    setCustomUrl('')
-                    setSheetName('')
-                    setSelectedRssEventId('')
-                  }}
+                  onClick={resetActiveSheet}
                   style={{
                     padding: '8px 12px',
                     fontSize: '0.9rem',
@@ -3044,9 +3140,25 @@ export default function App() {
         gap: isMobile ? '16px' : undefined
       }}>
         {isMobile ? (
-          <section className="mobile-current-card" style={{alignSelf: 'stretch'}}>
+          <section
+            className={`mobile-current-card${mobileCurrentExpanded ? ' expanded' : ''}`}
+            style={{alignSelf: 'stretch'}}
+            role="button"
+            tabIndex={0}
+            aria-expanded={mobileCurrentExpanded}
+            onClick={() => setMobileCurrentExpanded(prev => !prev)}
+            onKeyDown={event => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                event.currentTarget.click()
+              }
+            }}
+          >
             <div className="mobile-card-header">
               <div className="mobile-card-label">Current Session</div>
+              <div className="mobile-card-toggle">
+                {mobileCurrentExpanded ? 'Hide upcoming' : 'Show upcoming'}
+              </div>
             </div>
 
             {mobilePrimarySession ? (
@@ -3058,14 +3170,40 @@ export default function App() {
                     {mobilePrimarySession.start ? formatTimeWithAmPm(mobilePrimarySession.start) : 'TBD'}
                   </span>
                 </div>
-                {mobileSessionEndsIn && (
-                  <div className="mobile-session-status">Ends in {mobileSessionEndsIn}</div>
+                {mobileSessionEndStatus && (
+                  <div className="mobile-session-status">
+                    {mobileSessionEndStatus.showPrefix
+                      ? `Ends in ${mobileSessionEndStatus.text}`
+                      : mobileSessionEndStatus.text}
+                  </div>
                 )}
               </div>
             ) : (
               <div className="mobile-card-body">
                 <div className="mobile-card-title">No session on track</div>
                 <div className="mobile-session-status">Check back soon</div>
+              </div>
+            )}
+
+            {mobileCurrentExpanded && (
+              <div className="mobile-upcoming" onClick={event => event.stopPropagation()}>
+                <div className="mobile-upcoming-title">Upcoming Sessions</div>
+                {mobileUpcomingSessions.length > 0 ? (
+                  <div className="mobile-upcoming-list">
+                    {mobileUpcomingSessions.map((session, idx) => (
+                      <div key={`${session.session}-${idx}`} className="mobile-upcoming-item">
+                        <div className="mobile-upcoming-line">
+                          <span className="mobile-upcoming-time">
+                            {session.start ? formatTimeWithAmPm(session.start) : 'TBD'}
+                          </span>
+                          <span className="mobile-upcoming-name">{session.session || 'Untitled session'}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mobile-upcoming-empty">No upcoming sessions</div>
+                )}
               </div>
             )}
           </section>
@@ -3114,13 +3252,14 @@ export default function App() {
         )}
         
         {/* Right Side: Run Groups, Meetings, Upcoming */}
-        <section className="right" style={{
-          padding: panelPadding,
-          overflow: isMobile ? 'visible' : 'auto',
-          width: isMobile ? '100%' : undefined,
-          flex: isMobile ? '1 1 auto' : undefined,
-          minHeight: isMobile ? 'calc(var(--vp-dvh, 100dvh) * 0.65)' : undefined
-        }}>
+        {!isMobile || !mobileCurrentExpanded ? (
+          <section className="right" style={{
+            padding: panelPadding,
+            overflow: isMobile ? 'visible' : 'auto',
+            width: isMobile ? '100%' : undefined,
+            flex: isMobile ? '1 1 auto' : undefined,
+            minHeight: isMobile ? 'calc(var(--vp-dvh, 100dvh) * 0.65)' : undefined
+          }}>
           {/* Run Groups Selector */}
           <div style={{paddingTop: '6px', marginBottom: '10px'}}>
             <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px'}}>
@@ -3237,7 +3376,8 @@ export default function App() {
               </div>
             </>
           )}
-        </section>
+          </section>
+        ) : null}
       </div>
       </div>
     </div>

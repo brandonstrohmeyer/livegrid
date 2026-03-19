@@ -1,5 +1,6 @@
 import { deleteToken, getMessaging, getToken, isSupported } from 'firebase/messaging'
 import { firebaseApp, isFirebaseConfigured } from './firebaseClient'
+import { log } from './logging.js'
 
 const messagingSwPath = '/firebase-messaging-sw.js'
 const messagingSwScope = '/firebase-cloud-messaging-push-scope'
@@ -80,12 +81,12 @@ async function getMessagingInstance() {
   if (!messagingInstancePromise) {
     messagingInstancePromise = isSupported().then(supported => {
       if (!supported) {
-        console.warn('[messaging] Browser does not support push messaging')
+        log.warn('messaging.not_supported')
         return null
       }
       return getMessaging(firebaseApp)
     }).catch(err => {
-      console.error('[messaging] Unable to initialize messaging SDK', err)
+      log.error('messaging.init_failed', undefined, err)
       return null
     })
   }
@@ -98,14 +99,14 @@ async function ensureMessagingServiceWorker() {
     const registration = await navigator.serviceWorker.register(messagingSwPath, { scope: messagingSwScope })
     return registration
   } catch (err) {
-    console.error('[messaging] Failed to register Firebase messaging service worker', err)
+    log.error('messaging.service_worker_register_failed', undefined, err)
     return null
   }
 }
 
 export async function obtainPushToken() {
   if (!vapidKey) {
-    console.warn('[messaging] Missing VITE_FIREBASE_VAPID_KEY, skipping push subscription')
+    log.warn('messaging.vapid_key_missing')
     return null
   }
   const messaging = await getMessagingInstance()
@@ -120,10 +121,10 @@ export async function obtainPushToken() {
     return token
   } catch (err) {
     if (err.code === 'messaging/permission-blocked') {
-      console.warn('[messaging] Notification permission is blocked')
+      log.warn('messaging.permission_blocked')
       return null
     }
-    console.error('[messaging] Unable to obtain push token', err)
+    log.error('messaging.token_fetch_failed', undefined, err)
     throw err
   }
 }
@@ -134,7 +135,7 @@ export async function revokePushToken(token) {
   try {
     return await deleteToken(messaging, token)
   } catch (err) {
-    console.error('[messaging] Failed to delete push token', err)
+    log.warn('messaging.token_delete_failed', undefined, err)
     return false
   }
 }
@@ -157,7 +158,7 @@ async function callFunctions(path, { method = 'POST', body, authToken } = {}) {
 export async function registerTokenWithServer({ token, timezone, appVersion, authToken }) {
   if (!token) return null
   const platformInfo = getPlatformInfo()
-  console.log('[messaging] Registering push token', {
+  log.info('messaging.token_register', {
     platform: platformInfo.platform,
     clientInfo: platformInfo.clientInfo,
     timezone,

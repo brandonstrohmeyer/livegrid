@@ -3,12 +3,38 @@
 ## Running Tests
 
 ```bash
-# Run all tests
+# Run unit/component tests in watch mode
 npm test
 
-# Run tests once (CI mode)
+# Run unit/component tests once
 npm run test:run
+
+# Run a CI-safe build (no version bump)
+npm run build:ci
+
+# Run integration tests against Firebase emulators
+npm run test:integration
+
+# Run end-to-end tests (requires build output)
+npm run test:e2e
+
+# Run pre-deploy gate (build + unit + integration + e2e)
+npm run test:predeploy
 ```
+
+## Current Status
+
+Verified locally on March 19, 2026:
+
+- `npm run test:run` passed
+- `npm run test:integration` passed
+- `npm run test:e2e` passed
+
+Current caveats:
+
+- `npm test` does **not** run all suites. It only starts Vitest for unit/component tests.
+- `npm run test:e2e` serves the existing `dist/` output via `vite preview`. If `dist/` is stale, E2E can pass against an older build. Run `npm run build:ci` first or use `npm run test:predeploy`.
+- Emulator-backed suites currently use the default Firebase project `livegrid-c33c6` and may emit `firebase login --reauth` warnings if local credentials are expired. The suites still run locally with cached config, but they are not fully hermetic yet.
 
 ## Test Structure
 
@@ -60,7 +86,7 @@ parseTimeToToday('1:30')  // 1:30 PM
 
 ## Notification Delivery Checklist (Manual)
 
-Push notifications are not covered by automated tests. Validate manually after notification changes:
+Push notifications have partial automated coverage in emulator-backed integration tests, but device/browser delivery still needs manual validation after notification changes:
 
 1. Enable notifications in the sidebar and confirm the success toast appears.
 2. Trigger "Test notification" and verify an alert arrives on a device.
@@ -94,10 +120,55 @@ it('does not match [group] with [session]', () => {
 2. File system access (tests load CSV files from disk)
 3. Browser environment (jsdom only)
 
+## Integration Tests (Emulators)
+
+Integration tests run against Firebase emulators using fixture data for upstream calls.
+
+```bash
+npm run test:integration
+```
+
+Environment used by the emulator process:
+- `LIVEGRID_TEST_MODE=true` enables fixture responses
+- `LIVEGRID_TEST_FIXTURES_DIR=functions/test-fixtures`
+- `LIVEGRID_TEST_MESSAGING=stub` simulates FCM success/failure
+
+Coverage:
+- Hosting rewrites for `/api/*`
+- `registerPushToken`, `unregisterPushToken`, `sendPushNotification`
+- `sheetsApi` with fixtures
+- `syncScheduledNotifications` (callable)
+- Scheduled dispatch logic via `dispatchScheduledNotifications`
+
+Notes:
+- These tests exercise real Firebase emulators plus fixture-backed upstream responses.
+- They currently depend on the repo's configured Firebase project id (`livegrid-c33c6`) and local Firebase CLI auth state.
+
+## Firestore Rules Tests
+
+Rules tests run against the emulator and validate core access controls:
+
+```bash
+vitest run --config vitest.integration.config.mjs --testNamePattern=rules
+```
+
+## End-to-End Tests
+
+E2E tests use Playwright and run with Firebase emulators.
+
+```bash
+npm run test:e2e
+```
+
+Notes:
+- `npm run build` or `npm run build:ci` must be run at least once before a standalone E2E run because the preview server uses `dist/`.
+- The Playwright config starts `npm run preview` automatically.
+- The current E2E suite is a smoke test that confirms the app shell loads and core panels render.
+
 ## Future Test Improvements
 
-- Add component rendering tests
-- Add interaction tests (clicks, selections)
+- Expand component interaction coverage
+- Add deeper E2E flows for auth, schedule loading, and notification settings
 - Mock date/time for deterministic outputs
 - Add visual regression tests
 

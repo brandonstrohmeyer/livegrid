@@ -7,14 +7,55 @@ export const DEFAULT_SCHEDULE_PARSER_ID = SCHEDULE_PARSERS[0]?.id || 'nasa-se'
 
 const AUTO_DETECT_ERROR = 'Unable to determine parser automatically. Ensure the sheet matches NASA-SE or HOD-MA formats.'
 
+const HOD_ACTIVITY_PATTERNS = [
+  /\bactivity\b/,
+  /\bactivities\b/,
+  /\bevent\b/,
+  /\bsession\b/
+]
+const HOD_TIME_PATTERNS = [
+  /\btime\b/,
+  /\bstart\b/
+]
+const HOD_END_PATTERNS = [
+  /\bend\b/,
+  /\bend time\b/
+]
+const HOD_WHO_PATTERNS = [
+  /\bwho\b/
+]
+const HOD_WHERE_PATTERNS = [
+  /\bwhere\b/,
+  /\blocation\b/,
+  /\bnotes?\b/
+]
+
 function normalizeCell(value) {
   return (value || '')
     .toString()
+    .replace(/\uFEFF/g, '')
     .replace(/\u00A0|\u202F/g, ' ')
     .replace(/\u2013|\u2014/g, '-')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase()
+}
+
+function normalizeHeaderCell(value) {
+  return normalizeCell(value)
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function cellHasPattern(cell, patterns) {
+  if (!cell) return false
+  return patterns.some(pattern => pattern.test(cell))
+}
+
+function hasLabelHint(label) {
+  if (!label) return false
+  return /hod|hooked on driving|live scheduler|scheduler template/.test(label)
 }
 
 function isDayLabel(text) {
@@ -34,7 +75,7 @@ function isTime(value) {
   return /\d{1,2}(:\d{2})?\s*(AM|PM|am|pm)?/.test(value)
 }
 
-export function detectParserId({ csvText } = {}) {
+export function detectParserId({ csvText, sourceLabel } = {}) {
   if (typeof csvText !== 'string' || csvText.trim().length === 0) {
     throw new Error(AUTO_DETECT_ERROR)
   }
@@ -43,10 +84,13 @@ export function detectParserId({ csvText } = {}) {
   const rows = parsed.data || []
 
   for (const row of rows) {
-    const cells = (row || []).map(normalizeCell)
-    const hasActivity = cells.includes('activity') || cells.includes('event')
-    const hasTime = cells.includes('time') || cells.includes('start time') || cells.includes('start')
-    if (hasActivity && hasTime) {
+    const cells = (row || []).map(normalizeHeaderCell)
+    const hasActivity = cells.some(cell => cellHasPattern(cell, HOD_ACTIVITY_PATTERNS))
+    const hasTime = cells.some(cell => cellHasPattern(cell, HOD_TIME_PATTERNS))
+    const hasEnd = cells.some(cell => cellHasPattern(cell, HOD_END_PATTERNS))
+    const hasWho = cells.some(cell => cellHasPattern(cell, HOD_WHO_PATTERNS))
+    const hasWhere = cells.some(cell => cellHasPattern(cell, HOD_WHERE_PATTERNS))
+    if (hasTime && (hasActivity || (hasEnd && hasWhere) || (hasWho && hasWhere))) {
       return { parserId: 'hod-ma', reason: 'header-row' }
     }
   }
@@ -68,6 +112,11 @@ export function detectParserId({ csvText } = {}) {
 
   if (dayLabelCount >= 1 && timeRowCount >= 3) {
     return { parserId: 'nasa-se', reason: `days:${dayLabelCount}, timeRows:${timeRowCount}` }
+  }
+
+  const normalizedLabel = normalizeCell(sourceLabel || '')
+  if (hasLabelHint(normalizedLabel)) {
+    return { parserId: 'hod-ma', reason: 'source-label' }
   }
 
   throw new Error(AUTO_DETECT_ERROR)

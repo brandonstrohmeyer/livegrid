@@ -6,7 +6,7 @@ This repository uses GitHub Actions for pull request validation, tagged releases
 
 ### PR CI
 
-`.github/workflows/pr-ci.yml` runs on pull requests targeting `master` and splits validation into four jobs:
+`.github/workflows/pr-ci.yml` runs on pull requests targeting `main` and splits validation into four jobs:
 
 - unit/component tests via `npm run test:run`
 - build validation via `npm run test:build`
@@ -15,7 +15,7 @@ This repository uses GitHub Actions for pull request validation, tagged releases
 
 ## Release flow
 
-`.github/workflows/release.yml` runs on pushes to `master`.
+`.github/workflows/release.yml` runs on pushes to `main`.
 
 - The workflow resolves the merged PR for the merge commit.
 - Release bump is chosen from PR labels:
@@ -39,10 +39,10 @@ The deploy job checks out the exact tag, regenerates `build.json`, builds the ap
 
 Branch protection cannot be stored in the repo. Configure it in GitHub:
 
-- create and protect `master`
+- create and protect `main`
 - require pull requests before merging
 - require the PR CI workflow checks to pass before merge
-- block direct pushes to `master`
+- block direct pushes to `main`
 
 ## Required secrets
 

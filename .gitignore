@@ -31,6 +31,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # Local cloud tooling state and generated observability exports
+.firebase/
 .gcloud/
 test-results/
 /cloud_function_v1_*.json

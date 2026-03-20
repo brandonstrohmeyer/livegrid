@@ -25,6 +25,7 @@ This repository uses GitHub Actions for pull request validation, tagged releases
 - If no release label is present, the workflow defaults to `patch`.
 - If more than one release label is present, the workflow fails without creating a tag.
 - The next version is calculated from the latest `vX.Y.Z` git tag. If no matching tag exists yet, version bootstrap falls back to `0.2.24`.
+- The workflow pushes the release tag with the `RELEASE_PAT` personal access token so the tag push triggers downstream workflows such as `.github/workflows/deploy.yml`.
 
 ## Deploy flow
 
@@ -48,6 +49,7 @@ Branch protection cannot be stored in the repo. Configure it in GitHub:
 
 Add these repository or environment secrets before enabling deploys:
 
+- `RELEASE_PAT`
 - `FIREBASE_SERVICE_ACCOUNT_JSON`
 - `VITE_FIREBASE_API_KEY`
 - `VITE_FIREBASE_AUTH_DOMAIN`

@@ -3,14 +3,14 @@ name: Release
 on:
   push:
     branches:
-      - master
+      - main
 
 permissions:
   contents: write
   pull-requests: read
 
 concurrency:
-  group: release-master
+  group: release-main
   cancel-in-progress: false
 
 jobs:
@@ -40,11 +40,11 @@ jobs:
             });
 
             const mergedPullRequests = response.data.filter((pullRequest) => (
-              Boolean(pullRequest.merged_at) && pullRequest.base.ref === 'master'
+              Boolean(pullRequest.merged_at) && pullRequest.base.ref === 'main'
             ));
 
             if (!mergedPullRequests.length) {
-              core.setFailed(`No merged pull request associated with ${commit_sha} targeting master.`);
+              core.setFailed(`No merged pull request associated with ${commit_sha} targeting main.`);
               return;
             }
 

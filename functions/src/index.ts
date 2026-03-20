@@ -116,6 +116,10 @@ const HOD_MA_EVENT_LIMIT = 20
 const HOD_MA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const EVENT_CACHE_STALE_DAYS = 14
 const EVENT_CACHE_MAX = 200
+const ACTIVE_USER_WINDOW_MS = 2 * 60 * 1000
+const ACTIVE_USERS_METRIC_TYPE = 'custom.googleapis.com/livegrid/active_users_current'
+const PENDING_NOTIFICATION_USERS_METRIC_TYPE = 'custom.googleapis.com/livegrid/users_with_pending_notifications'
+const FIRESTORE_GET_ALL_CHUNK_SIZE = 300
 
 type SheetTab = {
   sheetId: number
@@ -179,6 +183,85 @@ function tokenFingerprint(token?: string) {
   } catch (err) {
     log.warn('auth.token_hash_failed', undefined, err)
     return 'hash_error'
+  }
+}
+
+async function getMetadataAccessToken() {
+  const response = await fetch('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', {
+    headers: {
+      'Metadata-Flavor': 'Google'
+    }
+  })
+  if (!response.ok) {
+    throw new Error(`Metadata token request failed (${response.status})`)
+  }
+  const payload = await response.json() as { access_token?: string }
+  if (!payload?.access_token) {
+    throw new Error('Metadata token response missing access_token')
+  }
+  return payload.access_token
+}
+
+type GaugeMetricPoint = {
+  type: string
+  value: number
+}
+
+async function writeGaugeMetrics(metrics: GaugeMetricPoint[], now = Timestamp.now()) {
+  if (TEST_MODE || process.env.FUNCTIONS_EMULATOR === 'true') return
+  const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || admin.app().options.projectId
+  if (!projectId) {
+    log.warn('presence.metric_project_missing')
+    return
+  }
+
+  try {
+    const accessToken = await getMetadataAccessToken()
+    const endTime = new Date(now.toMillis()).toISOString()
+    const timeSeries = metrics
+      .filter(metric => Number.isFinite(metric.value))
+      .map(metric => ({
+        metric: {
+          type: metric.type
+        },
+        resource: {
+          type: 'global',
+          labels: {
+            project_id: projectId
+          }
+        },
+        points: [
+          {
+            interval: {
+              startTime: endTime,
+              endTime
+            },
+            value: {
+              int64Value: String(Math.max(0, Math.trunc(metric.value)))
+            }
+          }
+        ]
+      }))
+    if (!timeSeries.length) return
+
+    const response = await fetch(`https://monitoring.googleapis.com/v3/projects/${projectId}/timeSeries`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        timeSeries
+      })
+    })
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(`Monitoring write failed (${response.status}): ${text}`)
+    }
+  } catch (err: any) {
+    log.warn('presence.metric_write_failed', {
+      metrics: metrics.map(metric => ({ type: metric.type, value: metric.value }))
+    }, err)
   }
 }
 
@@ -1459,10 +1542,81 @@ export async function dispatchScheduledNotifications(now: Timestamp | Date | { t
   }
 }
 
+function hasRegisteredNotificationTokens(data: any) {
+  return Array.isArray(data?.tokens) && data.tokens.some((token: unknown) => typeof token === 'string' && token.trim())
+}
+
+async function countActiveUsers(now = Timestamp.now()) {
+  const cutoff = Timestamp.fromMillis(now.toMillis() - ACTIVE_USER_WINDOW_MS)
+  const snapshot = await usersCollection.where('presenceLastSeenAt', '>=', cutoff).get()
+  return snapshot.docs.reduce((count, doc) => {
+    const data = doc.data() as any
+    return data?.presenceState === 'offline' ? count : count + 1
+  }, 0)
+}
+
+async function countUsersWithPendingNotifications(now = Timestamp.now()) {
+  const pendingSnapshot = await scheduledCollection.where('status', '==', 'pending').get()
+  const candidateUserIds = pendingSnapshot.docs.reduce((uids, doc) => {
+    const data = doc.data() as any
+    const uid = typeof data?.uid === 'string' ? data.uid.trim() : ''
+    const expiresAt = data?.expiresAt
+    if (!uid) return uids
+    if (expiresAt?.toMillis?.() && expiresAt.toMillis() <= now.toMillis()) return uids
+    uids.add(uid)
+    return uids
+  }, new Set<string>())
+
+  if (!candidateUserIds.size) return 0
+
+  const uidList = Array.from(candidateUserIds)
+  let registeredUserCount = 0
+
+  for (let index = 0; index < uidList.length; index += FIRESTORE_GET_ALL_CHUNK_SIZE) {
+    const refs = uidList
+      .slice(index, index + FIRESTORE_GET_ALL_CHUNK_SIZE)
+      .map(uid => usersCollection.doc(uid))
+    const userDocs = refs.length ? await db.getAll(...refs) : []
+    registeredUserCount += userDocs.reduce((count, userDoc) => {
+      return hasRegisteredNotificationTokens(userDoc.data()) ? count + 1 : count
+    }, 0)
+  }
+
+  return registeredUserCount
+}
+
+async function logTelemetryCounts(now = Timestamp.now()) {
+  const [activeCount, pendingNotificationUsersCount] = await Promise.all([
+    countActiveUsers(now),
+    countUsersWithPendingNotifications(now)
+  ])
+
+  await writeGaugeMetrics([
+    { type: ACTIVE_USERS_METRIC_TYPE, value: activeCount },
+    { type: PENDING_NOTIFICATION_USERS_METRIC_TYPE, value: pendingNotificationUsersCount }
+  ], now)
+
+  log.info('presence.active_user_count', {
+    count: activeCount,
+    windowMinutes: Math.round(ACTIVE_USER_WINDOW_MS / 60000)
+  })
+
+  log.info('notifications.pending_registered_user_count', {
+    count: pendingNotificationUsersCount
+  })
+}
+
 export const scheduledNotificationDispatcher = onSchedule(
   { schedule: 'every 1 minutes', timeZone: 'UTC', region: SCHEDULER_REGION },
   async () => {
     await dispatchScheduledNotifications(Timestamp.now())
+  }
+)
+
+export const activeUsersTelemetry = onSchedule(
+  { schedule: 'every 1 minutes', timeZone: 'UTC', region: SCHEDULER_REGION },
+  async () => {
+    await logTelemetryCounts(Timestamp.now())
   }
 )
 

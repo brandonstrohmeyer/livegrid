@@ -381,7 +381,7 @@ export default function App() {
   const [selectedDay, setSelectedDay] = useSyncedPreference('selectedDay', () => (isDemoMode ? 'Saturday' : null))
   const [selectedCsvFile, setSelectedCsvFile] = useSyncedPreference(
     'selectedCsvFile',
-    () => (isDemoMode ? '2026 New Year, New Gear - Schedule.csv' : 'schedule.csv')
+    () => (isDemoMode ? '2026 New Year, New Gear - Schedule.csv' : '')
   )
   const lastSeenRef = useRef(null)
   const [scheduleParserId, setScheduleParserId] = useSyncedPreference(
@@ -497,6 +497,7 @@ export default function App() {
     }
     return 'https://livegrid.app'
   }, [])
+  const isLocalDemoScheduleActive = Boolean(debugMode && !customUrl && selectedCsvFile)
   const eventId = useMemo(() => {
     if (customUrl) {
       const sheetMatch = customUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
@@ -506,9 +507,9 @@ export default function App() {
       }
       return `sheet-url:${customUrl}`
     }
-    if (selectedCsvFile) return `file:${selectedCsvFile}`
+    if (isLocalDemoScheduleActive) return `file:${selectedCsvFile}`
     return null
-  }, [customUrl, selectedCsvFile])
+  }, [customUrl, isLocalDemoScheduleActive, selectedCsvFile])
   const syncScheduledNotificationsFn = useMemo(() => (
     functions ? httpsCallable(functions, 'syncScheduledNotifications') : null
   ), [functions])
@@ -537,9 +538,9 @@ export default function App() {
 
   const hasActiveSchedule = useMemo(() => {
     if (customUrl) return true
-    if (debugMode && selectedCsvFile) return true
+    if (isLocalDemoScheduleActive) return true
     return false
-  }, [customUrl, debugMode, selectedCsvFile])
+  }, [customUrl, isLocalDemoScheduleActive])
 
   const scheduleParser = useMemo(() => (
     SCHEDULE_PARSERS.find(parser => parser.id === scheduleParserId) || SCHEDULE_PARSERS[0] || null
@@ -1907,6 +1908,7 @@ export default function App() {
       setDebugMode(false)
       setClockOffset(0)
       setDayOffset(0)
+      setSelectedCsvFile('')
     }
   }
   
@@ -3015,6 +3017,7 @@ export default function App() {
                       setDebugMode(false)
                       setClockOffset(0)
                       setDayOffset(0)
+                      setSelectedCsvFile('')
                     }
                   }}
                   placeholder="https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"

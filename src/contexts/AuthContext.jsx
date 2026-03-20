@@ -10,7 +10,8 @@ import {
   getRedirectResult,
   signInWithRedirect
 } from 'firebase/auth'
-import { auth } from '../firebaseClient'
+import { doc, serverTimestamp, setDoc } from 'firebase/firestore'
+import { auth, firestore } from '../firebaseClient'
 import { log } from '../logging.js'
 
 const AuthContext = createContext({
@@ -36,6 +37,24 @@ function isIosSafari() {
 
 const provider = new GoogleAuthProvider()
 provider.setCustomParameters({ prompt: 'select_account' })
+
+const PRESENCE_HEARTBEAT_MS = 60 * 1000
+
+async function updateUserPresence(uid, state) {
+  if (!uid || !firestore) return
+  try {
+    await setDoc(
+      doc(firestore, 'users', uid),
+      {
+        presenceState: state,
+        presenceLastSeenAt: serverTimestamp()
+      },
+      { merge: true }
+    )
+  } catch (err) {
+    log.warn('auth.presence_update_failed', { uid, state }, err)
+  }
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
@@ -117,6 +136,40 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
+  useEffect(() => {
+    if (!user?.uid || !firestore) return undefined
+
+    let stopped = false
+
+    const heartbeat = async () => {
+      if (stopped) return
+      await updateUserPresence(user.uid, 'online')
+    }
+
+    heartbeat()
+    const intervalId = window.setInterval(heartbeat, PRESENCE_HEARTBEAT_MS)
+
+    const handleFocus = () => {
+      heartbeat()
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        heartbeat()
+      }
+    }
+
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      stopped = true
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [user?.uid])
+
   const signIn = useCallback(async () => {
     if (!auth) {
       const err = new Error('Account sync disabled: configure Firebase env values to enable sign-in.')
@@ -136,8 +189,11 @@ export function AuthProvider({ children }) {
   const signOut = useCallback(async () => {
     if (!auth) return
     setError(null)
+    if (user?.uid) {
+      await updateUserPresence(user.uid, 'offline')
+    }
     await firebaseSignOut(auth)
-  }, [])
+  }, [user?.uid])
 
   const value = useMemo(() => ({
     user,

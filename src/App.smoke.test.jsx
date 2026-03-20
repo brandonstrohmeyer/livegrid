@@ -13,8 +13,10 @@ vi.mock('./firebaseClient', () => ({
 }))
 
 describe('App smoke', () => {
+  let fetchMock
+
   beforeAll(() => {
-    globalThis.fetch = vi.fn(async (input) => {
+    fetchMock = vi.fn(async (input) => {
       const url = typeof input === 'string' ? input : input?.url || ''
       if (url.includes('cached-events')) {
         return {
@@ -34,10 +36,12 @@ describe('App smoke', () => {
         text: async () => 'not found'
       }
     })
+    globalThis.fetch = fetchMock
   })
 
   beforeEach(() => {
     window.localStorage.clear()
+    fetchMock.mockClear()
   })
 
   it('renders without crashing and shows the sessions header', async () => {
@@ -50,5 +54,31 @@ describe('App smoke', () => {
       </AuthProvider>
     )
     expect(await screen.findByText('Sessions')).toBeInTheDocument()
+  })
+
+  it('does not load schedule.csv outside demo mode when a stale csv preference exists', async () => {
+    window.localStorage.setItem(
+      'nasaDashboardPrefs',
+      JSON.stringify({
+        selectedCsvFile: 'schedule.csv'
+      })
+    )
+
+    const { default: App } = await import('./App')
+    render(
+      <AuthProvider>
+        <PreferencesProvider>
+          <App />
+        </PreferencesProvider>
+      </AuthProvider>
+    )
+
+    expect(await screen.findByText('Sessions')).toBeInTheDocument()
+
+    const requestedUrls = fetchMock.mock.calls.map(([input]) => (
+      typeof input === 'string' ? input : input?.url || ''
+    ))
+    expect(requestedUrls.some(url => url.endsWith('schedule.csv'))).toBe(false)
+    expect(requestedUrls.some(url => url.includes('/test-schedules/'))).toBe(false)
   })
 })

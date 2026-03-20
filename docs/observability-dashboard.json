@@ -232,7 +232,53 @@
       {
         "xPos": 0,
         "yPos": 12,
-        "width": 12,
+        "width": 3,
+        "height": 4,
+        "widget": {
+          "title": "Active Logged-In Users",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"custom.googleapis.com/livegrid/active_users_current\" AND resource.type=\"global\"",
+                "aggregation": {
+                  "alignmentPeriod": "60s",
+                  "perSeriesAligner": "ALIGN_NEXT_OLDER"
+                }
+              }
+            },
+            "sparkChartView": {
+              "sparkChartType": "SPARK_LINE"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 3,
+        "yPos": 12,
+        "width": 3,
+        "height": 4,
+        "widget": {
+          "title": "Users With Pending Notifications",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"custom.googleapis.com/livegrid/users_with_pending_notifications\" AND resource.type=\"global\"",
+                "aggregation": {
+                  "alignmentPeriod": "60s",
+                  "perSeriesAligner": "ALIGN_NEXT_OLDER"
+                }
+              }
+            },
+            "sparkChartView": {
+              "sparkChartType": "SPARK_LINE"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 12,
+        "width": 6,
         "height": 4,
         "widget": {
           "title": "Notification Dispatcher Logs",

@@ -1,5 +1,5 @@
 {
-  "name": "nasa-session-dashboard-functions",
+  "name": "livegrid-functions",
   "main": "lib/index.js",
   "engines": {
     "node": "22"

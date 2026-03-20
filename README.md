@@ -11,7 +11,13 @@ It is designed to make paddock schedule-checking faster and less error-prone.
 - Receive lock-screen notifications when enabled
 - Switch between supported event schedules
 
-![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="public/livegrid_desktop.png" alt="LiveGrid desktop screenshot" width="720">
+    </td>
+  </tr>
+</table>
 
 # Using LiveGrid
 

@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release-master
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and Publish Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve merged PR and bump
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const commit_sha = context.sha;
+            const response = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner,
+              repo,
+              commit_sha
+            });
+
+            const mergedPullRequests = response.data.filter((pullRequest) => (
+              Boolean(pullRequest.merged_at) && pullRequest.base.ref === 'master'
+            ));
+
+            if (!mergedPullRequests.length) {
+              core.setFailed(`No merged pull request associated with ${commit_sha} targeting master.`);
+              return;
+            }
+
+            const pullRequest = mergedPullRequests[0];
+            const labelNames = pullRequest.labels.map((label) => label.name);
+            const releaseLabels = labelNames.filter((name) => (
+              ['release:major', 'release:minor', 'release:patch'].includes(name)
+            ));
+
+            if (releaseLabels.length > 1) {
+              core.setFailed(`Conflicting release labels on PR #${pullRequest.number}: ${releaseLabels.join(', ')}`);
+              return;
+            }
+
+            const bump = releaseLabels.length ? releaseLabels[0].split(':')[1] : 'patch';
+            core.setOutput('number', String(pullRequest.number));
+            core.setOutput('bump', bump);
+
+      - name: Compute next version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(node scripts/build-version.js next "${{ steps.pr.outputs.bump }}")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure tag does not already exist
+        shell: bash
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.version.outputs.tag }} already exists." >&2
+            exit 1
+          fi
+
+      - name: Write release build version
+        run: node scripts/build-version.js set "${{ steps.version.outputs.version }}"
+
+      - name: Create annotated tag
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${{ steps.version.outputs.tag }}"
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${{ steps.version.outputs.tag }}" --generate-notes --title "${{ steps.version.outputs.tag }}"

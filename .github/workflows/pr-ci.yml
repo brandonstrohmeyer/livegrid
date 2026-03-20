@@ -32,6 +32,9 @@ jobs:
       - name: Install root dependencies
         run: npm ci
 
+      - name: Install Rollup Linux native binary
+        run: npm install --no-save @rollup/rollup-linux-x64-gnu@$(node -p 'require("./node_modules/rollup/package.json").version')
+
       - name: Run unit and component tests
         run: npm run test:run
 
@@ -48,6 +51,9 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci
+
+      - name: Install Rollup Linux native binary
+        run: npm install --no-save @rollup/rollup-linux-x64-gnu@$(node -p 'require("./node_modules/rollup/package.json").version')
 
       - name: Install functions dependencies
         run: npm --prefix functions ci
@@ -73,6 +79,9 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci
+
+      - name: Install Rollup Linux native binary
+        run: npm install --no-save @rollup/rollup-linux-x64-gnu@$(node -p 'require("./node_modules/rollup/package.json").version')
 
       - name: Install functions dependencies
         run: npm --prefix functions ci
@@ -104,6 +113,9 @@ jobs:
 
       - name: Install root dependencies
         run: npm ci
+
+      - name: Install Rollup Linux native binary
+        run: npm install --no-save @rollup/rollup-linux-x64-gnu@$(node -p 'require("./node_modules/rollup/package.json").version')
 
       - name: Install functions dependencies
         run: npm --prefix functions ci

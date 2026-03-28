@@ -83,6 +83,53 @@ describe('functions emulator', () => {
     expect(payload.status).toBe('sent')
   })
 
+  it('accepts client telemetry and stores visitor state', async () => {
+    const response = await callFunction('clientTelemetry', {
+      body: {
+        event: 'visitor.opened',
+        severity: 'info',
+        path: '/',
+        appVersion: '0.0.0-test',
+        fingerprint: 'visitor-opened:/',
+        visitorId: 'visitor-1',
+        sessionId: 'session-1',
+        interactionType: 'opened',
+        meta: {
+          authState: 'anonymous',
+          source: 'nasa'
+        }
+      }
+    })
+
+    expect(response.status).toBe(204)
+
+    const snapshot = await db.collection('visitorTelemetry').get()
+    expect(snapshot.size).toBe(1)
+    const payload = snapshot.docs[0].data()
+    expect(payload.lastAuthState).toBe('anonymous')
+    expect(payload.lastOpenedAt).toBeTruthy()
+    expect(payload.lastInteractionAt).toBeTruthy()
+  })
+
+  it('rejects malformed client telemetry payloads', async () => {
+    const response = await callFunction('clientTelemetry', {
+      body: {
+        event: 'unknown.event',
+        severity: 'warn'
+      }
+    })
+
+    expect(response.status).toBe(400)
+  })
+
+  it('serves the health endpoint via hosting rewrite', async () => {
+    const response = await callHosting('/api/health')
+    expect([200, 503]).toContain(response.status)
+    const payload = await response.json()
+    expect(payload.checks).toBeTruthy()
+    expect(payload.checks.firebaseAdmin.status).toBe('ok')
+  })
+
   it('handles sheets API endpoints using fixtures', async () => {
     const resolveResp = await callFunction('sheetsApi/sheets/resolve', {
       body: { url: 'https://docs.google.com/spreadsheets/d/TEST_SHEET_ID/edit' }

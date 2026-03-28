@@ -1,6 +1,9 @@
-import { defineConfig } from 'vite'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { getFirebaseClientHealth } from './scripts/firebaseEnvRequirements.mjs'
 
 function manualChunks(id) {
   const normalized = id.replace(/\\/g, '/')
@@ -25,10 +28,54 @@ function manualChunks(id) {
   return 'vendor'
 }
 
-export default defineConfig({
-  plugins: [
-    react(),
-    VitePWA({
+function readJson(filePath) {
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8'))
+  } catch (err) {
+    return null
+  }
+}
+
+function buildHealthAssetPlugin(buildEnv) {
+  const packageJson = readJson(resolve(process.cwd(), 'package.json')) || {}
+  const buildJson = readJson(resolve(process.cwd(), 'build.json')) || {}
+
+  return {
+    name: 'livegrid-health-asset',
+    generateBundle() {
+      const { ok, missingKeys } = getFirebaseClientHealth(buildEnv)
+      const payload = {
+        status: ok ? 'ok' : 'degraded',
+        generatedAt: new Date().toISOString(),
+        version: buildJson.version || packageJson.version || '0.0.0',
+        checks: {
+          firebaseClientConfig: {
+            status: ok ? 'ok' : 'degraded',
+            missingKeys
+          }
+        }
+      }
+
+      this.emitFile({
+        type: 'asset',
+        fileName: 'healthz.json',
+        source: `${JSON.stringify(payload, null, 2)}\n`
+      })
+    }
+  }
+}
+
+export default defineConfig(({ mode }) => {
+  const buildEnv = {
+    ...process.env,
+    ...loadEnv(mode, process.cwd(), '')
+  }
+
+  return {
+    plugins: [
+      react(),
+      buildHealthAssetPlugin(buildEnv),
+      VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico'],
       workbox: {
@@ -61,12 +108,13 @@ export default defineConfig({
           }
         ]
       }
-    })
-  ],
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks
+      })
+    ],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks
+        }
       }
     }
   }

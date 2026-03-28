@@ -45,6 +45,14 @@
         "function": "sendPushNotification"
       },
       {
+        "source": "/api/client-telemetry",
+        "function": "clientTelemetry"
+      },
+      {
+        "source": "/api/health",
+        "function": "systemHealth"
+      },
+      {
         "source": "/api/sheets/**",
         "function": "sheetsApi"
       },

@@ -9,63 +9,51 @@
         "width": 12,
         "height": 4,
         "widget": {
-          "title": "Notification Outcomes",
+          "title": "Active Usage",
           "xyChart": {
             "dataSets": [
               {
                 "plotType": "LINE",
-                "legendTemplate": "stuck",
+                "legendTemplate": "signed-in",
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_stuck_notifications\"",
+                    "filter": "metric.type=\"custom.googleapis.com/livegrid/active_users_current\" AND resource.type=\"global\"",
                     "aggregation": {
                       "alignmentPeriod": "60s",
-                      "perSeriesAligner": "ALIGN_DELTA",
-                      "crossSeriesReducer": "REDUCE_SUM",
-                      "groupByFields": [
-                        "resource.label.service_name"
-                      ]
+                      "perSeriesAligner": "ALIGN_NEXT_OLDER"
                     }
                   }
                 }
               },
               {
                 "plotType": "LINE",
-                "legendTemplate": "undeliverable",
+                "legendTemplate": "all visitors",
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_notification_undeliverable\"",
+                    "filter": "metric.type=\"custom.googleapis.com/livegrid/all_active_visitors_current\" AND resource.type=\"global\"",
                     "aggregation": {
                       "alignmentPeriod": "60s",
-                      "perSeriesAligner": "ALIGN_DELTA",
-                      "crossSeriesReducer": "REDUCE_SUM",
-                      "groupByFields": [
-                        "resource.label.service_name"
-                      ]
+                      "perSeriesAligner": "ALIGN_NEXT_OLDER"
                     }
                   }
                 }
               },
               {
                 "plotType": "LINE",
-                "legendTemplate": "successful",
+                "legendTemplate": "anonymous",
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_notification_success\"",
+                    "filter": "metric.type=\"custom.googleapis.com/livegrid/anonymous_active_visitors_current\" AND resource.type=\"global\"",
                     "aggregation": {
                       "alignmentPeriod": "60s",
-                      "perSeriesAligner": "ALIGN_DELTA",
-                      "crossSeriesReducer": "REDUCE_SUM",
-                      "groupByFields": [
-                        "resource.label.service_name"
-                      ]
+                      "perSeriesAligner": "ALIGN_NEXT_OLDER"
                     }
                   }
                 }
               }
             ],
             "yAxis": {
-              "label": "count/min",
+              "label": "visitors",
               "scale": "LINEAR"
             }
           }
@@ -74,172 +62,14 @@
       {
         "xPos": 0,
         "yPos": 4,
-        "width": 6,
-        "height": 4,
-        "widget": {
-          "title": "Notification Dispatch Errors",
-          "xyChart": {
-            "dataSets": [
-              {
-                "plotType": "LINE",
-                "timeSeriesQuery": {
-                  "timeSeriesFilter": {
-                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_notification_errors\"",
-                    "aggregation": {
-                      "alignmentPeriod": "60s",
-                      "perSeriesAligner": "ALIGN_DELTA",
-                      "crossSeriesReducer": "REDUCE_SUM",
-                      "groupByFields": [
-                        "resource.label.service_name"
-                      ]
-                    }
-                  }
-                }
-              }
-            ],
-            "yAxis": {
-              "label": "count/min",
-              "scale": "LINEAR"
-            }
-          }
-        }
-      },
-      {
-        "xPos": 6,
-        "yPos": 4,
-        "width": 6,
-        "height": 4,
-        "widget": {
-          "title": "Dispatcher Invocations",
-          "xyChart": {
-            "dataSets": [
-              {
-                "plotType": "LINE",
-                "legendTemplate": "invocations",
-                "timeSeriesQuery": {
-                "timeSeriesFilter": {
-                    "filter": "metric.type=\"run.googleapis.com/request_count\" AND resource.type=\"cloud_run_revision\" AND resource.label.service_name=\"schedulednotificationdispatcher\"",
-                    "aggregation": {
-                      "alignmentPeriod": "60s",
-                      "perSeriesAligner": "ALIGN_DELTA",
-                      "crossSeriesReducer": "REDUCE_SUM",
-                      "groupByFields": [
-                        "resource.label.service_name"
-                      ]
-                    }
-                  }
-                }
-              },
-              {
-                "plotType": "LINE",
-                "legendTemplate": "errors",
-                "timeSeriesQuery": {
-                  "timeSeriesFilter": {
-                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_notification_errors\"",
-                    "aggregation": {
-                      "alignmentPeriod": "60s",
-                      "perSeriesAligner": "ALIGN_DELTA",
-                      "crossSeriesReducer": "REDUCE_SUM",
-                      "groupByFields": [
-                        "resource.label.service_name"
-                      ]
-                    }
-                  }
-                }
-              }
-            ],
-            "yAxis": {
-              "label": "count/min",
-              "scale": "LINEAR"
-            }
-          }
-        }
-      },
-      {
-        "xPos": 0,
-        "yPos": 8,
-        "width": 6,
-        "height": 4,
-        "widget": {
-          "title": "Dispatcher P95 Latency",
-          "xyChart": {
-            "dataSets": [
-              {
-                "plotType": "LINE",
-                "timeSeriesQuery": {
-                "timeSeriesFilter": {
-                    "filter": "metric.type=\"run.googleapis.com/request_latencies\" AND resource.type=\"cloud_run_revision\" AND resource.label.service_name=\"schedulednotificationdispatcher\"",
-                    "aggregation": {
-                      "alignmentPeriod": "60s",
-                      "perSeriesAligner": "ALIGN_PERCENTILE_95",
-                      "crossSeriesReducer": "REDUCE_MAX",
-                      "groupByFields": [
-                        "resource.label.service_name"
-                      ]
-                    }
-                  }
-                }
-              }
-            ],
-            "yAxis": {
-              "label": "ms",
-              "scale": "LINEAR"
-            }
-          }
-        }
-      },
-      {
-        "xPos": 6,
-        "yPos": 8,
-        "width": 6,
-        "height": 4,
-        "widget": {
-          "title": "Firestore Reads / Writes",
-          "xyChart": {
-            "dataSets": [
-              {
-                "plotType": "LINE",
-                "timeSeriesQuery": {
-                  "timeSeriesFilter": {
-                    "filter": "metric.type=\"firestore.googleapis.com/document/read_count\"",
-                    "aggregation": {
-                      "alignmentPeriod": "60s",
-                      "perSeriesAligner": "ALIGN_DELTA"
-                    }
-                  }
-                }
-              },
-              {
-                "plotType": "LINE",
-                "timeSeriesQuery": {
-                  "timeSeriesFilter": {
-                    "filter": "metric.type=\"firestore.googleapis.com/document/write_count\"",
-                    "aggregation": {
-                      "alignmentPeriod": "60s",
-                      "perSeriesAligner": "ALIGN_DELTA"
-                    }
-                  }
-                }
-              }
-            ],
-            "yAxis": {
-              "label": "count/min",
-              "scale": "LINEAR"
-            }
-          }
-        }
-      },
-      {
-        "xPos": 0,
-        "yPos": 12,
         "width": 3,
         "height": 4,
         "widget": {
-          "title": "Active Logged-In Users",
+          "title": "Unique Interacting Visitors 24h",
           "scorecard": {
             "timeSeriesQuery": {
               "timeSeriesFilter": {
-                "filter": "metric.type=\"custom.googleapis.com/livegrid/active_users_current\" AND resource.type=\"global\"",
+                "filter": "metric.type=\"custom.googleapis.com/livegrid/unique_interacting_visitors_24h\" AND resource.type=\"global\"",
                 "aggregation": {
                   "alignmentPeriod": "60s",
                   "perSeriesAligner": "ALIGN_NEXT_OLDER"
@@ -254,7 +84,7 @@
       },
       {
         "xPos": 3,
-        "yPos": 12,
+        "yPos": 4,
         "width": 3,
         "height": 4,
         "widget": {
@@ -277,13 +107,197 @@
       },
       {
         "xPos": 6,
-        "yPos": 12,
+        "yPos": 4,
+        "width": 3,
+        "height": 4,
+        "widget": {
+          "title": "Hosting Health Uptime",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.label.check_id=\"${hosting_health_check_id}\"",
+                "aggregation": {
+                  "alignmentPeriod": "60s",
+                  "perSeriesAligner": "ALIGN_NEXT_OLDER"
+                }
+              }
+            },
+            "sparkChartView": {
+              "sparkChartType": "SPARK_LINE"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 9,
+        "yPos": 4,
+        "width": 3,
+        "height": 4,
+        "widget": {
+          "title": "API Health Uptime",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.label.check_id=\"${api_health_check_id}\"",
+                "aggregation": {
+                  "alignmentPeriod": "60s",
+                  "perSeriesAligner": "ALIGN_NEXT_OLDER"
+                }
+              }
+            },
+            "sparkChartView": {
+              "sparkChartType": "SPARK_LINE"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 8,
         "width": 6,
         "height": 4,
         "widget": {
-          "title": "Notification Dispatcher Logs",
+          "title": "Client Failures",
+          "xyChart": {
+            "dataSets": [
+              {
+                "plotType": "LINE",
+                "legendTemplate": "client errors",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_client_errors\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_DELTA",
+                      "crossSeriesReducer": "REDUCE_SUM"
+                    }
+                  }
+                }
+              },
+              {
+                "plotType": "LINE",
+                "legendTemplate": "client health failures",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_client_health_failures\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_DELTA",
+                      "crossSeriesReducer": "REDUCE_SUM"
+                    }
+                  }
+                }
+              }
+            ],
+            "yAxis": {
+              "label": "count/min",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 8,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Visitor Interactions",
+          "xyChart": {
+            "dataSets": [
+              {
+                "plotType": "LINE",
+                "legendTemplate": "opened",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_visitor_opened\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_DELTA",
+                      "crossSeriesReducer": "REDUCE_SUM"
+                    }
+                  }
+                }
+              },
+              {
+                "plotType": "LINE",
+                "legendTemplate": "event selected",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_visitor_event_selected\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_DELTA",
+                      "crossSeriesReducer": "REDUCE_SUM"
+                    }
+                  }
+                }
+              }
+            ],
+            "yAxis": {
+              "label": "count/min",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 12,
+        "width": 4,
+        "height": 4,
+        "widget": {
+          "title": "Backend Health Failures",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"logging.googleapis.com/user/livegrid_backend_health_failures\"",
+                "aggregation": {
+                  "alignmentPeriod": "60s",
+                  "perSeriesAligner": "ALIGN_DELTA",
+                  "crossSeriesReducer": "REDUCE_SUM"
+                }
+              }
+            },
+            "sparkChartView": {
+              "sparkChartType": "SPARK_LINE"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 4,
+        "yPos": 12,
+        "width": 4,
+        "height": 4,
+        "widget": {
+          "title": "Rejected Telemetry",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "metric.type=\"logging.googleapis.com/user/livegrid_client_telemetry_rejected\"",
+                "aggregation": {
+                  "alignmentPeriod": "60s",
+                  "perSeriesAligner": "ALIGN_DELTA",
+                  "crossSeriesReducer": "REDUCE_SUM"
+                }
+              }
+            },
+            "sparkChartView": {
+              "sparkChartType": "SPARK_LINE"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 8,
+        "yPos": 12,
+        "width": 4,
+        "height": 4,
+        "widget": {
+          "title": "Client Telemetry Logs",
           "logsPanel": {
-            "filter": "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"schedulednotificationdispatcher\"",
+            "filter": "resource.type=\"cloud_run_revision\" AND (jsonPayload.event=\"client.error\" OR jsonPayload.event=\"client.health_failed\" OR jsonPayload.event=\"client.telemetry_rejected\" OR jsonPayload.event=\"system.health_failed\")",
             "resourceNames": [
               "projects/livegrid-c33c6"
             ]

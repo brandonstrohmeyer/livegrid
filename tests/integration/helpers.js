@@ -22,6 +22,7 @@ async function clearFirestore() {
     clearCollection('users'),
     clearCollection('scheduledNotifications'),
     clearCollection('eventCache'),
+    clearCollection('visitorTelemetry'),
     clearCollection('sheetMetadata'),
     clearCollection('sheetSources')
   ])

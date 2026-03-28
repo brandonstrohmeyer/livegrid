@@ -96,6 +96,7 @@ const usersCollection = db.collection('users')
 const sheetMetadataCollection = db.collection('sheetMetadata')
 const sheetSourcesCollection = db.collection('sheetSources')
 const eventCacheCollection = db.collection('eventCache')
+const visitorTelemetryCollection = db.collection('visitorTelemetry')
 
 const SCHEDULER_REGION = 'us-central1'
 const LEASE_MS = 2 * 60 * 1000
@@ -118,8 +119,39 @@ const EVENT_CACHE_STALE_DAYS = 14
 const EVENT_CACHE_MAX = 200
 const ACTIVE_USER_WINDOW_MS = 2 * 60 * 1000
 const ACTIVE_USERS_METRIC_TYPE = 'custom.googleapis.com/livegrid/active_users_current'
+const ALL_ACTIVE_VISITORS_METRIC_TYPE = 'custom.googleapis.com/livegrid/all_active_visitors_current'
+const ANONYMOUS_ACTIVE_VISITORS_METRIC_TYPE = 'custom.googleapis.com/livegrid/anonymous_active_visitors_current'
+const UNIQUE_INTERACTING_VISITORS_24H_METRIC_TYPE = 'custom.googleapis.com/livegrid/unique_interacting_visitors_24h'
 const PENDING_NOTIFICATION_USERS_METRIC_TYPE = 'custom.googleapis.com/livegrid/users_with_pending_notifications'
 const FIRESTORE_GET_ALL_CHUNK_SIZE = 300
+const VISITOR_INTERACTION_WINDOW_MS = 24 * 60 * 60 * 1000
+const VISITOR_TELEMETRY_TTL_DAYS = 30
+const VISITOR_TELEMETRY_TTL_MS = VISITOR_TELEMETRY_TTL_DAYS * 24 * 60 * 60 * 1000
+const CLIENT_TELEMETRY_MAX_BODY_BYTES = 4096
+const CLIENT_TELEMETRY_MAX_INSTANCES = 2
+const CLIENT_TELEMETRY_IP_WINDOW_MS = 60 * 1000
+const CLIENT_TELEMETRY_IP_LIMIT = 60
+const CLIENT_TELEMETRY_FINGERPRINT_WINDOW_MS = 5 * 60 * 1000
+const CLIENT_TELEMETRY_FINGERPRINT_LIMIT = 5
+const CLIENT_TELEMETRY_ALLOWED_EVENT_PREFIXES = [
+  'firebase.',
+  'auth.',
+  'prefs.',
+  'schedule.',
+  'notifications.',
+  'messaging.',
+  'events.',
+  'auto_reset.',
+  'client.',
+  'visitor.'
+]
+const CLIENT_TELEMETRY_ALLOWED_EVENTS = new Set([
+  'visitor.opened',
+  'visitor.event_selected',
+  'visitor.heartbeat'
+])
+const CLIENT_TELEMETRY_ALLOWED_SEVERITIES = new Set(['info', 'warn', 'error'])
+const CLIENT_TELEMETRY_ALLOWED_INTERACTIONS = new Set(['opened', 'event_selected', 'heartbeat'])
 
 type SheetTab = {
   sheetId: number
@@ -149,11 +181,34 @@ type CacheEntry<T> = {
   expiresAt: number
 }
 
+type ClientTelemetrySeverity = 'info' | 'warn' | 'error'
+type ClientTelemetryInteractionType = 'opened' | 'event_selected' | 'heartbeat'
+
+type ClientTelemetryPayload = {
+  event: string
+  severity: ClientTelemetrySeverity
+  path: string
+  appVersion: string | null
+  fingerprint: string
+  check?: string | null
+  visitorId: string
+  sessionId: string
+  interactionType?: ClientTelemetryInteractionType | null
+  error?: {
+    message?: string
+    name?: string
+    code?: string
+  } | null
+  meta?: Record<string, string | number | boolean>
+}
+
 const sheetMetadataCache = new Map<string, CacheEntry<SheetMetadata>>()
 const sheetValuesCache = new Map<string, CacheEntry<SheetValues>>()
 const sheetMetadataInFlight = new Map<string, Promise<SheetMetadata>>()
 const sheetValuesInFlight = new Map<string, Promise<SheetValues>>()
 const sheetRateLimit = new Map<string, { count: number; resetAt: number }>()
+const clientTelemetryIpRateLimit = new Map<string, { count: number; resetAt: number }>()
+const clientTelemetryFingerprintRateLimit = new Map<string, { count: number; resetAt: number }>()
 
 async function authenticate(req: { get: (name: string) => string | undefined }) {
   const authHeader = req.get('authorization') || ''
@@ -184,6 +239,217 @@ function tokenFingerprint(token?: string) {
     log.warn('auth.token_hash_failed', undefined, err)
     return 'hash_error'
   }
+}
+
+function hashIdentifier(value: string, length = 24) {
+  return createHash('sha256').update(value).digest('hex').slice(0, length)
+}
+
+function truncateString(value: unknown, maxLength: number) {
+  if (typeof value !== 'string') return ''
+  return value.trim().slice(0, maxLength)
+}
+
+function coerceTelemetryMeta(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const meta = Object.entries(value as Record<string, unknown>).reduce<Record<string, string | number | boolean>>((acc, [key, raw]) => {
+    const normalizedKey = truncateString(key, 40)
+    if (!normalizedKey) return acc
+    if (Array.isArray(raw)) {
+      const normalizedArray = truncateString(raw.map(item => String(item)).join(','), 120)
+      if (normalizedArray) acc[normalizedKey] = normalizedArray
+      return acc
+    }
+    if (typeof raw === 'boolean' || typeof raw === 'number') {
+      acc[normalizedKey] = raw
+      return acc
+    }
+    if (typeof raw === 'string') {
+      const normalizedValue = truncateString(raw, 120)
+      if (normalizedValue) acc[normalizedKey] = normalizedValue
+    }
+    return acc
+  }, {})
+  return Object.keys(meta).length ? meta : undefined
+}
+
+function computeVisitorTelemetryExpiry(now = Timestamp.now()) {
+  return Timestamp.fromMillis(now.toMillis() + VISITOR_TELEMETRY_TTL_MS)
+}
+
+function rateLimitKey(map: Map<string, { count: number; resetAt: number }>, key: string, limit: number, windowMs: number) {
+  const now = Date.now()
+  const existing = map.get(key)
+  if (!existing || existing.resetAt <= now) {
+    map.set(key, { count: 1, resetAt: now + windowMs })
+    return { limited: false, firstLimited: false }
+  }
+
+  existing.count += 1
+  if (existing.count <= limit) {
+    return { limited: false, firstLimited: false }
+  }
+
+  return { limited: true, firstLimited: existing.count === limit + 1 }
+}
+
+function isAllowedClientTelemetryEvent(event: string) {
+  if (CLIENT_TELEMETRY_ALLOWED_EVENTS.has(event)) return true
+  return CLIENT_TELEMETRY_ALLOWED_EVENT_PREFIXES.some(prefix => event.startsWith(prefix))
+}
+
+function parseRequestBody(body: unknown) {
+  if (!body) return null
+  if (typeof body === 'string') {
+    return JSON.parse(body)
+  }
+  if (Buffer.isBuffer(body)) {
+    return JSON.parse(body.toString('utf8'))
+  }
+  if (typeof body === 'object') {
+    return body
+  }
+  return null
+}
+
+function sanitizeClientTelemetryPayload(raw: unknown): ClientTelemetryPayload | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const payload = raw as Record<string, unknown>
+  const event = truncateString(payload.event, 80)
+  const severity = truncateString(payload.severity, 10) as ClientTelemetrySeverity
+  const path = truncateString(payload.path, 160)
+  const appVersion = truncateString(payload.appVersion, 40) || null
+  const fingerprint = truncateString(payload.fingerprint, 160)
+  const check = truncateString(payload.check, 80) || null
+  const visitorId = truncateString(payload.visitorId, 120)
+  const sessionId = truncateString(payload.sessionId, 120)
+  const interactionType = truncateString(payload.interactionType, 40) as ClientTelemetryInteractionType
+
+  if (!event || !severity || !path || !fingerprint || !visitorId || !sessionId) return null
+  if (!CLIENT_TELEMETRY_ALLOWED_SEVERITIES.has(severity)) return null
+  if (!isAllowedClientTelemetryEvent(event)) return null
+  if (interactionType && !CLIENT_TELEMETRY_ALLOWED_INTERACTIONS.has(interactionType)) return null
+
+  const error = payload.error && typeof payload.error === 'object'
+    ? {
+        message: truncateString((payload.error as Record<string, unknown>).message, 240) || undefined,
+        name: truncateString((payload.error as Record<string, unknown>).name, 80) || undefined,
+        code: truncateString((payload.error as Record<string, unknown>).code, 60) || undefined
+      }
+    : undefined
+
+  return {
+    event,
+    severity,
+    path,
+    appVersion,
+    fingerprint,
+    check,
+    visitorId,
+    sessionId,
+    interactionType: interactionType || undefined,
+    error,
+    meta: coerceTelemetryMeta(payload.meta)
+  }
+}
+
+function logClientTelemetryRejection(reason: string, req: { get: (name: string) => string | undefined; ip?: string }, detail?: Record<string, unknown>) {
+  const ip = getClientIp(req)
+  log.warn('client.telemetry_rejected', {
+    reason,
+    ipHash: hashIdentifier(ip, 12),
+    ...detail
+  })
+}
+
+async function updateVisitorTelemetry(payload: ClientTelemetryPayload, now = Timestamp.now()) {
+  const visitorHash = hashIdentifier(payload.visitorId)
+  const sessionHash = hashIdentifier(payload.sessionId)
+  const docRef = visitorTelemetryCollection.doc(visitorHash)
+
+  await db.runTransaction(async transaction => {
+    const snap = await transaction.get(docRef)
+    const update: Record<string, unknown> = {
+      visitorHash,
+      lastSessionHash: sessionHash,
+      lastSeenAt: now,
+      lastAuthState: payload.meta?.authState === 'signed_in' ? 'signed_in' : 'anonymous',
+      lastPath: payload.path,
+      lastAppVersion: payload.appVersion,
+      updatedAt: now,
+      expiresAt: computeVisitorTelemetryExpiry(now)
+    }
+
+    if (!snap.exists) {
+      update.firstSeenAt = now
+    }
+
+    if (payload.interactionType === 'opened' || payload.interactionType === 'event_selected') {
+      update.lastInteractionAt = now
+    }
+
+    if (payload.interactionType === 'opened') {
+      update.lastOpenedAt = now
+    }
+
+    if (payload.interactionType === 'event_selected') {
+      update.lastSelectedEventAt = now
+      update.lastSelectedSource = payload.meta?.source || null
+      update.lastSelectedEventIdHash = payload.meta?.eventId ? hashIdentifier(String(payload.meta.eventId), 16) : null
+    }
+
+    transaction.set(docRef, update, { merge: true })
+  })
+
+  return { visitorHash, sessionHash }
+}
+
+function logClientTelemetryEvent(payload: ClientTelemetryPayload, identifiers: { visitorHash: string; sessionHash: string }) {
+  const baseData = {
+    sourceEvent: payload.event,
+    severity: payload.severity,
+    path: payload.path,
+    appVersion: payload.appVersion,
+    fingerprint: payload.fingerprint,
+    visitorHash: identifiers.visitorHash,
+    sessionHash: identifiers.sessionHash,
+    check: payload.check || undefined,
+    interactionType: payload.interactionType || undefined,
+    meta: payload.meta
+  }
+
+  if (payload.event === 'visitor.opened') {
+    log.info('visitor.opened', baseData)
+    return
+  }
+
+  if (payload.event === 'visitor.event_selected') {
+    log.info('visitor.event_selected', baseData)
+    return
+  }
+
+  if (payload.event === 'visitor.heartbeat') {
+    log.debug('visitor.heartbeat', baseData)
+    return
+  }
+
+  const isHealthFailure = Boolean(payload.check) || payload.event === 'firebase.config_missing' || payload.event === 'firebase.client_disabled'
+  if (isHealthFailure) {
+    log.error('client.health_failed', baseData, payload.error)
+    return
+  }
+
+  if (payload.severity === 'error') {
+    log.error('client.error', baseData, payload.error)
+    return
+  }
+
+  if (payload.severity === 'warn') {
+    log.warn('client.warn', baseData, payload.error)
+    return
+  }
+
+  log.info('client.info', baseData, payload.error)
 }
 
 async function getMetadataAccessToken() {
@@ -461,6 +727,150 @@ function parseTimestamp(isoUtc: string) {
   // Timestamp from firebase-admin/firestore avoids the emulator crash seen with admin.firestore.Timestamp.
   return Timestamp.fromDate(date)
 }
+
+export const clientTelemetry = onRequest({
+  cors: true,
+  region: SCHEDULER_REGION,
+  timeoutSeconds: 15,
+  memory: '128MiB',
+  maxInstances: CLIENT_TELEMETRY_MAX_INSTANCES
+}, async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('')
+    return
+  }
+
+  if (req.method !== 'POST') {
+    res.status(405).send('Method not allowed')
+    return
+  }
+
+  const ip = getClientIp(req)
+  const ipRateLimit = rateLimitKey(clientTelemetryIpRateLimit, ip, CLIENT_TELEMETRY_IP_LIMIT, CLIENT_TELEMETRY_IP_WINDOW_MS)
+  if (ipRateLimit.limited) {
+    if (ipRateLimit.firstLimited) {
+      logClientTelemetryRejection('rate_limited_ip', req)
+    }
+    res.status(204).send('')
+    return
+  }
+
+  const contentLength = Number(req.get('content-length') || 0)
+  if (contentLength > CLIENT_TELEMETRY_MAX_BODY_BYTES) {
+    logClientTelemetryRejection('payload_too_large', req, { contentLength })
+    res.status(413).json({ error: 'Telemetry payload too large' })
+    return
+  }
+
+  let parsedBody: unknown
+  try {
+    parsedBody = parseRequestBody(req.body)
+  } catch (err: any) {
+    logClientTelemetryRejection('invalid_json', req)
+    res.status(400).json({ error: 'Invalid telemetry payload' })
+    return
+  }
+
+  const rawBodySize = Buffer.byteLength(JSON.stringify(parsedBody || {}), 'utf8')
+  if (rawBodySize > CLIENT_TELEMETRY_MAX_BODY_BYTES) {
+    logClientTelemetryRejection('payload_too_large', req, { rawBodySize })
+    res.status(413).json({ error: 'Telemetry payload too large' })
+    return
+  }
+
+  const payload = sanitizeClientTelemetryPayload(parsedBody)
+  if (!payload) {
+    logClientTelemetryRejection('invalid_payload', req)
+    res.status(400).json({ error: 'Invalid telemetry payload' })
+    return
+  }
+
+  const fingerprintRateLimit = rateLimitKey(
+    clientTelemetryFingerprintRateLimit,
+    `${ip}:${payload.fingerprint}`,
+    CLIENT_TELEMETRY_FINGERPRINT_LIMIT,
+    CLIENT_TELEMETRY_FINGERPRINT_WINDOW_MS
+  )
+  if (fingerprintRateLimit.limited) {
+    if (fingerprintRateLimit.firstLimited) {
+      logClientTelemetryRejection('rate_limited_fingerprint', req, {
+        fingerprint: payload.fingerprint.slice(0, 40)
+      })
+    }
+    res.status(204).send('')
+    return
+  }
+
+  try {
+    const identifiers = await updateVisitorTelemetry(payload, Timestamp.now())
+    logClientTelemetryEvent(payload, identifiers)
+    res.status(204).send('')
+  } catch (err: any) {
+    log.error('client.telemetry_failed', {
+      ipHash: hashIdentifier(ip, 12),
+      sourceEvent: payload.event
+    }, err)
+    res.status(500).json({ error: 'Unable to store telemetry' })
+  }
+})
+
+export const systemHealth = onRequest({
+  cors: true,
+  region: SCHEDULER_REGION,
+  timeoutSeconds: 15,
+  memory: '128MiB',
+  maxInstances: 2,
+  secrets: ['SHEETS_API_KEY']
+}, async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('')
+    return
+  }
+
+  if (req.method !== 'GET') {
+    res.status(405).send('Method not allowed')
+    return
+  }
+
+  const checkedAt = new Date().toISOString()
+  const checks: Record<string, { status: 'ok' | 'degraded' | 'error'; detail?: string }> = {
+    firebaseAdmin: {
+      status: admin.apps.length > 0 ? 'ok' : 'error'
+    },
+    firestore: {
+      status: 'ok'
+    },
+    sheetsConfig: {
+      status: SHEETS_API_KEY ? 'ok' : 'degraded',
+      detail: SHEETS_API_KEY ? undefined : 'SHEETS_API_KEY is not configured for this function.'
+    }
+  }
+
+  try {
+    await usersCollection.limit(1).get()
+  } catch (err: any) {
+    checks.firestore = {
+      status: 'error',
+      detail: err?.message || 'Firestore read failed'
+    }
+  }
+
+  const statuses = Object.values(checks).map(check => check.status)
+  const status = statuses.includes('error')
+    ? 'error'
+    : statuses.includes('degraded')
+      ? 'degraded'
+      : 'ok'
+
+  const payload = { status, checkedAt, checks }
+  if (status === 'ok') {
+    log.info('system.health_ok', payload)
+  } else {
+    log.warn('system.health_failed', payload)
+  }
+
+  res.status(status === 'error' ? 503 : 200).json(payload)
+})
 
 function computeNotificationExpiry(fireAt: Timestamp | null) {
   if (!fireAt) return null
@@ -1555,6 +1965,21 @@ async function countActiveUsers(now = Timestamp.now()) {
   }, 0)
 }
 
+async function countAnonymousActiveVisitors(now = Timestamp.now()) {
+  const cutoff = Timestamp.fromMillis(now.toMillis() - ACTIVE_USER_WINDOW_MS)
+  const snapshot = await visitorTelemetryCollection.where('lastSeenAt', '>=', cutoff).get()
+  return snapshot.docs.reduce((count, doc) => {
+    const data = doc.data() as any
+    return data?.lastAuthState === 'signed_in' ? count : count + 1
+  }, 0)
+}
+
+async function countUniqueInteractingVisitors24h(now = Timestamp.now()) {
+  const cutoff = Timestamp.fromMillis(now.toMillis() - VISITOR_INTERACTION_WINDOW_MS)
+  const snapshot = await visitorTelemetryCollection.where('lastInteractionAt', '>=', cutoff).get()
+  return snapshot.size
+}
+
 async function countUsersWithPendingNotifications(now = Timestamp.now()) {
   const pendingSnapshot = await scheduledCollection.where('status', '==', 'pending').get()
   const candidateUserIds = pendingSnapshot.docs.reduce((uids, doc) => {
@@ -1586,19 +2011,36 @@ async function countUsersWithPendingNotifications(now = Timestamp.now()) {
 }
 
 async function logTelemetryCounts(now = Timestamp.now()) {
-  const [activeCount, pendingNotificationUsersCount] = await Promise.all([
+  const [activeCount, anonymousActiveVisitorsCount, uniqueInteractingVisitors24h, pendingNotificationUsersCount] = await Promise.all([
     countActiveUsers(now),
+    countAnonymousActiveVisitors(now),
+    countUniqueInteractingVisitors24h(now),
     countUsersWithPendingNotifications(now)
   ])
+  const allActiveVisitorsCount = activeCount + anonymousActiveVisitorsCount
 
   await writeGaugeMetrics([
     { type: ACTIVE_USERS_METRIC_TYPE, value: activeCount },
+    { type: ALL_ACTIVE_VISITORS_METRIC_TYPE, value: allActiveVisitorsCount },
+    { type: ANONYMOUS_ACTIVE_VISITORS_METRIC_TYPE, value: anonymousActiveVisitorsCount },
+    { type: UNIQUE_INTERACTING_VISITORS_24H_METRIC_TYPE, value: uniqueInteractingVisitors24h },
     { type: PENDING_NOTIFICATION_USERS_METRIC_TYPE, value: pendingNotificationUsersCount }
   ], now)
 
   log.info('presence.active_user_count', {
     count: activeCount,
     windowMinutes: Math.round(ACTIVE_USER_WINDOW_MS / 60000)
+  })
+
+  log.info('visitors.active_count', {
+    signedInCount: activeCount,
+    anonymousCount: anonymousActiveVisitorsCount,
+    allCount: allActiveVisitorsCount,
+    windowMinutes: Math.round(ACTIVE_USER_WINDOW_MS / 60000)
+  })
+
+  log.info('visitors.unique_interacting_24h', {
+    count: uniqueInteractingVisitors24h
   })
 
   log.info('notifications.pending_registered_user_count', {

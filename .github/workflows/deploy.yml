@@ -87,6 +87,9 @@ jobs:
       - name: Write release build version
         run: node scripts/build-version.js set "${{ steps.resolve.outputs.version }}"
 
+      - name: Validate Firebase client env vars
+        run: node scripts/validate-firebase-env.mjs
+
       - name: Build frontend
         run: npm run build:ci
 

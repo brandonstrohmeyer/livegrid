@@ -22,6 +22,7 @@ import {
 import { addMinutes } from './scheduleUtils.js'
 import { parseCsvSchedule, detectParserId, SCHEDULE_PARSERS, DEFAULT_SCHEDULE_PARSER_ID } from './schedule/parsers/registry.js'
 import { log } from './logging.js'
+import { reportEventSelected, reportVisitorOpened, startVisitorHeartbeat } from './telemetry.js'
 
 const DEFAULT_STALE_THRESHOLD_MINUTES = 5
 const createEmptySchedule = () => ({
@@ -483,6 +484,18 @@ export default function App() {
   useEffect(() => {
     setDayOffsetInput(String(dayOffset))
   }, [dayOffset])
+
+  useEffect(() => {
+    if (authLoading) return undefined
+
+    reportVisitorOpened({
+      authState: user ? 'signed_in' : 'anonymous'
+    })
+
+    return startVisitorHeartbeat(() => ({
+      authState: user ? 'signed_in' : 'anonymous'
+    }))
+  }, [authLoading, user])
 
   useEffect(() => {
     return () => {
@@ -1902,6 +1915,12 @@ export default function App() {
       setSelectedRssEventId('')
       setCustomUrl(hodMatch.sheetUrl)
     }
+
+    reportEventSelected({
+      authState: user ? 'signed_in' : 'anonymous',
+      source: nasaMatch ? 'nasa' : 'hod',
+      eventId
+    })
 
     // Exit demo/debug mode and reset offsets when switching to a live sheet
     if (debugMode) {

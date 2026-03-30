@@ -16,6 +16,8 @@
     "build:patch": "npm run version:bump:patch && vite build",
     "build:minor": "npm run version:bump:minor && vite build",
     "build:major": "npm run version:bump:major && vite build",
+    "notifications:backfill-status": "node scripts/backfill-scheduled-notification-status.mjs",
+    "notifications:backfill-status:apply": "node scripts/backfill-scheduled-notification-status.mjs --apply",
     "preview": "vite preview",
     "test": "vitest",
     "test:ui": "vitest --ui",

@@ -239,6 +239,12 @@ function coerceTelemetryMeta(value) {
         const normalizedKey = truncateString(key, 40);
         if (!normalizedKey)
             return acc;
+        if (Array.isArray(raw)) {
+            const normalizedArray = truncateString(raw.map(item => String(item)).join(','), 120);
+            if (normalizedArray)
+                acc[normalizedKey] = normalizedArray;
+            return acc;
+        }
         if (typeof raw === 'boolean' || typeof raw === 'number') {
             acc[normalizedKey] = raw;
             return acc;
@@ -783,6 +789,18 @@ function computeNotificationExpiry(fireAt) {
     if (!fireAt)
         return null;
     return firestore_1.Timestamp.fromMillis(fireAt.toMillis() + NOTIFICATION_TTL_MS);
+}
+function deriveScheduledNotificationStatus(data, now) {
+    const explicitStatus = typeof data?.status === 'string' ? data.status.trim() : '';
+    if (explicitStatus)
+        return explicitStatus;
+    if (data?.sentAt?.toMillis?.())
+        return 'sent';
+    if (data?.undeliverableAt?.toMillis?.() || data?.undeliverableReason)
+        return 'undeliverable';
+    if (data?.leaseUntil?.toMillis?.() && data.leaseUntil.toMillis() > now.toMillis())
+        return 'sending';
+    return 'pending';
 }
 function isTransientMessagingError(code) {
     return code === 'messaging/internal-error' || code === 'messaging/server-unavailable';
@@ -1346,6 +1364,7 @@ exports.syncScheduledNotifications = (0, https_1.onCall)({ region: SCHEDULER_REG
         throw new https_1.HttpsError('invalid-argument', 'desiredNotifications must be an array');
     }
     const now = firestore_1.FieldValue.serverTimestamp();
+    const normalizedNow = firestore_1.Timestamp.now();
     const desiredMap = new Map();
     const notifIds = [];
     const fireAtTimes = [];
@@ -1374,7 +1393,8 @@ exports.syncScheduledNotifications = (0, https_1.onCall)({ region: SCHEDULER_REG
     const batch = db.batch();
     desiredMap.forEach((item, notifId) => {
         const existing = existingById.get(notifId);
-        const existingStatus = existing?.data()?.status;
+        const existingData = existing?.data();
+        const existingStatus = deriveScheduledNotificationStatus(existingData, normalizedNow);
         const fireAt = parseTimestamp(item.fireAtIsoUtc);
         if (!fireAt) {
             throw new https_1.HttpsError('invalid-argument', `Invalid fireAtIsoUtc for ${notifId}`);
@@ -1413,6 +1433,12 @@ exports.syncScheduledNotifications = (0, https_1.onCall)({ region: SCHEDULER_REG
             }, { merge: true });
         }
         else {
+            const repair = typeof existingData?.status === 'string' && existingData.status.trim()
+                ? {}
+                : {
+                    status: existingStatus,
+                    leaseUntil: existingStatus === 'sending' ? existingData?.leaseUntil ?? null : null
+                };
             const reset = existingStatus === 'undeliverable'
                 ? {
                     status: 'pending',
@@ -1422,7 +1448,7 @@ exports.syncScheduledNotifications = (0, https_1.onCall)({ region: SCHEDULER_REG
                     undeliverableReason: null
                 }
                 : {};
-            batch.set(docRef, { ...base, ...reset }, { merge: true });
+            batch.set(docRef, { ...base, ...repair, ...reset }, { merge: true });
         }
     });
     const pendingSnap = await scheduledCollection
@@ -1487,17 +1513,6 @@ async function dispatchScheduledNotifications(now) {
         .orderBy('fireAt')
         .limit(dispatchLimit)
         .get();
-    // Firestore queries for `status == null` do not match missing fields.
-    // Pull a small candidate window by fireAt and then filter in-memory.
-    const missingStatusCandidatesSnap = await scheduledCollection
-        .where('fireAt', '<=', normalizedNow)
-        .orderBy('fireAt')
-        .limit(DISPATCH_LIMIT)
-        .get();
-    const missingStatusDocs = missingStatusCandidatesSnap.docs.filter(doc => {
-        const status = doc.data()?.status;
-        return status === null || status === undefined;
-    });
     const sendingSnap = await scheduledCollection
         .where('status', '==', 'sending')
         .where('fireAt', '<=', normalizedNow)
@@ -1506,7 +1521,6 @@ async function dispatchScheduledNotifications(now) {
         .get();
     const docsById = new Map();
     pendingSnap.docs.forEach(doc => docsById.set(doc.id, doc));
-    missingStatusDocs.forEach(doc => docsById.set(doc.id, doc));
     sendingSnap.docs.forEach(doc => docsById.set(doc.id, doc));
     const docs = Array.from(docsById.values()).sort((a, b) => {
         const aFireAt = a.data()?.fireAt?.toMillis?.() ?? 0;

@@ -877,6 +877,15 @@ function computeNotificationExpiry(fireAt: Timestamp | null) {
   return Timestamp.fromMillis(fireAt.toMillis() + NOTIFICATION_TTL_MS)
 }
 
+function deriveScheduledNotificationStatus(data: any, now: Timestamp) {
+  const explicitStatus = typeof data?.status === 'string' ? data.status.trim() : ''
+  if (explicitStatus) return explicitStatus
+  if (data?.sentAt?.toMillis?.()) return 'sent'
+  if (data?.undeliverableAt?.toMillis?.() || data?.undeliverableReason) return 'undeliverable'
+  if (data?.leaseUntil?.toMillis?.() && data.leaseUntil.toMillis() > now.toMillis()) return 'sending'
+  return 'pending'
+}
+
 function isTransientMessagingError(code?: string) {
   return code === 'messaging/internal-error' || code === 'messaging/server-unavailable'
 }
@@ -1515,6 +1524,7 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
   }
 
   const now = FieldValue.serverTimestamp()
+  const normalizedNow = Timestamp.now()
   const desiredMap = new Map<string, DesiredNotification>()
   const notifIds: string[] = []
   const fireAtTimes: string[] = []
@@ -1547,7 +1557,8 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
 
   desiredMap.forEach((item, notifId) => {
     const existing = existingById.get(notifId)
-    const existingStatus = existing?.data()?.status
+    const existingData = existing?.data() as any
+    const existingStatus = deriveScheduledNotificationStatus(existingData, normalizedNow)
 
     const fireAt = parseTimestamp(item.fireAtIsoUtc)
     if (!fireAt) {
@@ -1589,6 +1600,13 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
         sentAt: null
       }, { merge: true })
     } else {
+      const repair = typeof existingData?.status === 'string' && existingData.status.trim()
+        ? {}
+        : {
+            status: existingStatus,
+            leaseUntil: existingStatus === 'sending' ? existingData?.leaseUntil ?? null : null
+          }
+
       const reset = existingStatus === 'undeliverable'
         ? {
             status: 'pending',
@@ -1598,7 +1616,7 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
             undeliverableReason: null
           }
         : {}
-      batch.set(docRef, { ...base, ...reset }, { merge: true })
+      batch.set(docRef, { ...base, ...repair, ...reset }, { merge: true })
     }
   })
 
@@ -1665,18 +1683,6 @@ export async function dispatchScheduledNotifications(now: Timestamp | Date | { t
     .limit(dispatchLimit)
     .get()
 
-  // Firestore queries for `status == null` do not match missing fields.
-  // Pull a small candidate window by fireAt and then filter in-memory.
-  const missingStatusCandidatesSnap = await scheduledCollection
-    .where('fireAt', '<=', normalizedNow)
-    .orderBy('fireAt')
-    .limit(DISPATCH_LIMIT)
-    .get()
-  const missingStatusDocs = missingStatusCandidatesSnap.docs.filter(doc => {
-    const status = (doc.data() as any)?.status
-    return status === null || status === undefined
-  })
-
   const sendingSnap = await scheduledCollection
     .where('status', '==', 'sending')
     .where('fireAt', '<=', normalizedNow)
@@ -1686,7 +1692,6 @@ export async function dispatchScheduledNotifications(now: Timestamp | Date | { t
 
   const docsById = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>()
   pendingSnap.docs.forEach(doc => docsById.set(doc.id, doc))
-  missingStatusDocs.forEach(doc => docsById.set(doc.id, doc))
   sendingSnap.docs.forEach(doc => docsById.set(doc.id, doc))
 
   const docs = Array.from(docsById.values()).sort((a, b) => {

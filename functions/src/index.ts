@@ -6,6 +6,11 @@ import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
 import path from 'path'
+import {
+  extractHodEventListingsFromOrg,
+  resolveEventDateRangeFromCandidates,
+  toDateKey
+} from './eventDates'
 import { log } from './logging'
 
 admin.initializeApp()
@@ -616,90 +621,6 @@ function extractPreferredSheetUrlFromHtml(html: string) {
   return extractSheetUrlFromHtml(html)
 }
 
-const MONTH_INDEX: Record<string, number> = {
-  jan: 0, january: 0,
-  feb: 1, february: 1,
-  mar: 2, march: 2,
-  apr: 3, april: 3,
-  may: 4,
-  jun: 5, june: 5,
-  jul: 6, july: 6,
-  aug: 7, august: 7,
-  sep: 8, sept: 8, september: 8,
-  oct: 9, october: 9,
-  nov: 10, november: 10,
-  dec: 11, december: 11
-}
-
-function buildUtcDate(year: number, monthIndex: number, day: number) {
-  return new Date(Date.UTC(year, monthIndex, day, 0, 0, 0))
-}
-
-function parseDateRangeFromText(text: string, fallbackDate?: Date | null) {
-  if (!text) return null
-  const normalized = text.replace(/\u2013|\u2014/g, '-')
-  const fallbackYear = fallbackDate?.getUTCFullYear?.() ?? fallbackDate?.getFullYear?.() ?? new Date().getUTCFullYear()
-
-  const monthRegex = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b[^0-9]*([0-9]{1,2})(?:\s*-\s*([0-9]{1,2}))?(?:[^0-9]+([0-9]{4}))?/i
-  const monthMatch = normalized.match(monthRegex)
-  if (monthMatch) {
-    const monthName = monthMatch[1].toLowerCase()
-    const monthIndex = MONTH_INDEX[monthName]
-    const startDay = parseInt(monthMatch[2], 10)
-    const endDay = monthMatch[3] ? parseInt(monthMatch[3], 10) : startDay
-    const year = monthMatch[4] ? parseInt(monthMatch[4], 10) : fallbackYear
-    if (!Number.isNaN(startDay) && monthIndex != null && !Number.isNaN(year)) {
-      const start = buildUtcDate(year, monthIndex, startDay)
-      const end = buildUtcDate(year, monthIndex, endDay)
-      return { start, end }
-    }
-  }
-
-  const numericRegex = /\b(\d{1,2})[\/-](\d{1,2})(?:\s*-\s*(\d{1,2}))?(?:[\/-](\d{2,4}))?/i
-  const numericMatch = normalized.match(numericRegex)
-  if (numericMatch) {
-    const month = parseInt(numericMatch[1], 10)
-    const startDay = parseInt(numericMatch[2], 10)
-    const endDay = numericMatch[3] ? parseInt(numericMatch[3], 10) : startDay
-    let year = numericMatch[4] ? parseInt(numericMatch[4], 10) : fallbackYear
-    if (year < 100) year += 2000
-    if (!Number.isNaN(month) && !Number.isNaN(startDay) && !Number.isNaN(year)) {
-      const monthIndex = Math.min(Math.max(month - 1, 0), 11)
-      const start = buildUtcDate(year, monthIndex, startDay)
-      const end = buildUtcDate(year, monthIndex, endDay)
-      return { start, end }
-    }
-  }
-
-  return null
-}
-
-function resolveEventDateRange({
-  title,
-  html,
-  fallbackDate
-}: {
-  title: string
-  html?: string | null
-  fallbackDate?: Date | null
-}) {
-  const fromTitle = parseDateRangeFromText(title, fallbackDate)
-  if (fromTitle) return fromTitle
-  if (html) {
-    const fromHtml = parseDateRangeFromText(html, fallbackDate)
-    if (fromHtml) return fromHtml
-  }
-  if (fallbackDate) {
-    const day = buildUtcDate(
-      fallbackDate.getUTCFullYear?.() ?? fallbackDate.getFullYear(),
-      fallbackDate.getUTCMonth?.() ?? fallbackDate.getMonth(),
-      fallbackDate.getUTCDate?.() ?? fallbackDate.getDate()
-    )
-    return { start: day, end: day }
-  }
-  return null
-}
-
 function buildRequestId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
@@ -942,9 +863,12 @@ type NormalizedEvent = {
   eventId: string
   title: string
   sheetUrl: string
+  spreadsheetId: string | null
   eventUrl: string | null
-  startDate: Date
-  endDate: Date
+  startDate: Date | null
+  endDate: Date | null
+  dateSource: string | null
+  dateResolved: boolean
   sourceUpdatedAt: Date | null
 }
 
@@ -952,68 +876,103 @@ function buildEventId(source: string, seed: string) {
   return `${source}-${createHash('sha256').update(seed).digest('hex').slice(0, 24)}`
 }
 
-function normalizeNasaEvents(rssXml: string) {
+async function fetchNasaEventPageHtml(eventUrl: string) {
+  if (!eventUrl) return null
+  const fixture = readFixtureText('nasa-event.html')
+  if (fixture) return fixture
+
+  try {
+    const response = await fetch(eventUrl)
+    if (!response.ok) return null
+    return await response.text()
+  } catch (err) {
+    log.warn('nasa_feed.event_page_fetch_failed', { eventUrl }, err)
+    return null
+  }
+}
+
+async function normalizeNasaEvents(rssXml: string) {
   const items = Array.from(rssXml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)).map(match => match[1])
   const now = Date.now()
   const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000
   const events: NormalizedEvent[] = []
 
-  items.forEach((itemXml, index) => {
+  for (const [index, itemXml] of items.entries()) {
     const titleRaw = extractXmlTag(itemXml, 'title') || `Event ${index + 1}`
     const title = decodeHtmlEntities(titleRaw).trim()
     const pubDateStr = extractXmlTag(itemXml, 'pubDate') || extractXmlTag(itemXml, 'dc:date')
     const pubDate = pubDateStr ? new Date(pubDateStr) : null
-    if (!pubDate || Number.isNaN(pubDate.getTime())) return
-    if (now - pubDate.getTime() > sixtyDaysMs) return
+    if (!pubDate || Number.isNaN(pubDate.getTime())) continue
+    if (now - pubDate.getTime() > sixtyDaysMs) continue
 
     const content = extractXmlTag(itemXml, 'content:encoded')
       || extractXmlTag(itemXml, 'description')
       || ''
     const sheetUrl = extractPreferredSheetUrlFromHtml(content)
-    if (!sheetUrl) return
+    if (!sheetUrl) continue
 
     const eventUrl = extractXmlTag(itemXml, 'link')
     const guid = extractXmlTag(itemXml, 'guid') || eventUrl || title
     const eventId = buildEventId('nasa', guid)
+    let eventPageHtml = ''
+    let dateResolution = resolveEventDateRangeFromCandidates([
+      { text: title, source: 'title' },
+      { text: content, source: 'feed-content' }
+    ], { fallbackDate: pubDate })
 
-    const range = resolveEventDateRange({ title, html: content, fallbackDate: pubDate })
-    if (!range) return
+    if (!dateResolution.dateResolved && eventUrl) {
+      eventPageHtml = (await fetchNasaEventPageHtml(eventUrl)) || ''
+      if (eventPageHtml) {
+        dateResolution = resolveEventDateRangeFromCandidates([
+          { text: title, source: 'title' },
+          { text: content, source: 'feed-content' },
+          { text: eventPageHtml, source: 'event-page' }
+        ], { fallbackDate: pubDate })
+      }
+    }
 
     events.push({
       source: 'nasa',
       eventId,
       title,
       sheetUrl,
+      spreadsheetId: extractSpreadsheetId(sheetUrl),
       eventUrl: eventUrl || null,
-      startDate: range.start,
-      endDate: range.end,
+      startDate: dateResolution.start,
+      endDate: dateResolution.end,
+      dateSource: dateResolution.dateSource,
+      dateResolved: dateResolution.dateResolved,
       sourceUpdatedAt: pubDate
     })
-  })
+  }
 
   return events
 }
 
-function normalizeHodEvents(events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string }>) {
+function normalizeHodEvents(events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string; listingDateText?: string | null }>) {
   const normalized: NormalizedEvent[] = []
   events.forEach((event, index) => {
-    const { eventUrl, title, sheetUrl, html } = event
+    const { eventUrl, title, sheetUrl, html, listingDateText } = event
     const idMatch = eventUrl.match(/-(\d{5,})(?:\/)?$/)
     const eventIdSeed = idMatch && idMatch[1] ? `hod-${idMatch[1]}` : `${eventUrl}-${index}`
     const eventId = buildEventId('hod', eventIdSeed)
-    const range = resolveEventDateRange({ title, html })
-    const fallback = new Date()
-    const startDate = range?.start || fallback
-    const endDate = range?.end || startDate
+    const dateResolution = resolveEventDateRangeFromCandidates([
+      { text: listingDateText, source: 'org-listing' },
+      { text: title, source: 'title' },
+      { text: html, source: 'event-page' }
+    ])
 
     normalized.push({
       source: 'hod',
       eventId,
       title,
       sheetUrl,
+      spreadsheetId: extractSpreadsheetId(sheetUrl),
       eventUrl,
-      startDate,
-      endDate,
+      startDate: dateResolution.start,
+      endDate: dateResolution.end,
+      dateSource: dateResolution.dateSource,
+      dateResolved: dateResolution.dateResolved,
       sourceUpdatedAt: null
     })
   })
@@ -1032,9 +991,12 @@ async function refreshEventCacheForSource(source: 'nasa' | 'hod', events: Normal
     const payloadHash = createHash('sha256').update(JSON.stringify({
       title: event.title,
       sheetUrl: event.sheetUrl,
+      spreadsheetId: event.spreadsheetId,
       eventUrl: event.eventUrl,
-      startDate: event.startDate.toISOString(),
-      endDate: event.endDate.toISOString()
+      startDateKey: toDateKey(event.startDate),
+      endDateKey: toDateKey(event.endDate),
+      dateSource: event.dateSource,
+      dateResolved: event.dateResolved
     })).digest('hex')
 
     batch.set(docRef, {
@@ -1042,10 +1004,15 @@ async function refreshEventCacheForSource(source: 'nasa' | 'hod', events: Normal
       eventId: event.eventId,
       title: event.title,
       sheetUrl: event.sheetUrl,
+      spreadsheetId: event.spreadsheetId,
       eventUrl: event.eventUrl,
       label: event.source === 'nasa' ? `[NASA-SE] ${event.title}` : `[HOD-MA] ${event.title}`,
-      startDate: Timestamp.fromDate(event.startDate),
-      endDate: Timestamp.fromDate(event.endDate),
+      startDate: event.startDate ? Timestamp.fromDate(event.startDate) : null,
+      endDate: event.endDate ? Timestamp.fromDate(event.endDate) : null,
+      startDateKey: toDateKey(event.startDate),
+      endDateKey: toDateKey(event.endDate),
+      dateSource: event.dateSource,
+      dateResolved: event.dateResolved,
       sourceUpdatedAt: event.sourceUpdatedAt ? Timestamp.fromDate(event.sourceUpdatedAt) : null,
       updatedAt: now,
       lastSeenAt: now,
@@ -1078,13 +1045,14 @@ async function fetchHodEventDetails() {
   const fixtureOrg = readFixtureText('hod-org.html')
   const fixtureEvent = readFixtureText('hod-event.html')
   if (fixtureOrg && fixtureEvent) {
-    const eventLinks = extractEventLinksFromOrg(fixtureOrg).slice(0, HOD_MA_EVENT_LIMIT)
-    const events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string }> = []
-    for (const eventUrl of eventLinks) {
+    const listings = extractHodEventListingsFromOrg(fixtureOrg).slice(0, HOD_MA_EVENT_LIMIT)
+    const events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string; listingDateText?: string | null }> = []
+    for (const listing of listings) {
+      const eventUrl = listing.eventUrl
       const sheetUrl = extractSheetUrlFromHtml(fixtureEvent)
       if (!sheetUrl) continue
       const title = extractEventTitle(fixtureEvent, eventUrl)
-      events.push({ eventUrl, title, sheetUrl, html: fixtureEvent })
+      events.push({ eventUrl, title, sheetUrl, html: fixtureEvent, listingDateText: listing.dateText })
     }
     return events
   }
@@ -1096,10 +1064,11 @@ async function fetchHodEventDetails() {
     throw new Error(`HOD org fetch failed (${upstream.status})`)
   }
   const body = await upstream.text()
-  const eventLinks = extractEventLinksFromOrg(body).slice(0, HOD_MA_EVENT_LIMIT)
-  const events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string }> = []
+  const listings = extractHodEventListingsFromOrg(body).slice(0, HOD_MA_EVENT_LIMIT)
+  const events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string; listingDateText?: string | null }> = []
 
-  for (const eventUrl of eventLinks) {
+  for (const listing of listings) {
+    const eventUrl = listing.eventUrl
     try {
       const eventResp = await fetch(eventUrl, {
         headers: { 'User-Agent': HOD_MA_USER_AGENT }
@@ -1110,7 +1079,7 @@ async function fetchHodEventDetails() {
       if (!sheetUrl) continue
 
       const title = extractEventTitle(eventHtml, eventUrl)
-      events.push({ eventUrl, title, sheetUrl, html: eventHtml })
+      events.push({ eventUrl, title, sheetUrl, html: eventHtml, listingDateText: listing.dateText })
     } catch (err) {
       log.warn('hod_ma.event_inspect_failed', { eventUrl }, err)
     }
@@ -1169,9 +1138,10 @@ export const hodMaEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, a
     const fixtureOrg = readFixtureText('hod-org.html')
     const fixtureEvent = readFixtureText('hod-event.html')
     if (fixtureOrg && fixtureEvent) {
-      const eventLinks = extractEventLinksFromOrg(fixtureOrg).slice(0, HOD_MA_EVENT_LIMIT)
+      const listings = extractHodEventListingsFromOrg(fixtureOrg).slice(0, HOD_MA_EVENT_LIMIT)
       const events = []
-      for (const eventUrl of eventLinks) {
+      for (const listing of listings) {
+        const eventUrl = listing.eventUrl
         const sheetUrl = extractSheetUrlFromHtml(fixtureEvent)
         if (!sheetUrl) continue
         const title = extractEventTitle(fixtureEvent, eventUrl)
@@ -1197,10 +1167,11 @@ export const hodMaEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, a
     }
 
     const body = await upstream.text()
-    const eventLinks = extractEventLinksFromOrg(body).slice(0, HOD_MA_EVENT_LIMIT)
+    const listings = extractHodEventListingsFromOrg(body).slice(0, HOD_MA_EVENT_LIMIT)
     const events = []
 
-    for (const eventUrl of eventLinks) {
+    for (const listing of listings) {
+      const eventUrl = listing.eventUrl
       try {
         const eventResp = await fetch(eventUrl, {
           headers: { 'User-Agent': HOD_MA_USER_AGENT }
@@ -1248,7 +1219,7 @@ export const refreshEventCache = onSchedule(
         }
         rssXml = nasaResp.ok ? await nasaResp.text() : ''
       }
-      const nasaEvents = rssXml ? normalizeNasaEvents(rssXml) : []
+      const nasaEvents = rssXml ? await normalizeNasaEvents(rssXml) : []
 
       const hodRaw = await fetchHodEventDetails()
       const hodEvents = normalizeHodEvents(hodRaw)
@@ -1296,14 +1267,19 @@ export const cachedEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, 
           source: data.source,
           eventId: data.eventId,
           title: data.title,
-        sheetUrl: data.sheetUrl,
-        eventUrl: data.eventUrl || null,
-        label: data.label,
-        startDate: data.startDate?.toDate?.().toISOString?.() || null,
-        endDate: data.endDate?.toDate?.().toISOString?.() || null,
-        updatedAt: data.updatedAt?.toDate?.().toISOString?.() || null
-      }
-    })
+          sheetUrl: data.sheetUrl,
+          spreadsheetId: data.spreadsheetId || extractSpreadsheetId(data.sheetUrl) || null,
+          eventUrl: data.eventUrl || null,
+          label: data.label,
+          startDate: data.startDate?.toDate?.().toISOString?.() || null,
+          endDate: data.endDate?.toDate?.().toISOString?.() || null,
+          startDateKey: data.startDateKey || toDateKey(data.startDate?.toDate?.() || null),
+          endDateKey: data.endDateKey || toDateKey(data.endDate?.toDate?.() || null),
+          dateSource: data.dateSource || null,
+          dateResolved: data.dateResolved !== false && Boolean(data.startDate || data.startDateKey),
+          updatedAt: data.updatedAt?.toDate?.().toISOString?.() || null
+        }
+      })
 
     res.status(200).json({
       events,
@@ -1339,10 +1315,15 @@ export const testSeedEventCache = onRequest({ cors: true, region: SCHEDULER_REGI
     eventId,
     title: body.title || 'Test Event',
     sheetUrl: body.sheetUrl || 'https://docs.google.com/spreadsheets/d/TEST_SHEET_ID/edit',
+    spreadsheetId: body.spreadsheetId || extractSpreadsheetId(body.sheetUrl || 'https://docs.google.com/spreadsheets/d/TEST_SHEET_ID/edit') || null,
     eventUrl: body.eventUrl || null,
     label: body.label || `[${source.toUpperCase()}] Test Event`,
     startDate: Timestamp.fromDate(startDate),
     endDate: Timestamp.fromDate(endDate),
+    startDateKey: body.startDateKey || toDateKey(startDate),
+    endDateKey: body.endDateKey || toDateKey(endDate),
+    dateSource: body.dateSource || 'seed',
+    dateResolved: body.dateResolved !== false,
     updatedAt: Timestamp.now(),
     lastSeenAt: Timestamp.now(),
     isActive: true

@@ -183,4 +183,50 @@ describe('functions emulator', () => {
     const doc = snap.docs[0].data()
     expect(doc.status).toBe('pending')
   })
+
+  it('removes pending notifications when syncing an empty event payload', async () => {
+    const auth = await createUser({ email: 'cleanup-test@example.com', password: 'secret123' })
+    const fireAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+    const sessionStart = new Date(Date.now() + 30 * 60 * 1000).toISOString()
+
+    const seedResp = await callFunction('syncScheduledNotifications', {
+      body: {
+        data: {
+          eventId: 'event-cleanup',
+          desiredNotifications: [
+            {
+              runGroupId: 'HPDE 1',
+              sessionStartIsoUtc: sessionStart,
+              offsetMinutes: 10,
+              fireAtIsoUtc: fireAt,
+              payload: {
+                title: 'Upcoming session',
+                body: 'HPDE 1 starts soon',
+                data: { eventId: 'event-cleanup' }
+              }
+            }
+          ]
+        }
+      },
+      idToken: auth.idToken
+    })
+    expect(seedResp.ok).toBe(true)
+
+    let snap = await db.collection('scheduledNotifications').where('eventId', '==', 'event-cleanup').get()
+    expect(snap.empty).toBe(false)
+
+    const cleanupResp = await callFunction('syncScheduledNotifications', {
+      body: {
+        data: {
+          eventId: 'event-cleanup',
+          desiredNotifications: []
+        }
+      },
+      idToken: auth.idToken
+    })
+    expect(cleanupResp.ok).toBe(true)
+
+    snap = await db.collection('scheduledNotifications').where('eventId', '==', 'event-cleanup').get()
+    expect(snap.empty).toBe(true)
+  })
 })

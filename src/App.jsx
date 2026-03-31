@@ -21,6 +21,8 @@ import {
 } from './pushNotifications'
 import { addMinutes } from './scheduleUtils.js'
 import { parseCsvSchedule, detectParserId, SCHEDULE_PARSERS, DEFAULT_SCHEDULE_PARSER_ID } from './schedule/parsers/registry.js'
+import { matchCachedEventForSheet, resolveSelectedScheduleState } from './eventResolution.js'
+import { anchorScheduleToEventDates, extractSpreadsheetId } from './schedule/eventWindow.js'
 import { log } from './logging.js'
 import { reportEventSelected, reportVisitorOpened, startVisitorHeartbeat } from './telemetry.js'
 
@@ -369,7 +371,7 @@ export default function App() {
   const { user, loading: authLoading, error: authError, signOut: signOutUser } = useAuth()
   
   // State management - initialize with demo values if URL param is set
-  const [scheduleData, setScheduleData] = useState(createEmptySchedule)
+  const [parsedScheduleData, setParsedScheduleData] = useState(createEmptySchedule)
   const [clockOffset, setClockOffset] = useState(demoOffsets.clockOffset)
   const [dayOffset, setDayOffset] = useState(demoOffsets.dayOffset)
   const [clockOffsetInput, setClockOffsetInput] = useState(String(demoOffsets.clockOffset))
@@ -419,6 +421,7 @@ export default function App() {
   const [hodError, setHodError] = useState(null)
   const [selectedRssEventId, setSelectedRssEventId] = useState('')
   const [selectedHodEventId, setSelectedHodEventId] = useState('')
+  const [eventsLookupReady, setEventsLookupReady] = useState(false)
   const eventsFetchStartedRef = useRef(false)
   const sheetSelectionRef = useRef({ url: '', spreadsheetId: '', sheetId: null, sheetTitle: '', spreadsheetTitle: '' })
   const [forceShowStaleBanner, setForceShowStaleBanner] = useState(false)
@@ -511,7 +514,7 @@ export default function App() {
     return 'https://livegrid.app'
   }, [])
   const isLocalDemoScheduleActive = Boolean(debugMode && !customUrl && selectedCsvFile)
-  const eventId = useMemo(() => {
+  const legacySheetEventId = useMemo(() => {
     if (customUrl) {
       const sheetMatch = customUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
       const gidMatch = customUrl.match(/[#&]gid=(\d+)/)
@@ -527,6 +530,7 @@ export default function App() {
     functions ? httpsCallable(functions, 'syncScheduledNotifications') : null
   ), [functions])
   const scheduleSyncSignatureRef = useRef(null)
+  const legacyNotificationCleanupRef = useRef(new Set())
 
   useEffect(() => {
     if (!sidebarOpen) {
@@ -540,20 +544,55 @@ export default function App() {
   const staleThresholdLabel = useMemo(() => (
     staleThresholdMinutes === 1 ? '1 minute' : `${staleThresholdMinutes} minutes`
   ), [staleThresholdMinutes])
-  const combinedEvents = useMemo(() => ([
-    ...rssEvents.map(ev => ({ ...ev, source: 'nasa', label: `[NASA-SE] ${ev.title}` })),
-    ...hodEvents.map(ev => ({ ...ev, source: 'hod', label: `[HOD-MA] ${ev.title}` }))
+  const allCachedEvents = useMemo(() => ([
+    ...rssEvents,
+    ...hodEvents
   ]), [rssEvents, hodEvents])
+  const combinedEvents = useMemo(() => (
+    allCachedEvents.map(ev => ({
+      ...ev,
+      label: ev.label || (ev.source === 'hod' ? `[HOD-MA] ${ev.title}` : `[NASA-SE] ${ev.title}`)
+    }))
+  ), [allCachedEvents])
   const selectedEventId = useMemo(
     () => selectedRssEventId || selectedHodEventId || '',
     [selectedRssEventId, selectedHodEventId]
   )
-
-  const hasActiveSchedule = useMemo(() => {
+  const hasSelectedSchedule = useMemo(() => {
     if (customUrl) return true
     if (isLocalDemoScheduleActive) return true
     return false
   }, [customUrl, isLocalDemoScheduleActive])
+  const selectedSpreadsheetId = useMemo(() => extractSpreadsheetId(customUrl), [customUrl])
+  const eventMatchResult = useMemo(() => (
+    matchCachedEventForSheet(allCachedEvents, {
+      customUrl,
+      spreadsheetId: selectedSpreadsheetId
+    })
+  ), [allCachedEvents, customUrl, selectedSpreadsheetId])
+  const matchedEvent = eventMatchResult.event || null
+  const anchoredScheduleInfo = useMemo(() => {
+    if (matchedEvent?.dateResolved) {
+      return anchorScheduleToEventDates(parsedScheduleData, matchedEvent)
+    }
+    return {
+      schedule: parsedScheduleData,
+      startDateKey: matchedEvent?.startDateKey || null,
+      endDateKey: matchedEvent?.endDateKey || null,
+      dayDateMap: {},
+      windowStart: null,
+      windowEnd: null,
+      windowSource: 'none',
+      anchoredSessionCount: 0,
+      anchoredActivityCount: 0
+    }
+  }, [parsedScheduleData, matchedEvent])
+  const scheduleData = useMemo(() => (
+    anchoredScheduleInfo.schedule || createEmptySchedule()
+  ), [anchoredScheduleInfo])
+  const eventId = useMemo(() => (
+    matchedEvent?.id || legacySheetEventId
+  ), [matchedEvent, legacySheetEventId])
 
   const scheduleParser = useMemo(() => (
     SCHEDULE_PARSERS.find(parser => parser.id === scheduleParserId) || SCHEDULE_PARSERS[0] || null
@@ -567,10 +606,10 @@ export default function App() {
   }, [scheduleParser, scheduleParserId, setScheduleParserId])
 
   const isDataStale = useMemo(() => {
-    if (!hasActiveSchedule) return false
+    if (!hasSelectedSchedule) return false
     if (!lastSuccessfulFetch) return false
     return now.getTime() - lastSuccessfulFetch.getTime() > staleThresholdMs
-  }, [hasActiveSchedule, lastSuccessfulFetch, now, staleThresholdMs])
+  }, [hasSelectedSchedule, lastSuccessfulFetch, now, staleThresholdMs])
 
   const dayTabSelectionKey = useMemo(() => (
     customUrl && sheetDayTabs.length > 0 ? (selectedDay || '') : ''
@@ -734,7 +773,7 @@ export default function App() {
   // Monitor network connection status
   useEffect(() => {
     const handleOnline = () => {
-      if (!hasActiveSchedule) {
+      if (!hasSelectedSchedule) {
         setConnectionStatus('idle')
         setFetchError(null)
         return
@@ -757,38 +796,35 @@ export default function App() {
     if (!navigator.onLine) {
       setConnectionStatus('offline')
     } else {
-      setConnectionStatus(hasActiveSchedule ? 'online' : 'idle')
+      setConnectionStatus(hasSelectedSchedule ? 'online' : 'idle')
     }
     
     return () => {
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
     }
-  }, [hasActiveSchedule])
+  }, [hasSelectedSchedule])
   
   // Reset sheet name when URL changes
   useEffect(() => {
     setSheetName('')
   }, [customUrl])
 
-  // Keep selected RSS event in sync with the current custom URL
   useEffect(() => {
-    if (!rssEvents.length || !customUrl) {
+    if (!customUrl || !matchedEvent || matchedEvent.source !== 'nasa') {
       setSelectedRssEventId('')
       return
     }
-    const match = rssEvents.find(ev => ev.sheetUrl === customUrl)
-    setSelectedRssEventId(match ? match.id : '')
-  }, [rssEvents, customUrl])
+    setSelectedRssEventId(matchedEvent.id || '')
+  }, [customUrl, matchedEvent])
 
   useEffect(() => {
-    if (!hodEvents.length || !customUrl) {
+    if (!customUrl || !matchedEvent || matchedEvent.source !== 'hod') {
       setSelectedHodEventId('')
       return
     }
-    const match = hodEvents.find(ev => ev.sheetUrl === customUrl)
-    setSelectedHodEventId(match ? match.id : '')
-  }, [hodEvents, customUrl])
+    setSelectedHodEventId(matchedEvent.id || '')
+  }, [customUrl, matchedEvent])
 
   useEffect(() => {
     if (!supportsNotifications) return undefined
@@ -846,15 +882,15 @@ export default function App() {
   
   // Preferences sync is handled via context
 
-  // Lazy-load event lists when options panel is opened
+  // Load cached event metadata when the event picker opens or a saved sheet needs resolution.
   useEffect(() => {
-    if (!optionsExpanded) return
+    if (!optionsExpanded && !customUrl) return
 
     if (!eventsFetchStartedRef.current) {
       eventsFetchStartedRef.current = true
       fetchCachedEvents()
     }
-  }, [optionsExpanded])
+  }, [optionsExpanded, customUrl])
   
   // Toggle body class for debug mode overflow handling and disable auto-scroll
   useEffect(() => {
@@ -871,12 +907,34 @@ export default function App() {
   const nowWithOffset = useMemo(() => {
     return new Date(now.getTime() + clockOffset * 60000 + dayOffset * 86400000)
   }, [now, clockOffset, dayOffset])
+  const resolvedScheduleState = useMemo(() => (
+    resolveSelectedScheduleState({
+      hasSelectedSchedule,
+      isLocalDemoScheduleActive,
+      matchedEvent,
+      eventsLookupReady,
+      anchoredWindowStart: anchoredScheduleInfo.windowStart,
+      anchoredWindowEnd: anchoredScheduleInfo.windowEnd,
+      now: nowWithOffset
+    })
+  ), [
+    hasSelectedSchedule,
+    isLocalDemoScheduleActive,
+    matchedEvent,
+    eventsLookupReady,
+    anchoredScheduleInfo,
+    nowWithOffset
+  ])
+  const isScheduleActive = resolvedScheduleState.isScheduleActive
+  const eventWindowDisplay = resolvedScheduleState.activeWindowStart && resolvedScheduleState.activeWindowEnd
+    ? `${resolvedScheduleState.activeWindowStart.toLocaleString()} -> ${resolvedScheduleState.activeWindowEnd.toLocaleString()}`
+    : 'Unavailable'
 
   const lastFetchAdjusted = useMemo(() => {
-    if (!hasActiveSchedule) return null
+    if (!hasSelectedSchedule) return null
     if (!lastSuccessfulFetch) return null
     return getDateWithOffsets(lastSuccessfulFetch, clockOffset, dayOffset)
-  }, [hasActiveSchedule, lastSuccessfulFetch, clockOffset, dayOffset])
+  }, [hasSelectedSchedule, lastSuccessfulFetch, clockOffset, dayOffset])
 
   const lastFetchTimeDisplay = lastFetchAdjusted ? lastFetchAdjusted.toLocaleTimeString() : 'Never'
   const lastFetchDateTimeDisplay = lastFetchAdjusted ? lastFetchAdjusted.toLocaleString() : 'Never'
@@ -914,7 +972,8 @@ export default function App() {
     setCustomUrl('')
     setSheetName('')
     setSelectedRssEventId('')
-  }, [setCustomUrl, setSelectedRssEventId, setSheetName])
+    setSelectedHodEventId('')
+  }, [setCustomUrl, setSelectedHodEventId, setSelectedRssEventId, setSheetName])
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined
@@ -1104,8 +1163,10 @@ export default function App() {
           width: '8px',
           height: '8px',
           borderRadius: '50%',
-          backgroundColor: !hasActiveSchedule
+          backgroundColor: !hasSelectedSchedule
             ? '#9ca3af'
+            : !isScheduleActive
+              ? '#f59e0b'
             : isDataStale
               ? '#ff6b6b'
               : connectionStatus === 'online'
@@ -1117,8 +1178,10 @@ export default function App() {
         }} />
         <div style={{flex: 1}}>
           <div style={{color: '#374151', fontWeight: 500, fontSize: '0.8rem'}}>
-            {!hasActiveSchedule
+            {!hasSelectedSchedule
               ? 'No Schedule Selected'
+              : !isScheduleActive
+                ? 'Selected (inactive)'
               : isDataStale
                 ? 'Data Stale'
                 : connectionStatus === 'online'
@@ -1128,19 +1191,21 @@ export default function App() {
                     : 'Connecting...'}
           </div>
           <div style={{color: '#6b7280', fontSize: '0.7rem', marginTop: '2px'}}>
-            {!hasActiveSchedule
+            {!hasSelectedSchedule
               ? 'Enter a Google Sheets URL to begin'
-              : (
+              : !isScheduleActive
+                ? (resolvedScheduleState.inactiveReason || 'Waiting for the event window.')
+                : (
                 <>
                   Last fetch: {lastFetchTimeDisplay}
                   {connectionStatus !== 'online' && lastSuccessfulFetch && ' (retrying...)'}
                 </>
-              )}
+                )}
           </div>
         </div>
       </div>
 
-      {hasActiveSchedule && sheetName && (
+      {hasSelectedSchedule && sheetName && (
         <div>
           <div style={{
             color: '#6b7280',
@@ -1170,6 +1235,12 @@ export default function App() {
               <MdLink style={{ fontSize: '1.1rem', color: '#4b5563', marginLeft: '2px' }} aria-label="Open Google Sheet" />
             )}
           </div>
+          {customUrl && (
+            <div style={{color: '#6b7280', fontSize: '0.7rem', marginTop: '6px'}}>
+              Event state: {resolvedScheduleState.status}<br/>
+              Event window: {eventWindowDisplay}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1197,6 +1268,7 @@ export default function App() {
       const events = Array.isArray(payload?.events) ? payload.events : []
       setRssEvents(events.filter(ev => ev.source === 'nasa'))
       setHodEvents(events.filter(ev => ev.source === 'hod'))
+      setEventsLookupReady(true)
       setRssLoading(false)
       setHodLoading(false)
     } catch (err) {
@@ -1204,6 +1276,7 @@ export default function App() {
       const message = 'Could not load cached events. You can still paste a Google Sheets URL manually.'
       setRssError(message)
       setHodError(message)
+      setEventsLookupReady(true)
       setRssLoading(false)
       setHodLoading(false)
     }
@@ -1212,9 +1285,9 @@ export default function App() {
   // Fetch and parse schedule
   async function fetchSchedule() {
     // No schedule selected: do not fetch and do not surface stale/errors
-    if (!hasActiveSchedule) {
+    if (!hasSelectedSchedule) {
       setFetchError(null)
-      setScheduleData(createEmptySchedule())
+      setParsedScheduleData(createEmptySchedule())
       if (!navigator.onLine) {
         setConnectionStatus('offline')
       } else {
@@ -1390,7 +1463,7 @@ export default function App() {
         dayOffset,
         sourceLabel
       })
-      setScheduleData(parsedSchedule)
+      setParsedScheduleData(parsedSchedule)
       
       const days = parsedSchedule.days || []
       
@@ -1442,25 +1515,29 @@ export default function App() {
   
   // Auto-refresh schedule every 30 seconds
   useEffect(() => {
-    if (!hasActiveSchedule) return undefined
+    if (!hasSelectedSchedule) return undefined
     fetchSchedule()
+    if (!isScheduleActive) return undefined
     const timer = setInterval(fetchSchedule, 30000)
     return () => clearInterval(timer)
-  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasActiveSchedule, scheduleParserId, dayTabSelectionKey])
+  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasSelectedSchedule, isScheduleActive, scheduleParserId, dayTabSelectionKey])
   
   useEffect(() => {
     upcomingNotificationTrackerRef.current.clear()
   }, [selectedDay, selectedGroups, selectedCsvFile, customUrl, scheduleParserId])
   
   // Find current and upcoming sessions
-  const current = useMemo(() => findCurrentSession(rows, nowWithOffset), [rows, nowWithOffset])
+  const current = useMemo(() => (
+    isScheduleActive ? findCurrentSession(rows, nowWithOffset) : null
+  ), [isScheduleActive, rows, nowWithOffset])
   const relevantActivities = useMemo(() => (
     filterRelevantActivities(activities, selectedDay, selectedGroups)
   ), [activities, selectedDay, selectedGroups])
-  const nextSessionsByGroup = useMemo(() => 
-    findNextSessionsPerGroup(rows, selectedGroups, nowWithOffset),
-    [rows, selectedGroups, nowWithOffset]
-  )
+  const nextSessionsByGroup = useMemo(() => (
+    isScheduleActive
+      ? findNextSessionsPerGroup(rows, selectedGroups, nowWithOffset)
+      : {}
+  ), [isScheduleActive, rows, selectedGroups, nowWithOffset])
 
   const mobilePrimarySession = current
   const mobileSessionEndStatus = useMemo(
@@ -1468,10 +1545,10 @@ export default function App() {
     [mobilePrimarySession, nowWithOffset]
   )
   const mobileUpcomingSessions = useMemo(() => {
-    if (!rows.length) return []
+    if (!isScheduleActive || !rows.length) return []
     const upcoming = rows.filter(session => session?.start && session.start > nowWithOffset)
     return upcoming.sort((a, b) => a.start.getTime() - b.start.getTime())
-  }, [rows, nowWithOffset])
+  }, [isScheduleActive, rows, nowWithOffset])
 
   const getPrimaryNextSessionEntry = () => {
     const entries = Object.entries(nextSessionsByGroup)
@@ -1527,6 +1604,20 @@ export default function App() {
       })
         .filter(Boolean)
       ), [nextSessionsByGroup, notificationLeadMinutes, eventId])
+  const notificationSyncEnabled = Boolean(
+    isScheduleActive &&
+    supportsNotifications &&
+    notificationPermission === 'granted' &&
+    pushToken
+  )
+  const notificationsToSync = useMemo(() => (
+    notificationSyncEnabled ? desiredNotifications : []
+  ), [notificationSyncEnabled, desiredNotifications])
+  const nextNotificationToSync = useMemo(() => (
+    [...notificationsToSync]
+      .filter(item => item?.fireAtIsoUtc)
+      .sort((a, b) => new Date(a.fireAtIsoUtc).getTime() - new Date(b.fireAtIsoUtc).getTime())[0] || null
+  ), [notificationsToSync])
 
   const formatDebugTimestamp = value => {
     if (!value) return 'never'
@@ -1561,23 +1652,17 @@ export default function App() {
   const forceSchedulerSync = useCallback(async () => {
     if (!syncScheduledNotificationsFn) return
     if (!user || !eventId) return
-    if (!supportsNotifications || notificationPermission !== 'granted') return
-    if (!pushToken) return
-
-    const nextScheduled = [...desiredNotifications]
-      .filter(item => item?.fireAtIsoUtc)
-      .sort((a, b) => new Date(a.fireAtIsoUtc).getTime() - new Date(b.fireAtIsoUtc).getTime())[0]
 
     setSchedulerDebugInfo(prev => ({
       ...prev,
       eventId,
-      scheduledCount: desiredNotifications.length,
-      nextScheduled: nextScheduled ? {
-        runGroupId: nextScheduled.runGroupId,
-        fireAtIsoUtc: nextScheduled.fireAtIsoUtc,
-        sessionStartIsoUtc: nextScheduled.sessionStartIsoUtc,
-        title: nextScheduled.payload?.title,
-        body: nextScheduled.payload?.body
+      scheduledCount: notificationsToSync.length,
+      nextScheduled: nextNotificationToSync ? {
+        runGroupId: nextNotificationToSync.runGroupId,
+        fireAtIsoUtc: nextNotificationToSync.fireAtIsoUtc,
+        sessionStartIsoUtc: nextNotificationToSync.sessionStartIsoUtc,
+        title: nextNotificationToSync.payload?.title,
+        body: nextNotificationToSync.payload?.body
       } : null,
       lastSyncAttemptAt: new Date().toISOString(),
       lastSyncError: null
@@ -1586,7 +1671,7 @@ export default function App() {
     try {
       await syncScheduledNotificationsFn({
         eventId,
-        desiredNotifications
+        desiredNotifications: notificationsToSync
       })
       setSchedulerDebugInfo(prev => ({
         ...prev,
@@ -1599,7 +1684,7 @@ export default function App() {
       }))
       log.error('notifications.force_scheduler_sync_failed', undefined, error)
     }
-  }, [syncScheduledNotificationsFn, user, eventId, supportsNotifications, notificationPermission, pushToken, desiredNotifications])
+  }, [syncScheduledNotificationsFn, user, eventId, notificationsToSync, nextNotificationToSync])
 
   const notifyUpcomingSession = async ({ session, group, minutesUntil, reason = 'auto' }) => {
     const etaMinutes = minutesUntil != null
@@ -1635,7 +1720,7 @@ export default function App() {
     const remoteDelivered = await sendRemoteNotification({ title, body, tag: options.tag, data: dataPayload, reason })
     if (reason !== 'auto') {
       if (remoteDelivered) {
-        showTimedNotification({ type: 'success', message: `${group} notification sent (${minutesLabel}).` })
+        showTimedNotification({ type: 'success', message: `${group} notification sent (${minutesValue}m).` })
       } else {
         setNotificationStatus({ type: 'error', message: 'Unable to send Firebase notification.' })
       }
@@ -1833,29 +1918,40 @@ export default function App() {
   }, [autoScrollEnabled, isMobile, scrollCurrentIntoView])
 
   useEffect(() => {
+    if (!syncScheduledNotificationsFn || !user || !matchedEvent?.id || !legacySheetEventId) return
+    if (matchedEvent.id === legacySheetEventId) return
+
+    const cleanupKey = `${user.uid}:${legacySheetEventId}`
+    if (legacyNotificationCleanupRef.current.has(cleanupKey)) return
+    legacyNotificationCleanupRef.current.add(cleanupKey)
+
+    syncScheduledNotificationsFn({
+      eventId: legacySheetEventId,
+      desiredNotifications: []
+    }).catch(error => {
+      legacyNotificationCleanupRef.current.delete(cleanupKey)
+      log.error('notifications.legacy_cleanup_failed', undefined, error)
+    })
+  }, [syncScheduledNotificationsFn, user, matchedEvent, legacySheetEventId])
+
+  useEffect(() => {
     if (!syncScheduledNotificationsFn) return
     if (!user || !eventId) return
-    if (!pushToken) return
-    if (!supportsNotifications || notificationPermission !== 'granted') return
 
-    const signature = `${eventId}|${notificationLeadMinutes}|${desiredNotifications.map(item => `${item.runGroupId}:${item.sessionStartIsoUtc}`).sort().join('|')}`
+    const signature = `${eventId}|${notificationLeadMinutes}|${notificationSyncEnabled ? 'enabled' : 'disabled'}|${notificationsToSync.map(item => `${item.runGroupId}:${item.sessionStartIsoUtc}`).sort().join('|')}`
     if (scheduleSyncSignatureRef.current === signature) return
     scheduleSyncSignatureRef.current = signature
-
-    const nextScheduled = [...desiredNotifications]
-      .filter(item => item?.fireAtIsoUtc)
-      .sort((a, b) => new Date(a.fireAtIsoUtc).getTime() - new Date(b.fireAtIsoUtc).getTime())[0]
 
     setSchedulerDebugInfo(prev => ({
       ...prev,
       eventId,
-      scheduledCount: desiredNotifications.length,
-      nextScheduled: nextScheduled ? {
-        runGroupId: nextScheduled.runGroupId,
-        fireAtIsoUtc: nextScheduled.fireAtIsoUtc,
-        sessionStartIsoUtc: nextScheduled.sessionStartIsoUtc,
-        title: nextScheduled.payload?.title,
-        body: nextScheduled.payload?.body
+      scheduledCount: notificationsToSync.length,
+      nextScheduled: nextNotificationToSync ? {
+        runGroupId: nextNotificationToSync.runGroupId,
+        fireAtIsoUtc: nextNotificationToSync.fireAtIsoUtc,
+        sessionStartIsoUtc: nextNotificationToSync.sessionStartIsoUtc,
+        title: nextNotificationToSync.payload?.title,
+        body: nextNotificationToSync.payload?.body
       } : null,
       lastSyncAttemptAt: new Date().toISOString(),
       lastSyncError: null
@@ -1863,7 +1959,7 @@ export default function App() {
 
     syncScheduledNotificationsFn({
       eventId,
-      desiredNotifications
+      desiredNotifications: notificationsToSync
     }).then(() => {
       setSchedulerDebugInfo(prev => ({
         ...prev,
@@ -1876,7 +1972,7 @@ export default function App() {
       }))
       log.error('notifications.sync_failed', undefined, error)
     })
-  }, [eventId, notificationLeadMinutes, desiredNotifications, notificationPermission, pushToken, supportsNotifications, syncScheduledNotificationsFn, user])
+  }, [eventId, notificationLeadMinutes, notificationSyncEnabled, notificationsToSync, nextNotificationToSync, syncScheduledNotificationsFn, user])
   
   // Handle run group selection
   function handleGroupToggle(group) {
@@ -2735,6 +2831,26 @@ export default function App() {
             Selected Groups: {selectedGroups.join(', ')}<br/>
             Activities Found: {relevantActivities.length}<br/>
             Upcoming Sessions: {Object.keys(nextSessionsByGroup).length} groups
+          </div>
+
+          <div style={{marginBottom: '16px', fontSize: '0.9rem', background: '#ecfdf5', padding: '12px', borderRadius: '4px', border: '1px solid #86efac'}}>
+            <strong>Event Dates:</strong><br/>
+            Match source: {customUrl ? (matchedEvent ? `${matchedEvent.source || 'unknown'} (${eventMatchResult.matchType})` : (eventsLookupReady ? 'none' : 'resolving')) : 'Local/demo'}<br/>
+            Matched event id: {matchedEvent?.id || 'None'}<br/>
+            Spreadsheet id: {eventMatchResult.spreadsheetId || 'None'}<br/>
+            Date resolved: {matchedEvent ? String(matchedEvent.dateResolved !== false) : 'n/a'}<br/>
+            Date source: {matchedEvent?.dateSource || 'None'}<br/>
+            Event start key: {matchedEvent?.startDateKey || 'None'}<br/>
+            Event end key: {matchedEvent?.endDateKey || 'None'}<br/>
+            Anchored window start: {formatDebugTimestamp(resolvedScheduleState.activeWindowStart?.toISOString?.() || null)}<br/>
+            Anchored window end: {formatDebugTimestamp(resolvedScheduleState.activeWindowEnd?.toISOString?.() || null)}<br/>
+            Window source: {anchoredScheduleInfo.windowSource || 'none'}<br/>
+            Activation state: {resolvedScheduleState.status}<br/>
+            Fallback mode: {resolvedScheduleState.useFloatingFallback ? 'floating weekday fallback' : 'off'}<br/>
+            Inactive reason: {resolvedScheduleState.inactiveReason || 'None'}<br/>
+            Day/date map: {Object.keys(anchoredScheduleInfo.dayDateMap || {}).length
+              ? JSON.stringify(anchoredScheduleInfo.dayDateMap)
+              : 'None'}
           </div>
           
           <div style={{marginBottom: '16px', padding: '12px', background: '#f5f5f5', borderRadius: '4px', border: '1px solid #ddd'}}>

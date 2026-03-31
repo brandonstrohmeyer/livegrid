@@ -34,3 +34,7 @@ if (!globalThis.scrollTo) {
 if (globalThis.HTMLElement && !globalThis.HTMLElement.prototype.scrollIntoView) {
   globalThis.HTMLElement.prototype.scrollIntoView = () => {}
 }
+
+if (globalThis.HTMLElement && !globalThis.HTMLElement.prototype.scrollTo) {
+  globalThis.HTMLElement.prototype.scrollTo = () => {}
+}

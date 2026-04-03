@@ -12,8 +12,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/brandonstrohmeyer/nasa-session-dashboard.git
-cd nasa-session-dashboard
+git clone https://github.com/brandonstrohmeyer/livegrid.git
+cd livegrid
 
 # Install dependencies
 npm install
@@ -60,7 +60,7 @@ Functions env is project-specific inside `functions/`:
 - `functions/.env.prod`
 - `functions/.env.local` for local overrides
 
-For local Functions emulation, use `GOOGLE_SHEETS_API_KEY` in those files.
+For local Functions emulation, put `GOOGLE_SHEETS_API_KEY` in `functions/.env.local`.
 Deployed functions use Secret Manager `SHEETS_API_KEY`.
 
 Frontend variables:
@@ -91,7 +91,8 @@ Notes:
 - After any manual deploy that creates or updates Hosting-backed 2nd gen functions, run `npm run firebase:postdeploy:public-routes -- --project <project-id>`.
 - That sync is required in this repo because organization policy blocks the usual `allUsers` Cloud Run invoker path for newly deployed public functions.
 - Put emulator-only frontend overrides in `.env.development.local`, not `.env.development`.
-- `npm run dev:full` starts the Firebase emulators against the `dev` alias and loads Functions env from `functions/.env.dev`.
+- `npm run dev:full` starts the Firebase emulators against the `dev` alias and loads Functions env from `functions/.env.dev`, plus any machine-local overrides from `functions/.env.local`.
+- Start from `functions/.env.local.example` when you need a local Functions override file.
 
 ## Firebase Services
 

@@ -34,7 +34,16 @@ This repository uses GitHub Actions for pull request validation, tagged releases
 - a pushed semver tag such as `v0.2.25`
 - a manual `workflow_dispatch` where you provide an existing tag for rollback or redeploy
 
-The deploy job checks out the exact tag, regenerates `build.json`, builds the app and functions, then runs `firebase deploy --only functions,hosting`.
+The deploy job checks out the exact tag, regenerates `build.json`, builds the app and functions, runs `firebase deploy --only functions,hosting`, then runs `npm run firebase:postdeploy:public-routes -- --project "$FIREBASE_PROJECT_ID"`.
+
+That post-deploy sync applies Cloud Run's `--no-invoker-iam-check` setting to the functions referenced by `firebase.json` Hosting rewrites. This is a required part of deployment for this repo, because Firebase alone cannot make those Hosting-backed 2nd gen functions reachable in projects where organization policy blocks granting `allUsers` the Cloud Run invoker role.
+
+For local manual deploys, treat that sync step as part of the deploy contract too:
+
+```bash
+firebase deploy --only functions,hosting --project <alias>
+npm run firebase:postdeploy:public-routes -- --project <project-id>
+```
 
 ## Required GitHub configuration
 
@@ -45,12 +54,14 @@ Branch protection cannot be stored in the repo. Configure it in GitHub:
 - require the PR CI workflow checks to pass before merge
 - block direct pushes to `main`
 
-## Required secrets
+## Required GitHub configuration values
 
-Add these repository or environment secrets before enabling deploys:
+The deploy workflow uses the GitHub environment named `prod`.
 
-- `RELEASE_PAT`
-- `FIREBASE_SERVICE_ACCOUNT_JSON`
+Add these environment `vars` there before enabling deploys:
+
+- `FIREBASE_PROJECT_ALIAS`
+- `FIREBASE_PROJECT_ID`
 - `VITE_FIREBASE_API_KEY`
 - `VITE_FIREBASE_AUTH_DOMAIN`
 - `VITE_FIREBASE_PROJECT_ID`
@@ -60,9 +71,13 @@ Add these repository or environment secrets before enabling deploys:
 - `VITE_FIREBASE_MEASUREMENT_ID`
 - `VITE_FIREBASE_VAPID_KEY`
 
-`SHEETS_API_KEY` should remain managed in Firebase / Google Secret Manager for the deployed functions.
+Add these secrets before enabling deploys:
 
-The deploy workflow uses the GitHub environment named `prod`, so environment-scoped deploy secrets must be stored there.
+- `FIREBASE_SERVICE_ACCOUNT_JSON`
+
+`RELEASE_PAT` is still used by `.github/workflows/release.yml` and remains a repository or organization secret rather than a `prod` environment secret.
+
+`SHEETS_API_KEY` should remain managed in Firebase / Google Secret Manager for the deployed functions.
 
 ## Local version commands
 

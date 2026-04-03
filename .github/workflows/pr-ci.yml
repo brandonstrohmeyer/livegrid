@@ -15,7 +15,6 @@ permissions:
 
 env:
   CI: true
-  GCLOUD_PROJECT: livegrid-c33c6
 
 jobs:
   unit:
@@ -41,6 +40,16 @@ jobs:
   build:
     name: Build Validation
     runs-on: ubuntu-latest
+    environment: prod
+    env:
+      VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+      VITE_FIREBASE_MEASUREMENT_ID: ${{ vars.VITE_FIREBASE_MEASUREMENT_ID }}
+      VITE_FIREBASE_VAPID_KEY: ${{ vars.VITE_FIREBASE_VAPID_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,6 +73,11 @@ jobs:
   integration:
     name: Emulator Integration Tests
     runs-on: ubuntu-latest
+    environment: prod
+    env:
+      FIREBASE_PROJECT_ALIAS: ${{ vars.FIREBASE_PROJECT_ALIAS }}
+      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+      GCLOUD_PROJECT: ${{ vars.FIREBASE_PROJECT_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -93,11 +107,29 @@ jobs:
         run: npm --prefix functions run build
 
       - name: Run integration and rules tests
-        run: npm run test:integration
+        env:
+          LIVEGRID_TEST_MODE: true
+          LIVEGRID_TEST_MESSAGING: stub
+          LIVEGRID_TEST_FIXTURES_DIR: functions/test-fixtures
+          FIRESTORE_EMULATOR_HOST: localhost:8080
+          FIREBASE_AUTH_EMULATOR_HOST: localhost:9099
+        run: firebase emulators:exec --project "$FIREBASE_PROJECT_ALIAS" --only functions,firestore,hosting,auth "npm run test:integration:inner"
 
   e2e:
     name: E2E Smoke Tests
     runs-on: ubuntu-latest
+    environment: prod
+    env:
+      FIREBASE_PROJECT_ALIAS: ${{ vars.FIREBASE_PROJECT_ALIAS }}
+      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+      VITE_FIREBASE_MEASUREMENT_ID: ${{ vars.VITE_FIREBASE_MEASUREMENT_ID }}
+      VITE_FIREBASE_VAPID_KEY: ${{ vars.VITE_FIREBASE_VAPID_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -133,4 +165,9 @@ jobs:
         run: npm --prefix functions run build
 
       - name: Run E2E smoke tests
-        run: npm run test:e2e
+        env:
+          VITE_USE_FIREBASE_EMULATORS: true
+          VITE_FUNCTIONS_BASE_URL: http://localhost:5001/${{ vars.FIREBASE_PROJECT_ID }}/us-central1
+          VITE_FIREBASE_EMULATOR_AUTH: http://localhost:9099
+          VITE_FIREBASE_EMULATOR_FIRESTORE: localhost:8080
+        run: firebase emulators:exec --project "$FIREBASE_PROJECT_ALIAS" --only functions,firestore,auth "playwright test"

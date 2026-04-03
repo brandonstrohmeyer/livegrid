@@ -738,6 +738,7 @@ exports.systemHealth = (0, https_1.onRequest)({
     timeoutSeconds: 15,
     memory: '128MiB',
     maxInstances: 2,
+    invoker: 'private',
     secrets: ['SHEETS_API_KEY']
 }, async (req, res) => {
     if (req.method === 'OPTIONS') {
@@ -2310,7 +2311,12 @@ async function getSheetValues(spreadsheetId, sheetId) {
         throw err;
     }
 }
-exports.sheetsApi = (0, https_1.onRequest)({ cors: true, region: SCHEDULER_REGION, secrets: ['SHEETS_API_KEY'] }, async (req, res) => {
+exports.sheetsApi = (0, https_1.onRequest)({
+    cors: true,
+    region: SCHEDULER_REGION,
+    invoker: 'private',
+    secrets: ['SHEETS_API_KEY']
+}, async (req, res) => {
     if (req.method === 'OPTIONS') {
         res.status(204).send('');
         return;

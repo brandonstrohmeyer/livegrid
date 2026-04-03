@@ -24,15 +24,16 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     env:
-      FIREBASE_PROJECT_ID: livegrid-c33c6
-      VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
-      VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
-      VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
-      VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
-      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
-      VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
-      VITE_FIREBASE_MEASUREMENT_ID: ${{ secrets.VITE_FIREBASE_MEASUREMENT_ID }}
-      VITE_FIREBASE_VAPID_KEY: ${{ secrets.VITE_FIREBASE_VAPID_KEY }}
+      FIREBASE_PROJECT_ALIAS: ${{ vars.FIREBASE_PROJECT_ALIAS }}
+      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+      VITE_FIREBASE_MEASUREMENT_ID: ${{ vars.VITE_FIREBASE_MEASUREMENT_ID }}
+      VITE_FIREBASE_VAPID_KEY: ${{ vars.VITE_FIREBASE_VAPID_KEY }}
     steps:
       - name: Resolve deploy tag
         id: resolve
@@ -84,6 +85,12 @@ jobs:
           EOF
           echo "GOOGLE_APPLICATION_CREDENTIALS=$CREDENTIALS_PATH" >> "$GITHUB_ENV"
 
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authenticate Google Cloud CLI
+        run: gcloud auth activate-service-account --key-file "$GOOGLE_APPLICATION_CREDENTIALS"
+
       - name: Write release build version
         run: node scripts/build-version.js set "${{ steps.resolve.outputs.version }}"
 
@@ -105,7 +112,10 @@ jobs:
           DEPLOY_VERSION: ${{ steps.resolve.outputs.version }}
 
       - name: Deploy hosting and functions
-        run: firebase deploy --only functions,hosting --project "$FIREBASE_PROJECT_ID" --non-interactive
+        run: firebase deploy --only functions,hosting --project "$FIREBASE_PROJECT_ALIAS" --non-interactive
+
+      - name: Sync public access for Hosting-backed functions
+        run: npm run firebase:postdeploy:public-routes -- --project "$FIREBASE_PROJECT_ID"
 
       - name: Upload deploy artifacts
         uses: actions/upload-artifact@v4

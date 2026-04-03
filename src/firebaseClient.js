@@ -29,6 +29,7 @@ const missingConfig = Object.entries(firebaseConfig)
 
 if (missingConfig.length) {
   log.warn('firebase.config_missing', {
+    check: 'firebaseClientConfig',
     missingKeys: missingConfig,
     hint: 'Set the corresponding VITE_FIREBASE_* env vars to enable auth + sync.'
   })
@@ -46,7 +47,7 @@ if (isFirebaseConfigured) {
   firestore = getFirestore(firebaseApp)
   functions = getFunctions(firebaseApp, 'us-central1')
 } else {
-  log.info('firebase.client_disabled', { reason: 'missing_config' })
+  log.error('firebase.client_disabled', { reason: 'missing_config', check: 'firebaseClientConfig' })
 }
 
 const useEmulators =

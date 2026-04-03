@@ -3,35 +3,17 @@
 const fs = require('fs');
 const path = require('path');
 const childProcess = require('child_process');
+const {
+  bumpVersion,
+  compareVersions,
+  defaultBootstrapVersion,
+  parseTag,
+  parseVersion
+} = require('./version-utils');
 
 const rootDir = path.resolve(__dirname, '..');
 const buildJsonPath = path.join(rootDir, 'build.json');
 const packageJsonPath = path.join(rootDir, 'package.json');
-const defaultBootstrapVersion = '0.2.24';
-const validBumps = new Set(['major', 'minor', 'patch']);
-
-function parseSemver(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version || '').trim());
-  if (!match) {
-    throw new Error(`Invalid semver version: ${version}`);
-  }
-
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3])
-  };
-}
-
-function formatSemver(version) {
-  return `${version.major}.${version.minor}.${version.patch}`;
-}
-
-function compareSemver(a, b) {
-  if (a.major !== b.major) return a.major - b.major;
-  if (a.minor !== b.minor) return a.minor - b.minor;
-  return a.patch - b.patch;
-}
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -40,19 +22,19 @@ function readJson(filePath) {
 function readBuildJsonVersion() {
   if (!fs.existsSync(buildJsonPath)) return null;
   const data = readJson(buildJsonPath);
-  parseSemver(data.version);
+  parseVersion(data.version);
   return data.version;
 }
 
 function readPackageVersion() {
   const packageJson = readJson(packageJsonPath);
-  parseSemver(packageJson.version);
+  parseVersion(packageJson.version);
   return packageJson.version;
 }
 
 function getLatestGitTagVersion() {
   try {
-    const output = childProcess.execSync('git tag --list "v[0-9]*.[0-9]*.[0-9]*"', {
+    const output = childProcess.execSync('git tag --list "v*"', {
       cwd: rootDir,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore']
@@ -62,11 +44,18 @@ function getLatestGitTagVersion() {
       .split(/\r?\n/)
       .map(tag => tag.trim())
       .filter(Boolean)
-      .map(tag => tag.replace(/^v/, ''))
-      .map(version => ({ raw: version, parsed: parseSemver(version) }))
-      .sort((left, right) => compareSemver(left.parsed, right.parsed));
+      .map(tag => {
+        try {
+          return parseTag(tag);
+        } catch (err) {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .filter(tag => tag.parsed.rc === null)
+      .sort((left, right) => compareVersions(left.parsed, right.parsed));
 
-    return versions.length ? versions[versions.length - 1].raw : null;
+    return versions.length ? versions[versions.length - 1].version : null;
   } catch (err) {
     return null;
   }
@@ -84,7 +73,7 @@ function resolveCurrentVersion() {
     try {
       const version = getter();
       if (version) {
-        parseSemver(version);
+        parseVersion(version);
         return { version, source };
       }
     } catch (err) {
@@ -95,28 +84,8 @@ function resolveCurrentVersion() {
   throw new Error('Unable to resolve a build version');
 }
 
-function bumpVersion(version, bump) {
-  if (!validBumps.has(bump)) {
-    throw new Error(`Invalid bump "${bump}". Expected major, minor, or patch.`);
-  }
-
-  const next = parseSemver(version);
-  if (bump === 'major') {
-    next.major += 1;
-    next.minor = 0;
-    next.patch = 0;
-  } else if (bump === 'minor') {
-    next.minor += 1;
-    next.patch = 0;
-  } else {
-    next.patch += 1;
-  }
-
-  return formatSemver(next);
-}
-
 function writeBuildVersion(version) {
-  parseSemver(version);
+  parseVersion(version);
   fs.writeFileSync(buildJsonPath, JSON.stringify({ version }, null, 2) + '\n');
 }
 

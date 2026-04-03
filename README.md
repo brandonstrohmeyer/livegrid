@@ -1,184 +1,105 @@
-# NASA Session Dashboard
+# LiveGrid
 
-A real-time racing schedule dashboard for motorsport events which rely on Google Sheets. Displays live session tracking, meeting notifications, and run group filtering designed for paddock display on kiosks or laptops.
+LiveGrid helps track-day and race participants follow the event schedule in real time. It makes it easier to see what is happening now, what is coming up next, and which sessions matter to your selected run groups.
 
-![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
+It is designed to make paddock schedule-checking faster and less error-prone.
 
-## Features
+- Follow the current session with automatic highlighting
+- Filter the schedule to your run groups
+- See upcoming sessions and relevant meetings
+- Sync preferences across devices when signed in
+- Receive lock-screen notifications when enabled
+- Switch between supported event schedules
 
-- **Live Session Tracking** - Highlights current session with automatic scrolling
-- **Run Group Filtering** - Filter by HPDE level, TT groups, or race classes
-- **Meeting Notifications** - Automatic detection of relevant meetings (HPDE, TT Drivers, Racers)
-- **Account Sync** - Sign in with Google, Apple, or email/password to sync preferences
-- **Lock-Screen Alerts** - Firebase Cloud Messaging push delivery with OS-level notifications
-- **Multi-Day Support** - Handles Friday practice, Saturday qualifying, Sunday racing
-- **Multiple Schedules** - Quickly switch between different race events
-- **Debug Mode** - Time/day offset controls for testing and development
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="public/livegrid_desktop.png" alt="LiveGrid desktop screenshot" width="720">
+    </td>
+  </tr>
+</table>
 
-## Quick Start
+# Using LiveGrid
 
-```bash
-firebase login --reauth
-npm run dev:full
-```
+Open [LiveGrid](https://livegrid.stro.io) in your browser.
 
-Open http://localhost:5173 in your browser.
+## Install On Your Phone
 
-## Usage
+LiveGrid can be safely installed like an app through your phone browser. You do not need to download it from the App Store or Google Play.
 
-### For Race Participants
+### iPhone or iPad
 
-1. Select your run groups (HPDE 1, TT Alpha, Thunder Race, etc.)
-2. Sign in to sync preferences across devices (optional)
-3. View upcoming sessions and relevant meetings
-4. Current session is highlighted and auto-scrolled
-5. Next session countdown shows time until track time
+1. Open LiveGrid in Safari.
+2. Tap the Share button.
+3. Tap `Add to Home Screen`.
+4. Tap `Add`.
 
-### For Event Organizers
+After that, LiveGrid will appear on your home screen like an app.
 
-1. Export schedule as CSV with day headers and time columns
-2. Replace `public/schedule.csv` for the live schedule
-3. Optionally add debug CSVs under `public/test-schedules/` and select them from the UI
-4. Select the organization (parser) and schedule file from the UI
-4. Display on paddock kiosk/TV
+### Android
 
-## CSV Format (Parser Modules)
+1. Open LiveGrid in Chrome.
+2. Tap the menu button in the top-right corner.
+3. Tap `Install app` or `Add to Home screen`.
+4. Confirm the install.
 
-Parsers are modular and each organization can define its own CSV format. See:
-- [docs/PARSERS.md](docs/PARSERS.md) for parser-specific rules and mappings
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for how to add or update parsers
+After that, LiveGrid will appear in your app list and on your home screen.
+
+## Enable Notifications
+
+LiveGrid can notify you before your sessions and important meetings, but a few things need to be set up first.
+
+**What Is Required**
+
+- Open LiveGrid on a device and browser that support notifications
+- Install LiveGrid to your phone home screen when your device/browser expects that for app-style alerts
+- Allow notification permission when your phone or browser asks
+- Sign in to your LiveGrid account
+- Select your run groups so LiveGrid knows which sessions are relevant to you
+
+**Why An Account Is Needed**
+
+An account is required so your notification settings belong to you instead of only to one browser tab or one single device.
+
+That lets LiveGrid:
+
+- remember your run groups and notification preferences
+- know which notifications should be sent to you
+- sync your preferences across multiple devices
+- keep notification registration tied to your account when you sign in or out
+
+Without an account, notifications would be much less reliable and much harder to keep in sync.
+
+**How To Turn Notifications On**
+
+1. Open LiveGrid on the device where you want alerts.
+2. Sign in to your account.
+3. Choose your run groups.
+4. Enable notifications in the app.
+5. Accept the notification permission request from your browser or phone.
+
+After that, LiveGrid can alert you even when you are not actively looking at the schedule page.
+
+## Event Organizers
+
+If you organize events and want your schedule format supported, [email me](mailto:hello+livegrid@stro.io).
 
 ## Documentation
 
-- **[Architecture](docs/ARCHITECTURE.md)** - Technical design and data flow
-- **[Development Guide](docs/DEVELOPMENT.md)** - Setup, workflow, and contributing
-- **[API Reference](docs/API.md)** - Function signatures and usage
-- **[Parsers](docs/PARSERS.md)** - Parser rules and CSV format details
-- **[Testing](docs/TESTING.md)** - Test structure and running tests
-- **[Logging](docs/LOGGING.md)** - Severity rules and logging conventions
+Technical setup, development, deployment, testing, architecture, and parser details live in [`docs/`](docs/).
 
-## Tech Stack
-
-- React 19 with hooks
-- Vite 5 (build tool)
-- Firebase 11 (Auth + Messaging)
-- PapaParse (CSV parsing)
-- React Pro Sidebar (sidebar layout)
-- Vitest (testing)
-
-## Development
-
-```bash
-npm run dev          # Start dev server
-npm run build        # Build for production
-npm run preview      # Preview production build
-npm test             # Run tests in watch mode
-npm run test:ui      # Open Vitest UI
-npm run test:run     # Run tests once
-```
-
-Version bump options (default is patch):
-```bash
-npm run build --bump=patch
-npm run build --bump=minor
-npm run build --bump=major
-```
-
-### Web Push Configuration
-
-Lock-screen notifications use Firebase Cloud Messaging (FCM). Configure the following before building for production:
-
-1. **FCM Credentials** - In the Firebase console generate a Web Push certificate and copy the VAPID key. Add it to your environment as `VITE_FIREBASE_VAPID_KEY`.
-2. **Functions API** - Deploy the included Cloud Functions (requires `firebase deploy --only functions`). These expose:
-	- `POST /api/register-push-token`
-	- `POST /api/unregister-push-token`
-	- `POST /api/send-push-notification`
-3. **Hosting Rewrites** - Already provided in `firebase.json`; ensure you deploy Hosting so `/api/*` rewrites resolve.
-4. **Local Development** - When running `npm run dev`, set `VITE_FUNCTIONS_BASE_URL` (e.g. `http://localhost:5001/<project>/us-central1`) so the frontend can reach the emulator.
-
-Without these values the UI will fall back to in-page notifications only. Notifications are scheduled client-side, so the app must remain open (foreground or background) to schedule pushes.
-
-## Testing
-
-Tests validate:
-- CSV parsing across parser fixtures
-- Time parsing with/without AM/PM
-- Session filtering and deduplication
-- Run group extraction and normalization
-- Meeting detection for all days
-
-```bash
-npm test
-```
-
-See [docs/TESTING.md](docs/TESTING.md) for detailed test documentation.
-
-### Test Pipeline (Pre-Deploy)
-
-Run the full verification suite before any `firebase deploy`:
-
-```bash
-npm run test:predeploy
-```
-
-This runs, in order:
-
-1. `npm run test:run` (unit/component tests)
-2. `npm run test:build` (frontend + functions build via `build:ci`, no version bump)
-3. `npm run test:integration` (emulators + integration + rules)
-4. `npm run test:e2e` (Playwright against preview + emulators)
-
-See [docs/TESTING.md](docs/TESTING.md) for full details and environment notes.
-
-## Deployment
-
-Build for production:
-
-```bash
-npm run build
-```
-
-Deploy the `dist/` folder to:
-- Static hosting (GitHub Pages, Netlify, Vercel)
-- Web server (nginx, Apache)
-- Kiosk mode (Chrome full-screen)
-
-### Kiosk Setup
-
-For paddock display:
-
-```bash
-chrome --kiosk --app=http://your-url
-```
-
-- Disable screen sleep in OS
-- Auto-fetches schedule every 30 seconds
-- Consider daily page reload to prevent memory issues
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch from `develop`
-3. Make your changes with tests
-4. Ensure all tests pass
-5. Submit pull request to `develop`
-
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed guidelines.
-
-## License
-
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
-
-**TL;DR:** You can use, modify, and distribute this code freely, but any derivative works must also be open source under GPL-3.0. No proprietary forks allowed.
-
-## Acknowledgments
-
-- Built for the NASA racing community
-- Inspired by the need for better paddock information displays
-- Thanks to all contributors and testers
+- [Development Guide](docs/DEVELOPMENT.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [CI/CD](docs/CICD.md)
+- [Testing](docs/TESTING.md)
+- [Parsers](docs/PARSERS.md)
+- [API Reference](docs/API.md)
+- [Logging](docs/LOGGING.md)
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/brandonstrohmeyer/nasa-session-dashboard/issues)
-- **Documentation**: [docs/](docs/)
-- **Examples**: Debug samples in `public/test-schedules/`; parser fixtures in `src/schedule/parsers/<parserId>/fixtures/`
+- Issues: [GitHub Issues](https://github.com/brandonstrohmeyer/livegrid/issues)
+
+## License
+
+This project is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.

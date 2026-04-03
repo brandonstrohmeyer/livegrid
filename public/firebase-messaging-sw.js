@@ -11,7 +11,7 @@ self.addEventListener('push', event => {
   const data = payload.data || {}
   const title = notificationPayload.title || payload.title || 'LiveGrid update'
 
-  const defaultUrl = 'https://livegrid.stro.io/'
+  const defaultUrl = `${self.location.origin}/`
   const options = {
     body: notificationPayload.body || payload.body || 'Tap to open LiveGrid.',
     icon: notificationPayload.icon || payload.icon || '/livegrid-icon.png',
@@ -29,7 +29,7 @@ self.addEventListener('push', event => {
 
 self.addEventListener('notificationclick', event => {
   event.notification.close()
-  const urlToOpen = event.notification?.data?.url || 'https://livegrid.stro.io/'
+  const urlToOpen = event.notification?.data?.url || `${self.location.origin}/`
 
   event.waitUntil(
     (async () => {

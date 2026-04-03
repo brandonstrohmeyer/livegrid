@@ -11,7 +11,7 @@
   },
   "hosting": {
     "predeploy": [
-      "npm run build"
+      "npm run build:firebase-hosting"
     ],
     "public": "dist",
     "ignore": [
@@ -43,6 +43,14 @@
       {
         "source": "/api/send-push-notification",
         "function": "sendPushNotification"
+      },
+      {
+        "source": "/api/client-telemetry",
+        "function": "clientTelemetry"
+      },
+      {
+        "source": "/api/health",
+        "function": "systemHealth"
       },
       {
         "source": "/api/sheets/**",

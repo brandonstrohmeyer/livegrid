@@ -1,3 +1,5 @@
+import { sendLogTelemetry } from './telemetry.js'
+
 const LEVELS = {
   debug: 10,
   info: 20,
@@ -11,6 +13,11 @@ const nodeEnv = typeof process !== 'undefined' && process.env ? process.env : {}
 const defaultLevel = env.MODE === 'production' ? 'info' : 'debug'
 const configuredLevel = env.VITE_LOG_LEVEL || nodeEnv.VITE_LOG_LEVEL || defaultLevel
 const activeLevel = LEVELS[configuredLevel] ?? LEVELS.info
+
+function shouldForwardTelemetry(level, event) {
+  if (level === 'warn' || level === 'error') return true
+  return event === 'firebase.client_disabled'
+}
 
 function normalizeError(err) {
   if (!err) return undefined
@@ -61,6 +68,16 @@ function emit(level, payload) {
             ? console.warn
             : console.error
   logger(payload)
+
+  if (shouldForwardTelemetry(level, payload.event)) {
+    sendLogTelemetry({
+      event: payload.event,
+      severity: level,
+      check: typeof payload.check === 'string' ? payload.check : undefined,
+      error: payload.error,
+      meta: payload
+    })
+  }
 }
 
 export const log = {
@@ -77,4 +94,3 @@ export const log = {
     emit('error', buildPayload(event, data, err))
   }
 }
-

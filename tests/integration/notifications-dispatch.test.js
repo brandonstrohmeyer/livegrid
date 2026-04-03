@@ -252,7 +252,7 @@ describe('scheduled notification dispatcher', () => {
     expect(doc.data()?.status).toBe('sent')
   })
 
-  it('processes notifications missing status field', async () => {
+  it('repairs missing status during sync before dispatching', async () => {
     const auth = await createUser({ email: 'missing-status@example.com', password: 'secret123' })
     const uid = auth.localId
     const token = 'token-ok'
@@ -264,22 +264,59 @@ describe('scheduled notification dispatcher', () => {
       lastSeenAt: admin.firestore.FieldValue.serverTimestamp()
     })
 
-    const fireAt = admin.firestore.Timestamp.fromMillis(Date.now() - 5 * 60 * 1000)
+    const fireAtIsoUtc = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+    const sessionStartIsoUtc = new Date(Date.now() + 10 * 60 * 1000).toISOString()
 
-    await db.collection('scheduledNotifications').doc('missing-status').set({
-      uid,
-      leaseUntil: null,
-      fireAt,
-      payload: { title: 'Missing status', body: 'Heal me', data: {} },
-      dedupeKey: 'missing-status',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    const syncResp = await callFunction('syncScheduledNotifications', {
+      body: {
+        data: {
+          eventId: 'event-missing-status',
+          desiredNotifications: [
+            {
+              runGroupId: 'HPDE 1',
+              sessionStartIsoUtc,
+              offsetMinutes: 5,
+              fireAtIsoUtc,
+              payload: { title: 'Missing status', body: 'Heal me', data: {} }
+            }
+          ]
+        }
+      },
+      idToken: auth.idToken
     })
+    expect(syncResp.ok).toBe(true)
+
+    const [seededDoc] = (await db.collection('scheduledNotifications').get()).docs
+    expect(seededDoc).toBeTruthy()
+
+    await seededDoc.ref.update({
+      status: admin.firestore.FieldValue.delete(),
+      leaseUntil: admin.firestore.FieldValue.delete()
+    })
+
+    const repairResp = await callFunction('syncScheduledNotifications', {
+      body: {
+        data: {
+          eventId: 'event-missing-status',
+          desiredNotifications: [
+            {
+              runGroupId: 'HPDE 1',
+              sessionStartIsoUtc,
+              offsetMinutes: 5,
+              fireAtIsoUtc,
+              payload: { title: 'Missing status', body: 'Heal me', data: {} }
+            }
+          ]
+        }
+      },
+      idToken: auth.idToken
+    })
+    expect(repairResp.ok).toBe(true)
 
     const dispatchResp = await callFunction('testDispatchScheduledNotifications', { method: 'POST' })
     expect(dispatchResp.ok).toBe(true)
 
-    const doc = await db.collection('scheduledNotifications').doc('missing-status').get()
-    // Expected: missing status records are treated as pending and delivered.
+    const doc = await seededDoc.ref.get()
     expect(doc.data()?.status).toBe('sent')
   })
 

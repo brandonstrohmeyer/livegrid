@@ -1,0 +1,107 @@
+name: Release RC
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release-rc-develop
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and Publish Release Candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Ensure PAT available
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.RELEASE_PAT }}" ]; then
+            echo "Missing RELEASE_PAT secret." >&2
+            exit 1
+          fi
+
+      - name: Resolve merged PR and bump
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const commit_sha = context.sha;
+            const response = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner,
+              repo,
+              commit_sha
+            });
+
+            const mergedPullRequests = response.data.filter((pullRequest) => (
+              Boolean(pullRequest.merged_at) && pullRequest.base.ref === 'develop'
+            ));
+
+            if (!mergedPullRequests.length) {
+              core.setFailed(`No merged pull request associated with ${commit_sha} targeting develop.`);
+              return;
+            }
+
+            const pullRequest = mergedPullRequests[0];
+            const labelNames = pullRequest.labels.map((label) => label.name);
+            const releaseLabels = labelNames.filter((name) => (
+              ['release:major', 'release:minor', 'release:patch'].includes(name)
+            ));
+
+            if (releaseLabels.length > 1) {
+              core.setFailed(`Conflicting release labels on PR #${pullRequest.number}: ${releaseLabels.join(', ')}`);
+              return;
+            }
+
+            const bump = releaseLabels.length ? releaseLabels[0].split(':')[1] : 'patch';
+            core.setOutput('number', String(pullRequest.number));
+            core.setOutput('bump', bump);
+
+      - name: Compute next RC version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(node scripts/release-version.js next-rc "${{ steps.pr.outputs.bump }}")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure RC tag does not already exist
+        shell: bash
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.version.outputs.tag }} already exists." >&2
+            exit 1
+          fi
+
+      - name: Write release build version
+        run: node scripts/build-version.js set "${{ steps.version.outputs.version }}"
+
+      - name: Create annotated RC tag
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${{ secrets.RELEASE_PAT }}@github.com/${{ github.repository }}.git"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Release candidate ${{ steps.version.outputs.tag }}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${{ steps.version.outputs.tag }}"
+
+      - name: Create GitHub prerelease
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: gh release create "${{ steps.version.outputs.tag }}" --prerelease --generate-notes --title "${{ steps.version.outputs.tag }}"

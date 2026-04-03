@@ -171,4 +171,4 @@ jobs:
           VITE_FUNCTIONS_BASE_URL: http://localhost:5001/${{ vars.FIREBASE_PROJECT_ID }}/us-central1
           VITE_FIREBASE_EMULATOR_AUTH: http://localhost:9099
           VITE_FIREBASE_EMULATOR_FIRESTORE: localhost:8080
-        run: firebase emulators:exec --project "$FIREBASE_PROJECT_ALIAS" --only functions,firestore,auth "playwright test"
+        run: firebase emulators:exec --project "$FIREBASE_PROJECT_ALIAS" --only functions,firestore,auth "npm run test:e2e:inner"

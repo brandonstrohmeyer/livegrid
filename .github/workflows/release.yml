@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: read
 
 concurrency:
   group: release-main
@@ -35,48 +34,13 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve merged PR and bump
-        id: pr
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const commit_sha = context.sha;
-            const response = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-              owner,
-              repo,
-              commit_sha
-            });
-
-            const mergedPullRequests = response.data.filter((pullRequest) => (
-              Boolean(pullRequest.merged_at) && pullRequest.base.ref === 'main'
-            ));
-
-            if (!mergedPullRequests.length) {
-              core.setFailed(`No merged pull request associated with ${commit_sha} targeting main.`);
-              return;
-            }
-
-            const pullRequest = mergedPullRequests[0];
-            const labelNames = pullRequest.labels.map((label) => label.name);
-            const releaseLabels = labelNames.filter((name) => (
-              ['release:major', 'release:minor', 'release:patch'].includes(name)
-            ));
-
-            if (releaseLabels.length > 1) {
-              core.setFailed(`Conflicting release labels on PR #${pullRequest.number}: ${releaseLabels.join(', ')}`);
-              return;
-            }
-
-            const bump = releaseLabels.length ? releaseLabels[0].split(':')[1] : 'patch';
-            core.setOutput('number', String(pullRequest.number));
-            core.setOutput('bump', bump);
-
-      - name: Compute next version
+      - name: Resolve promoted RC version
         id: version
         shell: bash
         run: |
-          VERSION="$(node scripts/build-version.js next "${{ steps.pr.outputs.bump }}")"
+          RC_TAG="$(node scripts/release-version.js latest-merged-rc-tag)"
+          VERSION="$(node scripts/release-version.js final-from-merged-rc)"
+          echo "source_rc_tag=$RC_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -104,4 +68,4 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
-        run: gh release create "${{ steps.version.outputs.tag }}" --generate-notes --title "${{ steps.version.outputs.tag }}"
+        run: gh release create "${{ steps.version.outputs.tag }}" --generate-notes --notes "Promoted from ${{ steps.version.outputs.source_rc_tag }}" --title "${{ steps.version.outputs.tag }}"

@@ -116,7 +116,7 @@ Functions power the RSS proxy and push endpoints:
 Health monitoring uses:
 
 - `/healthz.json` for static Hosting liveness
-- `/api/health` for backend readiness plus a live Sheets probe against a recently seen spreadsheet id when one is available
+- `/api/health` for backend readiness plus a live Sheets probe and Firebase Auth configuration checks for the deployed host
 
 Deploy with:
 

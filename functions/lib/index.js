@@ -137,6 +137,7 @@ const DISPATCH_LIMIT = 200;
 const NOTIFICATION_TTL_DAYS = 30;
 const NOTIFICATION_TTL_MS = NOTIFICATION_TTL_DAYS * 24 * 60 * 60 * 1000;
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
+const IDENTITY_TOOLKIT_ADMIN_BASE = 'https://identitytoolkit.googleapis.com/admin/v2';
 // Secret Manager-backed config must win over any stale legacy env var left on the service.
 const SHEETS_API_KEY = process.env.SHEETS_API_KEY || process.env.GOOGLE_SHEETS_API_KEY || '';
 const SHEETS_METADATA_TTL_MS = 15 * 60 * 1000;
@@ -419,6 +420,9 @@ function logClientTelemetryEvent(payload, identifiers) {
     }
     logging_1.log.info('client.info', baseData, payload.error);
 }
+function getRuntimeProjectId() {
+    return process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || admin.app().options.projectId || '';
+}
 async function getMetadataAccessToken() {
     const response = await fetch('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', {
         headers: {
@@ -437,7 +441,7 @@ async function getMetadataAccessToken() {
 async function writeGaugeMetrics(metrics, now = firestore_1.Timestamp.now()) {
     if (TEST_MODE || process.env.FUNCTIONS_EMULATOR === 'true')
         return;
-    const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || admin.app().options.projectId;
+    const projectId = getRuntimeProjectId();
     if (!projectId) {
         logging_1.log.warn('presence.metric_project_missing');
         return;
@@ -752,11 +756,15 @@ exports.systemHealth = (0, https_1.onRequest)({
         return;
     }
     const checkedAt = new Date().toISOString();
+    const requestHost = getRequestHost(req);
     const checks = {
         firebaseAdmin: {
             status: admin.apps.length > 0 ? 'ok' : 'error'
         },
         firestore: {
+            status: 'ok'
+        },
+        auth: {
             status: 'ok'
         },
         sheetsConfig: {
@@ -776,15 +784,15 @@ exports.systemHealth = (0, https_1.onRequest)({
             detail: err?.message || 'Firestore read failed'
         };
     }
-    try {
-        checks.sheetsProbe = await runSystemSheetsHealthProbe();
-    }
-    catch (err) {
-        checks.sheetsProbe = {
+    const [authCheck, sheetsProbeCheck] = await Promise.all([
+        runSystemAuthHealthProbe(requestHost),
+        runSystemSheetsHealthProbe().catch((err) => ({
             status: 'error',
             detail: err?.message || 'Sheet health probe failed'
-        };
-    }
+        }))
+    ]);
+    checks.auth = authCheck;
+    checks.sheetsProbe = sheetsProbeCheck;
     const statuses = Object.values(checks).map(check => check.status);
     const status = statuses.includes('error')
         ? 'error'
@@ -792,6 +800,13 @@ exports.systemHealth = (0, https_1.onRequest)({
             ? 'degraded'
             : 'ok';
     const payload = { status, checkedAt, checks };
+    if (checks.auth.status !== 'ok') {
+        logging_1.log.warn('system.auth_health_failed', {
+            checkedAt,
+            host: requestHost || undefined,
+            auth: checks.auth
+        });
+    }
     if (status === 'ok') {
         logging_1.log.info('system.health_ok', payload);
     }
@@ -886,6 +901,112 @@ async function runSystemSheetsHealthProbe() {
         status: 'error',
         detail: `Sheets probe failed for ${candidates.length} candidate(s): ${lastError}`
     };
+}
+function normalizeHost(value) {
+    if (typeof value !== 'string')
+        return '';
+    const host = value.split(',')[0]?.trim().toLowerCase() || '';
+    if (!host)
+        return '';
+    return host.replace(/:\d+$/, '');
+}
+function getRequestHost(req) {
+    return normalizeHost(req.get('x-forwarded-host') || req.get('host') || '');
+}
+function shouldValidateAuthorizedDomain(host) {
+    if (!host || host === 'localhost' || host === '127.0.0.1')
+        return false;
+    if (host.endsWith('.cloudfunctions.net') || host.endsWith('.run.app'))
+        return false;
+    return true;
+}
+async function fetchIdentityToolkitAdminResource(accessToken, resourcePath) {
+    const response = await fetch(`${IDENTITY_TOOLKIT_ADMIN_BASE}/${resourcePath}`, {
+        headers: {
+            Authorization: `Bearer ${accessToken}`
+        }
+    });
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Identity Toolkit request failed (${response.status}): ${text}`);
+    }
+    return response.json();
+}
+async function runSystemAuthHealthProbe(expectedHost) {
+    if (TEST_MODE || process.env.FUNCTIONS_EMULATOR === 'true') {
+        return {
+            status: 'ok',
+            detail: 'Auth probe skipped in test/emulator mode.'
+        };
+    }
+    const projectId = getRuntimeProjectId();
+    if (!projectId) {
+        return {
+            status: 'error',
+            detail: 'Unable to resolve runtime project id for Firebase Auth probe.'
+        };
+    }
+    try {
+        await admin.auth().listUsers(1);
+    }
+    catch (err) {
+        return {
+            status: 'error',
+            detail: `Firebase Auth Admin probe failed: ${err?.message || 'listUsers failed'}`
+        };
+    }
+    try {
+        const accessToken = await getMetadataAccessToken();
+        const [projectConfig, googleProviderConfig] = await Promise.all([
+            fetchIdentityToolkitAdminResource(accessToken, `projects/${projectId}/config`),
+            fetchIdentityToolkitAdminResource(accessToken, `projects/${projectId}/defaultSupportedIdpConfigs/google.com`)
+        ]);
+        const issues = [];
+        const warnings = [];
+        if (googleProviderConfig?.enabled !== true) {
+            issues.push('Google sign-in is disabled.');
+        }
+        if (projectConfig?.signIn?.email?.enabled !== true) {
+            warnings.push('Email/password sign-in is disabled.');
+        }
+        const normalizedExpectedHost = normalizeHost(expectedHost || '');
+        const authorizedDomains = Array.isArray(projectConfig.authorizedDomains)
+            ? projectConfig.authorizedDomains.map(domain => normalizeHost(domain)).filter(Boolean)
+            : [];
+        if (normalizedExpectedHost && shouldValidateAuthorizedDomain(normalizedExpectedHost) && !authorizedDomains.includes(normalizedExpectedHost)) {
+            issues.push(`Authorized domains are missing ${normalizedExpectedHost}.`);
+        }
+        const confirmations = [
+            'Firebase Auth Admin API reachable.',
+            googleProviderConfig?.enabled === true ? 'Google sign-in enabled.' : '',
+            projectConfig?.signIn?.email?.enabled === true ? 'Email/password sign-in enabled.' : '',
+            normalizedExpectedHost && shouldValidateAuthorizedDomain(normalizedExpectedHost) && authorizedDomains.includes(normalizedExpectedHost)
+                ? `Authorized domains include ${normalizedExpectedHost}.`
+                : ''
+        ].filter(Boolean);
+        if (issues.length) {
+            return {
+                status: 'error',
+                detail: [...issues, ...warnings, ...confirmations].join(' ')
+            };
+        }
+        if (warnings.length) {
+            return {
+                status: 'degraded',
+                detail: [...warnings, ...confirmations].join(' ')
+            };
+        }
+        return {
+            status: 'ok',
+            detail: confirmations.join(' ')
+        };
+    }
+    catch (err) {
+        return {
+            status: 'error',
+            detail: `Firebase Auth config probe failed: ${err?.message || 'config fetch failed'}`
+        };
+    }
 }
 function computeNotificationExpiry(fireAt) {
     if (!fireAt)

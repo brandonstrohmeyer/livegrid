@@ -4,7 +4,6 @@ import {
   getInvokerIamDisabledValue,
   getTargetFunctionServices,
   resolveRequestedProjectId,
-  runInteractive,
   waitForInvokerIamCheckDisabled
 } from './hosting-public-access-shared.mjs'
 
@@ -22,7 +21,7 @@ async function main() {
 
   const { targetFunctions, missingFunctions, services } = await getTargetFunctionServices(projectId)
   if (!targetFunctions.length) {
-    console.log('No Hosting-backed function rewrites found in firebase.json. Nothing to update.')
+    console.log('No Hosting-backed function rewrites found in firebase.json. Nothing to verify.')
     return
   }
 
@@ -34,25 +33,11 @@ async function main() {
     process.exit(1)
   }
 
-  console.log(`Syncing Hosting-backed Cloud Run access for ${services.length} function(s) in ${projectId}...`)
+  console.log(`Verifying Hosting-backed Cloud Run access for ${services.length} function(s) in ${projectId}...`)
 
   const verificationFailures = []
 
   for (const service of services) {
-    console.log(`- ${formatServiceTarget(service)}`)
-    runInteractive([
-      'run',
-      'services',
-      'update',
-      service.serviceName,
-      '--project',
-      projectId,
-      '--region',
-      service.region,
-      '--no-invoker-iam-check',
-      '--quiet'
-    ])
-
     const verification = await waitForInvokerIamCheckDisabled(projectId, service.region, service.serviceName)
     if (!verification.ok) {
       verificationFailures.push({
@@ -63,18 +48,18 @@ async function main() {
       continue
     }
 
-    console.log(`  Verified ${formatServiceTarget(service)} with invoker IAM check disabled after ${verification.attemptsUsed} check(s).`)
+    console.log(`- Verified ${formatServiceTarget(service)} with invoker IAM check disabled after ${verification.attemptsUsed} check(s).`)
   }
 
   if (verificationFailures.length) {
-    console.error('Cloud Run public access sync finished, but verification failed for:')
+    console.error('Hosting-backed Cloud Run access verification failed for:')
     for (const failure of verificationFailures) {
       console.error(`- ${formatServiceTarget(failure)}: expected run.googleapis.com/invoker-iam-disabled=true after ${failure.attemptsUsed} check(s), found ${JSON.stringify(failure.rawValue)}`)
     }
     process.exit(1)
   }
 
-  console.log('Cloud Run public access sync complete and verified.')
+  console.log('Hosting-backed Cloud Run access verification complete.')
 }
 
 main().catch(error => {

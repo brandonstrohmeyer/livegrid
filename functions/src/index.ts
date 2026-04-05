@@ -105,11 +105,13 @@ const NOTIFICATION_TTL_DAYS = 30
 const NOTIFICATION_TTL_MS = NOTIFICATION_TTL_DAYS * 24 * 60 * 60 * 1000
 
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets'
-const SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY || process.env.SHEETS_API_KEY || ''
+// Secret Manager-backed config must win over any stale legacy env var left on the service.
+const SHEETS_API_KEY = process.env.SHEETS_API_KEY || process.env.GOOGLE_SHEETS_API_KEY || ''
 const SHEETS_METADATA_TTL_MS = 15 * 60 * 1000
 const SHEETS_VALUES_TTL_MS = 30 * 1000
 const SHEETS_DEFAULT_RANGE_END = 'Z'
 const SHEETS_WIDE_RANGE_END = 'AZ'
+const SHEETS_HEALTH_PROBE_MAX_CANDIDATES = 3
 const SHEETS_RATE_LIMIT_WINDOW_MS = 60 * 1000
 const SHEETS_RATE_LIMIT_MAX = 60
 const HOD_MA_ORG_URL = 'https://www.motorsportreg.com/orgs/hooked-on-driving/mid-atlantic'
@@ -844,6 +846,9 @@ export const systemHealth = onRequest({
     sheetsConfig: {
       status: SHEETS_API_KEY ? 'ok' : 'degraded',
       detail: SHEETS_API_KEY ? undefined : 'SHEETS_API_KEY is not configured for this function.'
+    },
+    sheetsProbe: {
+      status: 'ok'
     }
   }
 
@@ -853,6 +858,15 @@ export const systemHealth = onRequest({
     checks.firestore = {
       status: 'error',
       detail: err?.message || 'Firestore read failed'
+    }
+  }
+
+  try {
+    checks.sheetsProbe = await runSystemSheetsHealthProbe()
+  } catch (err: any) {
+    checks.sheetsProbe = {
+      status: 'error',
+      detail: err?.message || 'Sheet health probe failed'
     }
   }
 
@@ -872,6 +886,100 @@ export const systemHealth = onRequest({
 
   res.status(status === 'error' ? 503 : 200).json(payload)
 })
+
+async function collectSystemSheetsHealthProbeIds() {
+  const candidates: string[] = []
+  const pushCandidate = (value: unknown) => {
+    const id = typeof value === 'string' ? value.trim() : ''
+    if (!id || candidates.includes(id)) return
+    candidates.push(id)
+  }
+
+  if (TEST_MODE) {
+    pushCandidate('TEST_SHEET_ID')
+    return candidates
+  }
+
+  const targetCount = SHEETS_HEALTH_PROBE_MAX_CANDIDATES
+
+  try {
+    const metadataSnap = await sheetMetadataCollection
+      .orderBy('lastMetadataFetchAt', 'desc')
+      .limit(targetCount)
+      .get()
+    metadataSnap.forEach(doc => {
+      const data = doc.data() as any
+      pushCandidate(data?.spreadsheetId || doc.id)
+    })
+  } catch (err) {
+    log.debug('system.health_probe_metadata_candidates_failed', undefined, err)
+  }
+
+  if (candidates.length >= targetCount) {
+    return candidates.slice(0, targetCount)
+  }
+
+  try {
+    const sourceSnap = await sheetSourcesCollection
+      .orderBy('lastValuesFetchAt', 'desc')
+      .limit(targetCount)
+      .get()
+    sourceSnap.forEach(doc => {
+      const data = doc.data() as any
+      pushCandidate(data?.spreadsheetId)
+    })
+  } catch (err) {
+    log.debug('system.health_probe_source_candidates_failed', undefined, err)
+  }
+
+  if (candidates.length >= targetCount) {
+    return candidates.slice(0, targetCount)
+  }
+
+  try {
+    const eventSnap = await eventCacheCollection
+      .orderBy('updatedAt', 'desc')
+      .limit(targetCount)
+      .get()
+    eventSnap.forEach(doc => {
+      const data = doc.data() as any
+      pushCandidate(extractSpreadsheetId(data?.sheetUrl || ''))
+    })
+  } catch (err) {
+    log.debug('system.health_probe_event_candidates_failed', undefined, err)
+  }
+
+  return candidates.slice(0, targetCount)
+}
+
+async function runSystemSheetsHealthProbe(): Promise<{ status: 'ok' | 'degraded' | 'error'; detail?: string }> {
+  const candidates = await collectSystemSheetsHealthProbeIds()
+  if (!candidates.length) {
+    return {
+      status: 'ok',
+      detail: 'No known spreadsheet probe target is available yet.'
+    }
+  }
+
+  let lastError = 'Unknown Sheets probe error'
+  for (const spreadsheetId of candidates) {
+    try {
+      const metadata = await getSheetMetadata(spreadsheetId, { forceRefresh: true })
+      return {
+        status: 'ok',
+        detail: `Fetched ${metadata.tabs.length} tab(s) from spreadsheet ${spreadsheetId}.`
+      }
+    } catch (err: any) {
+      lastError = err?.message || lastError
+      log.debug('system.health_probe_candidate_failed', { spreadsheetId }, err)
+    }
+  }
+
+  return {
+    status: 'error',
+    detail: `Sheets probe failed for ${candidates.length} candidate(s): ${lastError}`
+  }
+}
 
 function computeNotificationExpiry(fireAt: Timestamp | null) {
   if (!fireAt) return null

@@ -118,6 +118,15 @@ jobs:
       - name: Sync public access for Hosting-backed functions
         run: npm run firebase:postdeploy:public-routes -- --project "$FIREBASE_PROJECT_ID"
 
+      - name: Verify public access for Hosting-backed functions
+        run: npm run firebase:verify:public-routes -- --project "$FIREBASE_PROJECT_ID"
+
+      - name: Remove legacy Sheets env overrides
+        run: npm run firebase:cleanup:legacy-sheets-env -- --project "$FIREBASE_PROJECT_ID"
+
+      - name: Verify Sheets runtime config
+        run: npm run firebase:verify:sheets-runtime -- --project "$FIREBASE_PROJECT_ID"
+
       - name: Upload deploy artifacts
         uses: actions/upload-artifact@v4
         with:

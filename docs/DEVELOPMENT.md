@@ -89,6 +89,9 @@ Notes:
 - `npm run build` reads `.env.production`.
 - `firebase deploy --only hosting --project dev` now builds in Vite `development` mode automatically.
 - After any manual deploy that creates or updates Hosting-backed 2nd gen functions, run `npm run firebase:postdeploy:public-routes -- --project <project-id>`.
+- Follow that with `npm run firebase:verify:public-routes -- --project <project-id>` to confirm the Cloud Run access state actually stuck.
+- If the deployment inherits an old plain runtime key, run `npm run firebase:cleanup:legacy-sheets-env -- --project <project-id>` to remove the stale `GOOGLE_SHEETS_API_KEY` override from `sheetsApi` and `systemHealth`.
+- Then run `npm run firebase:verify:sheets-runtime -- --project <project-id>` to confirm `sheetsApi` and `systemHealth` are still using Secret Manager `SHEETS_API_KEY` instead of a stale `GOOGLE_SHEETS_API_KEY`.
 - That sync is required in this repo because organization policy blocks the usual `allUsers` Cloud Run invoker path for newly deployed public functions.
 - Put emulator-only frontend overrides in `.env.development.local`, not `.env.development`.
 - `npm run dev:full` starts the Firebase emulators against the `dev` alias and loads Functions env from `functions/.env.dev`, plus any machine-local overrides from `functions/.env.local`.
@@ -110,11 +113,19 @@ Functions power the RSS proxy and push endpoints:
 - `POST /api/unregister-push-token`
 - `POST /api/send-push-notification`
 
+Health monitoring uses:
+
+- `/healthz.json` for static Hosting liveness
+- `/api/health` for backend readiness plus a live Sheets probe against a recently seen spreadsheet id when one is available
+
 Deploy with:
 
 ```bash
 firebase deploy --only functions,hosting --project dev
 npm run firebase:postdeploy:public-routes -- --project livegrid-dev-7acfc
+npm run firebase:verify:public-routes -- --project livegrid-dev-7acfc
+npm run firebase:cleanup:legacy-sheets-env -- --project livegrid-dev-7acfc
+npm run firebase:verify:sheets-runtime -- --project livegrid-dev-7acfc
 ```
 
 CI already runs that post-deploy sync automatically for production.

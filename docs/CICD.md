@@ -42,14 +42,14 @@ This repository uses GitHub Actions for pull request validation, release-candida
 - a pushed RC tag such as `v0.2.25-rc.1`
 - a manual `workflow_dispatch` where you provide an existing RC tag for redeploy
 
-The dev deploy job checks out the exact RC tag, regenerates `build.json`, builds the app and functions, runs `firebase deploy --only functions,hosting`, then runs `npm run firebase:postdeploy:public-routes -- --project "$FIREBASE_PROJECT_ID"`.
+The dev deploy job checks out the exact RC tag, regenerates `build.json`, builds the app and functions, runs `firebase deploy --only functions,hosting`, runs `npm run firebase:postdeploy:public-routes -- --project "$FIREBASE_PROJECT_ID"`, removes any stale `GOOGLE_SHEETS_API_KEY` overrides from the Hosting-backed Sheets services, then verifies both the Cloud Run access state and the Sheets runtime config with `npm run firebase:verify:public-routes -- --project "$FIREBASE_PROJECT_ID"` and `npm run firebase:verify:sheets-runtime -- --project "$FIREBASE_PROJECT_ID"`.
 
 `.github/workflows/deploy.yml` deploys Firebase on:
 
 - a pushed semver tag such as `v0.2.25`
 - a manual `workflow_dispatch` where you provide an existing tag for rollback or redeploy
 
-The deploy job checks out the exact tag, regenerates `build.json`, builds the app and functions, runs `firebase deploy --only functions,hosting`, then runs `npm run firebase:postdeploy:public-routes -- --project "$FIREBASE_PROJECT_ID"`.
+The deploy job checks out the exact tag, regenerates `build.json`, builds the app and functions, runs `firebase deploy --only functions,hosting`, runs `npm run firebase:postdeploy:public-routes -- --project "$FIREBASE_PROJECT_ID"`, removes any stale `GOOGLE_SHEETS_API_KEY` overrides from the Hosting-backed Sheets services, then verifies both the Cloud Run access state and the Sheets runtime config with `npm run firebase:verify:public-routes -- --project "$FIREBASE_PROJECT_ID"` and `npm run firebase:verify:sheets-runtime -- --project "$FIREBASE_PROJECT_ID"`.
 
 That post-deploy sync applies Cloud Run's `--no-invoker-iam-check` setting to the functions referenced by `firebase.json` Hosting rewrites. This is a required part of deployment for this repo, because Firebase alone cannot make those Hosting-backed 2nd gen functions reachable in projects where organization policy blocks granting `allUsers` the Cloud Run invoker role.
 
@@ -58,6 +58,9 @@ For local manual deploys, treat that sync step as part of the deploy contract to
 ```bash
 firebase deploy --only functions,hosting --project <alias>
 npm run firebase:postdeploy:public-routes -- --project <project-id>
+npm run firebase:verify:public-routes -- --project <project-id>
+npm run firebase:cleanup:legacy-sheets-env -- --project <project-id>
+npm run firebase:verify:sheets-runtime -- --project <project-id>
 ```
 
 ## Required GitHub configuration

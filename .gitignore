@@ -38,6 +38,7 @@ yarn-error.log*
 # Local cloud tooling state and generated observability exports
 .firebase/
 .gcloud/
+terraform/.terraform/
 test-results/
 /cloud_function_v1_*.json
 /schedulednotificationdispatcher_*.json
@@ -51,6 +52,3 @@ test-results/
 
 # HOD
 hod/
-
-# Terraform
-terraform/

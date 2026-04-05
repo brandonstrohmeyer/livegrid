@@ -79,11 +79,11 @@
         "width": 3,
         "height": 4,
         "widget": {
-          "title": "Client Errors",
+          "title": "Auth Health Failures",
           "scorecard": {
             "timeSeriesQuery": {
               "timeSeriesFilter": {
-                "filter": "metric.type=\"logging.googleapis.com/user/livegrid_client_errors\"",
+                "filter": "metric.type=\"logging.googleapis.com/user/livegrid_auth_health_failures\"",
                 "aggregation": {
                   "alignmentPeriod": "60s",
                   "perSeriesAligner": "ALIGN_DELTA",
@@ -136,10 +136,24 @@
               },
               {
                 "plotType": "LINE",
-                "legendTemplate": "rejected telemetry",
+                "legendTemplate": "auth health failures",
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_client_telemetry_rejected\"",
+                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_auth_health_failures\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_DELTA",
+                      "crossSeriesReducer": "REDUCE_SUM"
+                    }
+                  }
+                }
+              },
+              {
+                "plotType": "LINE",
+                "legendTemplate": "client auth failures",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_client_auth_failures\"",
                     "aggregation": {
                       "alignmentPeriod": "60s",
                       "perSeriesAligner": "ALIGN_DELTA",
@@ -314,9 +328,9 @@
         "width": 6,
         "height": 4,
         "widget": {
-          "title": "Health And Sheets Logs",
+          "title": "Health, Auth, And Sheets Logs",
           "logsPanel": {
-            "filter": "resource.type=\"cloud_run_revision\" AND ((resource.labels.service_name=\"sheetsapi\" AND severity>=WARNING) OR jsonPayload.event=\"system.health_failed\")",
+            "filter": "resource.type=\"cloud_run_revision\" AND ((resource.labels.service_name=\"sheetsapi\" AND severity>=WARNING) OR jsonPayload.event=\"system.health_failed\" OR jsonPayload.event=\"system.auth_health_failed\")",
             "resourceNames": [
               "projects/${project_id}"
             ]
@@ -329,9 +343,9 @@
         "width": 6,
         "height": 4,
         "widget": {
-          "title": "Client And Dispatcher Incident Logs",
+          "title": "Client, Auth, And Dispatcher Incident Logs",
           "logsPanel": {
-            "filter": "resource.type=\"cloud_run_revision\" AND ((jsonPayload.event=\"client.error\" OR jsonPayload.event=\"client.health_failed\" OR jsonPayload.event=\"client.telemetry_rejected\") OR (resource.labels.service_name=\"schedulednotificationdispatcher\" AND severity>=WARNING))",
+            "filter": "resource.type=\"cloud_run_revision\" AND (((jsonPayload.event=\"client.error\" AND jsonPayload.sourceEvent=\"auth.redirect_failed\") OR jsonPayload.event=\"client.health_failed\" OR jsonPayload.event=\"client.telemetry_rejected\") OR (resource.labels.service_name=\"schedulednotificationdispatcher\" AND severity>=WARNING))",
             "resourceNames": [
               "projects/${project_id}"
             ]

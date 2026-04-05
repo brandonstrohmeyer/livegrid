@@ -128,6 +128,7 @@ describe('functions emulator', () => {
     const payload = await response.json()
     expect(payload.checks).toBeTruthy()
     expect(payload.checks.firebaseAdmin.status).toBe('ok')
+    expect(payload.checks.auth.status).toBe('ok')
     expect(payload.checks.sheetsProbe.status).toBe('ok')
   })
 

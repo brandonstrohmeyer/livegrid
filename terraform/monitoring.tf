@@ -79,6 +79,18 @@ resource "google_logging_metric" "backend_health_failures" {
   filter      = "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"${var.region}\" AND jsonPayload.event=\"system.health_failed\""
 }
 
+resource "google_logging_metric" "auth_health_failures" {
+  name        = "livegrid_auth_health_failures"
+  description = "Count of backend auth health check failures or degraded auth states."
+  filter      = "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"${var.region}\" AND jsonPayload.event=\"system.auth_health_failed\""
+}
+
+resource "google_logging_metric" "client_auth_failures" {
+  name        = "livegrid_client_auth_failures"
+  description = "Count of client-side auth redirect failures reported through telemetry."
+  filter      = "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"${var.region}\" AND jsonPayload.event=\"client.error\" AND jsonPayload.sourceEvent=\"auth.redirect_failed\""
+}
+
 resource "google_logging_metric" "client_telemetry_rejected" {
   name        = "livegrid_client_telemetry_rejected"
   description = "Count of rejected or rate-limited client telemetry requests."

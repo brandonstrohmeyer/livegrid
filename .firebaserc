@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "livegrid-c33c6"
+    "dev": "livegrid-dev-7acfc",
+    "prod": "livegrid-c33c6"
   }
 }

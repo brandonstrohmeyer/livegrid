@@ -41,6 +41,20 @@ const emulatorBaseUrl = emulatorProjectId ? `http://localhost:5001/${emulatorPro
 const resolvedFunctionsBaseUrl = rawFunctionsBaseUrl || (useFunctionsEmulator ? emulatorBaseUrl : '')
 const functionsBaseUrl = resolvedFunctionsBaseUrl ? resolvedFunctionsBaseUrl.replace(/\/+$/, '') : ''
 
+const functionEndpoint = (proxyPath, functionName) => {
+  if (!functionsBaseUrl) {
+    return `/api/${proxyPath}`
+  }
+
+  if (functionsBaseUrl.endsWith(`/${functionName}`)) {
+    return functionsBaseUrl
+  }
+
+  return `${functionsBaseUrl}/${functionName}`
+}
+
+const cachedEventsEndpoint = functionEndpoint('cached-events', 'cachedEvents')
+
 const sheetsEndpoint = (path) => {
   if (!functionsBaseUrl) {
     return `/api/${path}`
@@ -1183,13 +1197,7 @@ export default function App() {
       setRssError(null)
       setHodError(null)
 
-      let eventsUrl
-      if (window.location.hostname === 'localhost') {
-        eventsUrl = 'http://localhost:5001/livegrid-c33c6/us-central1/cachedEvents'
-      } else {
-        eventsUrl = '/api/cached-events'
-      }
-      const response = await fetch(eventsUrl)
+      const response = await fetch(cachedEventsEndpoint)
       if (!response.ok) {
         throw new Error(`Events request failed (${response.status})`)
       }

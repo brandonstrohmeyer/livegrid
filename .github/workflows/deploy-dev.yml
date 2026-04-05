@@ -1,14 +1,13 @@
-name: Deploy
+name: Deploy Dev
 
 on:
   push:
     tags:
-      - 'v*.*.*'
-      - '!v*.*.*-rc.*'
+      - 'v*.*.*-rc.*'
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to deploy (for example v0.2.24)
+        description: Existing RC tag to deploy (for example v0.2.25-rc.1)
         required: true
         type: string
 
@@ -16,14 +15,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: firebase-production
+  group: firebase-development
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Build and Deploy Firebase
+    name: Build and Deploy Firebase Dev
     runs-on: ubuntu-latest
-    environment: prod
+    environment: dev
     env:
       FIREBASE_PROJECT_ALIAS: ${{ vars.FIREBASE_PROJECT_ALIAS }}
       FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
@@ -46,8 +45,8 @@ jobs:
             TAG="${GITHUB_REF_NAME}"
           fi
 
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid tag: $TAG" >&2
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+            echo "Invalid RC tag: $TAG" >&2
             exit 1
           fi
 
@@ -107,7 +106,7 @@ jobs:
       - name: Create deploy metadata
         shell: bash
         run: |
-          node -e "const fs = require('fs'); const metadata = { tag: process.env.DEPLOY_TAG, version: process.env.DEPLOY_VERSION, sha: process.env.GITHUB_SHA, runId: process.env.GITHUB_RUN_ID, event: process.env.GITHUB_EVENT_NAME, deployedAt: new Date().toISOString() }; fs.writeFileSync('deploy-metadata.json', JSON.stringify(metadata, null, 2) + '\n');"
+          node -e "const fs = require('fs'); const metadata = { tag: process.env.DEPLOY_TAG, version: process.env.DEPLOY_VERSION, sha: process.env.GITHUB_SHA, runId: process.env.GITHUB_RUN_ID, event: process.env.GITHUB_EVENT_NAME, deployedAt: new Date().toISOString(), environment: 'dev' }; fs.writeFileSync('deploy-metadata.json', JSON.stringify(metadata, null, 2) + '\n');"
         env:
           DEPLOY_TAG: ${{ steps.resolve.outputs.tag }}
           DEPLOY_VERSION: ${{ steps.resolve.outputs.version }}
@@ -130,7 +129,7 @@ jobs:
       - name: Upload deploy artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: deploy-${{ steps.resolve.outputs.tag }}
+          name: deploy-dev-${{ steps.resolve.outputs.tag }}
           path: |
             dist
             functions/lib

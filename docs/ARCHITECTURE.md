@@ -2,7 +2,7 @@
 
 ## Overview
 
-The NASA Session Dashboard is a single-page React application that displays real-time racing schedules with live session tracking, meeting notifications, run group filtering, and optional account sync.
+LiveGrid is a single-page React application that displays real-time racing schedules with live session tracking, meeting notifications, run group filtering, and optional account sync.
 
 ## Technology Stack
 
@@ -17,7 +17,7 @@ The NASA Session Dashboard is a single-page React application that displays real
 ## Project Structure
 
 ```
-nasa-session-dashboard/
+livegrid/
   src/
     App.jsx
     components/

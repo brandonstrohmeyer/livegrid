@@ -12,8 +12,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/brandonstrohmeyer/nasa-session-dashboard.git
-cd nasa-session-dashboard
+git clone https://github.com/brandonstrohmeyer/livegrid.git
+cd livegrid
 
 # Install dependencies
 npm install
@@ -48,7 +48,22 @@ Logging is expected to use explicit severity and structured context. Follow the 
 
 ## Environment Variables
 
-Create a `.env.local` (or `.env`) file with your Firebase configuration:
+Frontend env is mode-specific:
+
+- `.env.development` for the dev Firebase project
+- `.env.production` for the prod Firebase project
+- `.env.local` or `.env.development.local` for machine-specific overrides
+
+Functions env is project-specific inside `functions/`:
+
+- `functions/.env.dev`
+- `functions/.env.prod`
+- `functions/.env.local` for local overrides
+
+For local Functions emulation, put `GOOGLE_SHEETS_API_KEY` in `functions/.env.local`.
+Deployed functions use Secret Manager `SHEETS_API_KEY`.
+
+Frontend variables:
 
 ```
 VITE_FIREBASE_API_KEY=...
@@ -70,6 +85,17 @@ VITE_LOG_LEVEL=debug
 Notes:
 - `VITE_FIREBASE_VAPID_KEY` is required for web push.
 - `VITE_FUNCTIONS_BASE_URL` lets the frontend call the Functions emulator.
+- `npm run dev` reads `.env.development`.
+- `npm run build` reads `.env.production`.
+- `firebase deploy --only hosting --project dev` now builds in Vite `development` mode automatically.
+- After any manual deploy that creates or updates Hosting-backed 2nd gen functions, run `npm run firebase:postdeploy:public-routes -- --project <project-id>`.
+- Follow that with `npm run firebase:verify:public-routes -- --project <project-id>` to confirm the Cloud Run access state actually stuck.
+- If the deployment inherits an old plain runtime key, run `npm run firebase:cleanup:legacy-sheets-env -- --project <project-id>` to remove the stale `GOOGLE_SHEETS_API_KEY` override from `sheetsApi` and `systemHealth`.
+- Then run `npm run firebase:verify:sheets-runtime -- --project <project-id>` to confirm `sheetsApi` and `systemHealth` are still using Secret Manager `SHEETS_API_KEY` instead of a stale `GOOGLE_SHEETS_API_KEY`.
+- That sync is required in this repo because organization policy blocks the usual `allUsers` Cloud Run invoker path for newly deployed public functions.
+- Put emulator-only frontend overrides in `.env.development.local`, not `.env.development`.
+- `npm run dev:full` starts the Firebase emulators against the `dev` alias and loads Functions env from `functions/.env.dev`, plus any machine-local overrides from `functions/.env.local`.
+- Start from `functions/.env.local.example` when you need a local Functions override file.
 
 ## Firebase Services
 
@@ -87,11 +113,22 @@ Functions power the RSS proxy and push endpoints:
 - `POST /api/unregister-push-token`
 - `POST /api/send-push-notification`
 
+Health monitoring uses:
+
+- `/healthz.json` for static Hosting liveness
+- `/api/health` for backend readiness plus a live Sheets probe against a recently seen spreadsheet id when one is available
+
 Deploy with:
 
 ```bash
-firebase deploy --only functions,hosting
+firebase deploy --only functions,hosting --project dev
+npm run firebase:postdeploy:public-routes -- --project livegrid-dev-7acfc
+npm run firebase:verify:public-routes -- --project livegrid-dev-7acfc
+npm run firebase:cleanup:legacy-sheets-env -- --project livegrid-dev-7acfc
+npm run firebase:verify:sheets-runtime -- --project livegrid-dev-7acfc
 ```
+
+CI already runs that post-deploy sync automatically for production.
 
 ## Notifications Overview
 

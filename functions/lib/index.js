@@ -800,6 +800,17 @@ exports.systemHealth = (0, https_1.onRequest)({
             ? 'degraded'
             : 'ok';
     const payload = { status, checkedAt, checks };
+    for (const [checkName, check] of Object.entries(checks)) {
+        if (check.status === 'ok')
+            continue;
+        logging_1.log.warn('system.health_check_failed', {
+            checkedAt,
+            host: requestHost || undefined,
+            check: checkName,
+            checkStatus: check.status,
+            detail: check.detail || undefined
+        });
+    }
     if (checks.auth.status !== 'ok') {
         logging_1.log.warn('system.auth_health_failed', {
             checkedAt,

@@ -79,6 +79,34 @@ resource "google_logging_metric" "backend_health_failures" {
   filter      = "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"${var.region}\" AND jsonPayload.event=\"system.health_failed\""
 }
 
+resource "google_logging_metric" "health_check_failures" {
+  name        = "livegrid_health_check_failures"
+  description = "Count of individual backend health check failures grouped by subsystem."
+  filter      = "resource.type=\"cloud_run_revision\" AND resource.labels.location=\"${var.region}\" AND jsonPayload.event=\"system.health_check_failed\""
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+
+    labels {
+      key         = "check"
+      value_type  = "STRING"
+      description = "The specific backend health check that failed."
+    }
+
+    labels {
+      key         = "status"
+      value_type  = "STRING"
+      description = "The failing health check status."
+    }
+  }
+
+  label_extractors = {
+    check  = "EXTRACT(jsonPayload.check)"
+    status = "EXTRACT(jsonPayload.checkStatus)"
+  }
+}
+
 resource "google_logging_metric" "auth_health_failures" {
   name        = "livegrid_auth_health_failures"
   description = "Count of backend auth health check failures or degraded auth states."

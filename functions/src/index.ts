@@ -894,6 +894,16 @@ export const systemHealth = onRequest({
       : 'ok'
 
   const payload = { status, checkedAt, checks }
+  for (const [checkName, check] of Object.entries(checks)) {
+    if (check.status === 'ok') continue
+    log.warn('system.health_check_failed', {
+      checkedAt,
+      host: requestHost || undefined,
+      check: checkName,
+      checkStatus: check.status,
+      detail: check.detail || undefined
+    })
+  }
   if (checks.auth.status !== 'ok') {
     log.warn('system.auth_health_failed', {
       checkedAt,

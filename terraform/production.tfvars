@@ -17,3 +17,6 @@ observability_dashboard_id      = "projects/livegrid-c33c6/dashboards/f41fa337-e
 # Confirm these match the existing production project before apply.
 firestore_location_id  = "us-central1"
 app_engine_location_id = "us-central"
+
+# Optional: set these via TF_VAR_firebase_auth_google_client_id and
+# TF_VAR_firebase_auth_google_client_secret to let Terraform manage Google sign-in.

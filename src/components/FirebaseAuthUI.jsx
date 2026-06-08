@@ -9,6 +9,7 @@ import {
 } from 'firebase/auth'
 import { FaApple, FaEnvelope, FaGoogle } from 'react-icons/fa'
 import { auth, isFirebaseConfigured } from '../firebaseClient'
+import { describeAuthError } from '../authErrors'
 import { log } from '../logging.js'
 
 const googleProvider = new GoogleAuthProvider()
@@ -91,7 +92,7 @@ export default function FirebaseAuthUI({ onAppleSignInClick } = {}) {
     try {
       await signInWithRedirect(auth, provider)
     } catch (err) {
-      setLocalError(err?.message || 'Sign-in failed. Please try again.')
+      setLocalError(describeAuthError(err))
       setBusy(false)
     }
   }
@@ -116,7 +117,7 @@ export default function FirebaseAuthUI({ onAppleSignInClick } = {}) {
         await signInWithEmailAndPassword(auth, email, password)
       }
     } catch (err) {
-      setLocalError(err?.message || 'Email sign-in failed.')
+      setLocalError(describeAuthError(err))
       setBusy(false)
     }
   }
@@ -133,7 +134,7 @@ export default function FirebaseAuthUI({ onAppleSignInClick } = {}) {
       await sendPasswordResetEmail(auth, email)
       setLocalError('Password reset email sent.')
     } catch (err) {
-      setLocalError(err?.message || 'Password reset failed.')
+      setLocalError(describeAuthError(err))
     } finally {
       setBusy(false)
     }

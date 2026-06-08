@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { signInWithRedirect } from 'firebase/auth'
 
 vi.mock('firebase/auth', () => {
   class Provider {
@@ -18,6 +19,7 @@ vi.mock('firebase/auth', () => {
 describe('FirebaseAuthUI', () => {
   beforeEach(() => {
     vi.resetModules()
+    vi.clearAllMocks()
   })
 
   it('shows disabled message when firebase is not configured', async () => {
@@ -41,5 +43,20 @@ describe('FirebaseAuthUI', () => {
     fireEvent.click(emailButton)
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument()
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument()
+  })
+
+  it('shows a friendly message when Google sign-in is not configured', async () => {
+    signInWithRedirect.mockRejectedValueOnce({
+      code: 'auth/configuration-not-found',
+      message: 'Firebase: Error (auth/configuration-not-found).'
+    })
+    vi.doMock('../firebaseClient', () => ({
+      auth: {},
+      isFirebaseConfigured: true
+    }))
+    const { default: FirebaseAuthUI } = await import('./FirebaseAuthUI')
+    render(<FirebaseAuthUI />)
+    fireEvent.click(screen.getByRole('button', { name: /sign in with google/i }))
+    expect(await screen.findByText(/Google sign-in is not configured for this environment yet/i)).toBeInTheDocument()
   })
 })

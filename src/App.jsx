@@ -21,6 +21,7 @@ import {
 } from './pushNotifications'
 import { addMinutes } from './scheduleUtils.js'
 import { parseCsvSchedule, detectParserId, SCHEDULE_PARSERS, DEFAULT_SCHEDULE_PARSER_ID } from './schedule/parsers/registry.js'
+import { describeAuthError } from './authErrors'
 import { log } from './logging.js'
 import { reportEventSelected, reportVisitorOpened, startVisitorHeartbeat } from './telemetry.js'
 
@@ -2329,7 +2330,7 @@ export default function App() {
                     <FirebaseAuthUI onAppleSignInClick={handleAppleSignInNotice} />
                     {authError && (
                       <div style={{marginTop: '10px', fontSize: '0.78rem', color: '#fca5a5'}}>
-                        {authError.message || 'Sign-in failed. Please try again.'}
+                        {describeAuthError(authError)}
                       </div>
                     )}
                   </>
@@ -2756,6 +2757,7 @@ export default function App() {
               <option value="schedule.csv">schedule.csv (default)</option>
               <option value="2024 Brady Memorial - Schedule.csv">2024 Brady Memorial</option>
               <option value="2025 Spring Brake - Schedule.csv">2025 Spring Brake</option>
+              <option value="2026 Flatten The Curve - Schedule.csv">2026 Flatten The Curve</option>
               <option value="2026 New Year, New Gear - Schedule.csv">2026 New Year, New Gear</option>
             </select>
           </div>

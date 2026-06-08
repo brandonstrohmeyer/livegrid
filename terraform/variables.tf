@@ -50,6 +50,25 @@ variable "monitoring_host" {
   default     = null
 }
 
+variable "firebase_auth_authorized_domains" {
+  type        = list(string)
+  description = "Additional Firebase Auth authorized domains to allow for OAuth redirects."
+  default     = []
+}
+
+variable "firebase_auth_google_client_id" {
+  type        = string
+  description = "OAuth client id for enabling Firebase Google sign-in. Leave blank to skip managing the Google provider."
+  default     = ""
+}
+
+variable "firebase_auth_google_client_secret" {
+  type        = string
+  description = "OAuth client secret for enabling Firebase Google sign-in. Leave blank to skip managing the Google provider."
+  default     = ""
+  sensitive   = true
+}
+
 variable "manage_sheets_api_key" {
   type        = bool
   description = "Whether Terraform should create the Sheets API key and Secret Manager secret version for this environment."

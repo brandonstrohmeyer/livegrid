@@ -53,6 +53,8 @@ The deploy job checks out the exact tag, regenerates `build.json`, builds the ap
 
 That post-deploy sync applies Cloud Run's `--no-invoker-iam-check` setting to the functions referenced by `firebase.json` Hosting rewrites. This is a required part of deployment for this repo, because Firebase alone cannot make those Hosting-backed 2nd gen functions reachable in projects where organization policy blocks granting `allUsers` the Cloud Run invoker role.
 
+Terraform is not run by GitHub Actions in this repo. Infrastructure changes still require a local Terraform run from `terraform/`, using workspace `dev` with `development.tfvars` or workspace `prod` with `production.tfvars`.
+
 For local manual deploys, treat that sync step as part of the deploy contract too:
 
 ```bash

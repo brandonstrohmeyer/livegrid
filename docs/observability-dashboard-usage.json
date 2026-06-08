@@ -4,8 +4,6 @@
     "columns": 12,
     "tiles": [
       {
-        "xPos": 0,
-        "yPos": 0,
         "width": 3,
         "height": 4,
         "widget": {
@@ -28,7 +26,6 @@
       },
       {
         "xPos": 3,
-        "yPos": 0,
         "width": 3,
         "height": 4,
         "widget": {
@@ -51,7 +48,6 @@
       },
       {
         "xPos": 6,
-        "yPos": 0,
         "width": 3,
         "height": 4,
         "widget": {
@@ -74,7 +70,6 @@
       },
       {
         "xPos": 9,
-        "yPos": 0,
         "width": 3,
         "height": 4,
         "widget": {
@@ -96,7 +91,6 @@
         }
       },
       {
-        "xPos": 0,
         "yPos": 4,
         "width": 12,
         "height": 4,
@@ -115,7 +109,8 @@
                       "perSeriesAligner": "ALIGN_NEXT_OLDER"
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -128,7 +123,8 @@
                       "perSeriesAligner": "ALIGN_NEXT_OLDER"
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -141,7 +137,8 @@
                       "perSeriesAligner": "ALIGN_NEXT_OLDER"
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               }
             ],
             "yAxis": {
@@ -152,7 +149,6 @@
         }
       },
       {
-        "xPos": 0,
         "yPos": 8,
         "width": 6,
         "height": 4,
@@ -172,7 +168,8 @@
                       "crossSeriesReducer": "REDUCE_SUM"
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -186,7 +183,8 @@
                       "crossSeriesReducer": "REDUCE_SUM"
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               }
             ],
             "yAxis": {
@@ -220,7 +218,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -237,7 +236,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -254,7 +254,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               }
             ],
             "yAxis": {
@@ -265,7 +266,6 @@
         }
       },
       {
-        "xPos": 0,
         "yPos": 12,
         "width": 6,
         "height": 4,
@@ -284,7 +284,8 @@
                       "perSeriesAligner": "ALIGN_DELTA"
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -297,7 +298,8 @@
                       "perSeriesAligner": "ALIGN_DELTA"
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               }
             ],
             "yAxis": {
@@ -331,7 +333,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -348,7 +351,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               }
             ],
             "yAxis": {
@@ -359,7 +363,6 @@
         }
       },
       {
-        "xPos": 0,
         "yPos": 16,
         "width": 6,
         "height": 4,
@@ -381,7 +384,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               }
             ],
             "yAxis": {

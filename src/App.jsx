@@ -23,7 +23,12 @@ import { addMinutes } from './scheduleUtils.js'
 import { parseCsvSchedule, detectParserId, SCHEDULE_PARSERS, DEFAULT_SCHEDULE_PARSER_ID } from './schedule/parsers/registry.js'
 import { describeAuthError } from './authErrors'
 import { matchCachedEventForSheet, resolveSelectedScheduleState } from './eventResolution.js'
-import { anchorScheduleToEventDates, extractSpreadsheetId } from './schedule/eventWindow.js'
+import {
+  anchorScheduleToEventDates,
+  extractSpreadsheetId,
+  normalizeDateKey,
+  parseDateKeyToLocalDate
+} from './schedule/eventWindow.js'
 import { log } from './logging.js'
 import { reportEventSelected, reportVisitorOpened, startVisitorHeartbeat } from './telemetry.js'
 
@@ -336,6 +341,28 @@ function formatTimeUntil(milliseconds, session, nowWithOffset) {
   const minutes = totalMinutes % 60
   
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
+}
+
+function formatEventDateRange(startValue, endValue = startValue) {
+  const startDate = parseDateKeyToLocalDate(normalizeDateKey(startValue))
+  const endDate = parseDateKeyToLocalDate(normalizeDateKey(endValue || startValue))
+  if (!startDate || !endDate) return null
+
+  const sameDay = startDate.toDateString() === endDate.toDateString()
+  const sameYear = startDate.getFullYear() === endDate.getFullYear()
+  const dateFormat = new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  })
+  if (sameDay) return dateFormat.format(startDate)
+
+  const startFormat = new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' })
+  })
+  return `${startFormat.format(startDate)} - ${dateFormat.format(endDate)}`
 }
 
 export function getMobileSessionEndStatus(session, nowWithOffset) {
@@ -941,6 +968,33 @@ export default function App() {
     nowWithOffset
   ])
   const isScheduleActive = resolvedScheduleState.isScheduleActive
+  const eventDateRangeDisplay = useMemo(() => (
+    matchedEvent
+      ? formatEventDateRange(
+        matchedEvent.startDateKey || matchedEvent.startDate,
+        matchedEvent.endDateKey || matchedEvent.endDate || matchedEvent.startDateKey || matchedEvent.startDate
+      )
+      : null
+  ), [matchedEvent])
+  const inactiveScheduleMessage = useMemo(() => {
+    if (!hasSelectedSchedule || isScheduleActive) return null
+    const eventLabel = matchedEvent?.title || 'This event'
+    if (resolvedScheduleState.status === 'upcoming') {
+      const dateText = eventDateRangeDisplay ? ` Event dates: ${eventDateRangeDisplay}.` : ''
+      return `${eventLabel} is selected, but the live schedule has not started yet.${dateText}`
+    }
+    if (resolvedScheduleState.status === 'ended') {
+      const dateText = eventDateRangeDisplay ? ` The event dates were ${eventDateRangeDisplay}.` : ''
+      return `${eventLabel} is selected, but this event has already ended.${dateText}`
+    }
+    return resolvedScheduleState.inactiveReason || 'Waiting for the event window.'
+  }, [
+    eventDateRangeDisplay,
+    hasSelectedSchedule,
+    isScheduleActive,
+    matchedEvent,
+    resolvedScheduleState
+  ])
   const eventWindowDisplay = resolvedScheduleState.activeWindowStart && resolvedScheduleState.activeWindowEnd
     ? `${resolvedScheduleState.activeWindowStart.toLocaleString()} -> ${resolvedScheduleState.activeWindowEnd.toLocaleString()}`
     : 'Unavailable'
@@ -1196,7 +1250,7 @@ export default function App() {
             {!hasSelectedSchedule
               ? 'No Schedule Selected'
               : !isScheduleActive
-                ? 'Selected (inactive)'
+                ? 'Event selected'
               : isDataStale
                 ? 'Data Stale'
                 : connectionStatus === 'online'
@@ -1209,7 +1263,7 @@ export default function App() {
             {!hasSelectedSchedule
               ? 'Enter a Google Sheets URL to begin'
               : !isScheduleActive
-                ? (resolvedScheduleState.inactiveReason || 'Waiting for the event window.')
+                ? inactiveScheduleMessage
                 : (
                 <>
                   Last fetch: {lastFetchTimeDisplay}

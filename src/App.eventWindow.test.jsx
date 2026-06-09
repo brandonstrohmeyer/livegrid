@@ -103,7 +103,7 @@ describe('App event window state', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows an upcoming matched event as inactive in the debug panel', async () => {
+  it('shows an upcoming matched event as inactive with a user-facing date message', async () => {
     vi.setSystemTime(new Date(2026, 3, 1, 12, 0, 0))
 
     await renderAppWithEvent({
@@ -125,6 +125,8 @@ describe('App event window state', () => {
     expect(await screen.findByText(/Activation state: upcoming/i)).toBeInTheDocument()
     expect(screen.getByText(/Inactive reason: Selected event has not started yet\./i)).toBeInTheDocument()
     expect(screen.getByText(/Spreadsheet id: TEST_SHEET_ID/i)).toBeInTheDocument()
+    expect(screen.getByText('Event selected')).toBeInTheDocument()
+    expect(screen.getByText(/Test Weekend is selected, but the live schedule has not started yet\. Event dates: Apr 3 - Apr 5, 2026\./i)).toBeInTheDocument()
   })
 
   it('shows an active matched event with anchored current-session timing', async () => {
@@ -172,6 +174,8 @@ describe('App event window state', () => {
 
     expect(await screen.findByText(/Activation state: ended/i)).toBeInTheDocument()
     expect(screen.getByText(/Inactive reason: Selected event has already ended\./i)).toBeInTheDocument()
+    expect(screen.getByText('Event selected')).toBeInTheDocument()
+    expect(screen.getByText(/Test Weekend is selected, but this event has already ended\./i)).toBeInTheDocument()
   })
 
   it('keeps unmatched pasted sheets inactive', async () => {

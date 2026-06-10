@@ -184,6 +184,41 @@ describe('functions emulator', () => {
     expect(snap.empty).toBe(false)
     const doc = snap.docs[0].data()
     expect(doc.status).toBe('pending')
+    expect(doc.sessionStart?.toDate?.().toISOString()).toBe(sessionStart)
+    expect(doc.offsetMinutes).toBe(10)
+  })
+
+  it('does not sync stale scheduled notifications after the session start', async () => {
+    const auth = await createUser({ email: 'stale-sync-test@example.com', password: 'secret123' })
+    const fireAt = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    const sessionStart = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+    const response = await callFunction('syncScheduledNotifications', {
+      body: {
+        data: {
+          eventId: 'event-stale-sync',
+          desiredNotifications: [
+            {
+              runGroupId: 'HPDE 1',
+              sessionStartIsoUtc: sessionStart,
+              offsetMinutes: 10,
+              fireAtIsoUtc: fireAt,
+              payload: {
+                title: 'Stale session',
+                body: 'HPDE 1 already started',
+                data: { eventId: 'event-stale-sync' }
+              }
+            }
+          ]
+        }
+      },
+      idToken: auth.idToken
+    })
+    expect(response.ok).toBe(true)
+    const payload = await response.json()
+    expect(payload.result?.count ?? payload.count).toBe(0)
+
+    const snap = await db.collection('scheduledNotifications').where('eventId', '==', 'event-stale-sync').get()
+    expect(snap.empty).toBe(true)
   })
 
   it('removes pending notifications when syncing an empty event payload', async () => {

@@ -661,6 +661,15 @@ function parseTimestamp(isoUtc: string) {
   return Timestamp.fromDate(date)
 }
 
+function parseTimestampValue(value: any) {
+  if (!value) return null
+  if (value instanceof Timestamp) return value
+  if (typeof value?.toMillis === 'function') return Timestamp.fromMillis(value.toMillis())
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return Timestamp.fromDate(value)
+  if (typeof value === 'string') return parseTimestamp(value)
+  return null
+}
+
 export const clientTelemetry = onRequest({
   cors: true,
   region: SCHEDULER_REGION,
@@ -1064,6 +1073,33 @@ async function runSystemAuthHealthProbe(expectedHost?: string): Promise<SystemHe
 function computeNotificationExpiry(fireAt: Timestamp | null) {
   if (!fireAt) return null
   return Timestamp.fromMillis(fireAt.toMillis() + NOTIFICATION_TTL_MS)
+}
+
+function getScheduledSessionStart(data: any) {
+  return parseTimestampValue(data?.sessionStart)
+    || parseTimestampValue(data?.payload?.data?.startTime)
+    || parseTimestampValue(data?.payload?.data?.sessionStartIsoUtc)
+}
+
+function isScheduledNotificationStale(data: any, now: Timestamp) {
+  const sessionStart = getScheduledSessionStart(data)
+  return Boolean(sessionStart && sessionStart.toMillis() <= now.toMillis())
+}
+
+async function markScheduledNotificationStale(
+  docRef: FirebaseFirestore.DocumentReference,
+  data: any,
+  now: Timestamp,
+  reason = 'session_started'
+) {
+  await docRef.update({
+    status: 'stale',
+    staleReason: reason,
+    staleAt: now,
+    leaseUntil: null,
+    updatedAt: now,
+    expiresAt: computeNotificationExpiry(parseTimestampValue(data?.fireAt) || now)
+  })
 }
 
 function deriveScheduledNotificationStatus(data: any, now: Timestamp) {
@@ -1786,6 +1822,25 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
       throw new HttpsError('invalid-argument', 'Each notification requires payload.title and payload.body')
     }
 
+    const sessionStart = parseTimestamp(item.sessionStartIsoUtc)
+    if (!sessionStart) {
+      throw new HttpsError('invalid-argument', 'Each notification requires a valid sessionStartIsoUtc')
+    }
+    if (sessionStart.toMillis() <= normalizedNow.toMillis()) {
+      log.warn('notifications.sync_skip_stale', {
+        uid,
+        eventId,
+        runGroupId: item.runGroupId,
+        sessionStartIsoUtc: item.sessionStartIsoUtc
+      })
+      continue
+    }
+
+    const fireAt = parseTimestamp(item.fireAtIsoUtc)
+    if (!fireAt) {
+      throw new HttpsError('invalid-argument', 'Each notification requires a valid fireAtIsoUtc')
+    }
+
     const notifId = buildNotifId({
       uid,
       eventId,
@@ -1813,6 +1868,10 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
     if (!fireAt) {
       throw new HttpsError('invalid-argument', `Invalid fireAtIsoUtc for ${notifId}`)
     }
+    const sessionStart = parseTimestamp(item.sessionStartIsoUtc)
+    if (!sessionStart) {
+      throw new HttpsError('invalid-argument', `Invalid sessionStartIsoUtc for ${notifId}`)
+    }
 
     const docRef = scheduledCollection.doc(notifId)
     if (existing?.exists && existingStatus === 'sent') {
@@ -1833,8 +1892,10 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
       uid,
       eventId,
       runGroupId: item.runGroupId,
+      sessionStart,
       fireAt,
       expiresAt: computeNotificationExpiry(fireAt),
+      offsetMinutes: item.offsetMinutes,
       dedupeKey: notifId,
       payload,
       updatedAt: now
@@ -1995,6 +2056,19 @@ export async function dispatchScheduledNotifications(now: Timestamp | Date | { t
       log.debug('scheduler.skip_lease', { docId: doc.id })
       continue
     }
+
+    if (isScheduledNotificationStale(data, normalizedNow)) {
+      log.warn('scheduler.skip_stale_notification', {
+        docId: doc.id,
+        eventId: data.eventId || null,
+        runGroupId: data.runGroupId || null,
+        sessionStart: getScheduledSessionStart(data)?.toDate().toISOString() || null,
+        now: normalizedNow.toDate().toISOString()
+      })
+      await markScheduledNotificationStale(doc.ref, data, normalizedNow)
+      continue
+    }
+
     const uid = data.uid as string
     const payload = data.payload || {}
     const title = payload.title || 'LiveGrid'

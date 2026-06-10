@@ -207,4 +207,49 @@ describe('App event window state', () => {
     expect(await screen.findByText(/Activation state: unresolved/i)).toBeInTheDocument()
     expect(screen.getByText(/Fallback mode: floating weekday fallback/i)).toBeInTheDocument()
   })
+
+  it('does not offer past resolved events in the event selector', async () => {
+    vi.setSystemTime(new Date(2026, 5, 9, 12, 0, 0))
+
+    await renderAppWithEvent({
+      customUrl: '',
+      events: [
+        {
+          id: 'nasa:past-event',
+          source: 'nasa',
+          title: 'Past Weekend',
+          sheetUrl: 'https://docs.google.com/spreadsheets/d/PAST_SHEET_ID/edit',
+          spreadsheetId: 'PAST_SHEET_ID',
+          startDateKey: '2026-06-06',
+          endDateKey: '2026-06-07',
+          dateSource: 'title',
+          dateResolved: true
+        },
+        {
+          id: 'nasa:active-event',
+          source: 'nasa',
+          title: 'Active Weekend',
+          sheetUrl: 'https://docs.google.com/spreadsheets/d/ACTIVE_SHEET_ID/edit',
+          spreadsheetId: 'ACTIVE_SHEET_ID',
+          startDateKey: '2026-06-09',
+          endDateKey: '2026-06-10',
+          dateSource: 'title',
+          dateResolved: true
+        },
+        {
+          id: 'hod:unresolved-event',
+          source: 'hod',
+          title: 'Unresolved Weekend',
+          sheetUrl: 'https://docs.google.com/spreadsheets/d/UNRESOLVED_SHEET_ID/edit',
+          spreadsheetId: 'UNRESOLVED_SHEET_ID',
+          dateSource: null,
+          dateResolved: false
+        }
+      ]
+    })
+
+    expect(await screen.findByRole('option', { name: /\[NASA-SE\] Active Weekend/i })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /\[HOD-MA\] Unresolved Weekend/i })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /\[NASA-SE\] Past Weekend/i })).not.toBeInTheDocument()
+  })
 })

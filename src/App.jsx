@@ -365,6 +365,15 @@ function formatEventDateRange(startValue, endValue = startValue) {
   return `${startFormat.format(startDate)} - ${dateFormat.format(endDate)}`
 }
 
+function isCachedEventPast(event, now) {
+  if (!event || !(now instanceof Date) || Number.isNaN(now.getTime())) return false
+  const endDateKey = normalizeDateKey(event.endDateKey || event.endDate || event.startDateKey || event.startDate)
+  const endDate = parseDateKeyToLocalDate(endDateKey)
+  if (!endDate) return false
+  endDate.setHours(23, 59, 59, 999)
+  return endDate < now
+}
+
 export function getMobileSessionEndStatus(session, nowWithOffset) {
   if (!session || !session.start || !nowWithOffset) return null
   const end = session.end || addMinutes(session.start, session.duration || 20)
@@ -591,11 +600,13 @@ export default function App() {
     ...hodEvents
   ]), [rssEvents, hodEvents])
   const combinedEvents = useMemo(() => (
-    allCachedEvents.map(ev => ({
-      ...ev,
-      label: ev.label || (ev.source === 'hod' ? `[HOD-MA] ${ev.title}` : `[NASA-SE] ${ev.title}`)
-    }))
-  ), [allCachedEvents])
+    allCachedEvents
+      .filter(ev => !isCachedEventPast(ev, now))
+      .map(ev => ({
+        ...ev,
+        label: ev.label || (ev.source === 'hod' ? `[HOD-MA] ${ev.title}` : `[NASA-SE] ${ev.title}`)
+      }))
+  ), [allCachedEvents, now])
   const selectedEventId = useMemo(
     () => selectedRssEventId || selectedHodEventId || '',
     [selectedRssEventId, selectedHodEventId]
@@ -995,10 +1006,6 @@ export default function App() {
     matchedEvent,
     resolvedScheduleState
   ])
-  const eventWindowDisplay = resolvedScheduleState.activeWindowStart && resolvedScheduleState.activeWindowEnd
-    ? `${resolvedScheduleState.activeWindowStart.toLocaleString()} -> ${resolvedScheduleState.activeWindowEnd.toLocaleString()}`
-    : 'Unavailable'
-
   const lastFetchAdjusted = useMemo(() => {
     if (!hasSelectedSchedule) return null
     if (!lastSuccessfulFetch) return null
@@ -1304,12 +1311,6 @@ export default function App() {
               <MdLink style={{ fontSize: '1.1rem', color: '#4b5563', marginLeft: '2px' }} aria-label="Open Google Sheet" />
             )}
           </div>
-          {customUrl && (
-            <div style={{color: '#6b7280', fontSize: '0.7rem', marginTop: '6px'}}>
-              Event state: {resolvedScheduleState.status}<br/>
-              Event window: {eventWindowDisplay}
-            </div>
-          )}
         </div>
       )}
     </div>

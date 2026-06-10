@@ -1,0 +1,18 @@
+# One-time prod adoption imports for the auth resources introduced after the
+# initial Terraform migration. Rename this file to *.tf only while importing.
+
+import {
+  to = google_identity_platform_config.default
+  id = "projects/livegrid-c33c6/config"
+}
+
+# Enable this import only after you supply
+# TF_VAR_firebase_auth_google_client_id and
+# TF_VAR_firebase_auth_google_client_secret so
+# google_identity_platform_default_supported_idp_config.google[0]
+# actually exists in the Terraform graph.
+#
+# import {
+#   to = google_identity_platform_default_supported_idp_config.google[0]
+#   id = "projects/livegrid-c33c6/defaultSupportedIdpConfigs/google.com"
+# }

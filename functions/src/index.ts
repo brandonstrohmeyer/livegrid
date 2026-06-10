@@ -6,6 +6,13 @@ import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
 import path from 'path'
+import {
+  extractHodEventListingsFromOrg,
+  isResolvedEventDateRelevant,
+  resolveEventDateRangeFromCandidates,
+  toDateKey
+} from './eventDates'
+import { shouldDeactivateStaleEventCacheEntry } from './eventCache'
 import { log } from './logging'
 
 admin.initializeApp()
@@ -105,6 +112,7 @@ const NOTIFICATION_TTL_DAYS = 30
 const NOTIFICATION_TTL_MS = NOTIFICATION_TTL_DAYS * 24 * 60 * 60 * 1000
 
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets'
+const IDENTITY_TOOLKIT_ADMIN_BASE = 'https://identitytoolkit.googleapis.com/admin/v2'
 // Secret Manager-backed config must win over any stale legacy env var left on the service.
 const SHEETS_API_KEY = process.env.SHEETS_API_KEY || process.env.GOOGLE_SHEETS_API_KEY || ''
 const SHEETS_METADATA_TTL_MS = 15 * 60 * 1000
@@ -118,6 +126,9 @@ const HOD_MA_ORG_URL = 'https://www.motorsportreg.com/orgs/hooked-on-driving/mid
 const HOD_MA_EVENT_LIMIT = 20
 const HOD_MA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 const EVENT_CACHE_STALE_DAYS = 14
+const EVENT_CACHE_STALE_MS = EVENT_CACHE_STALE_DAYS * 24 * 60 * 60 * 1000
+const NASA_RSS_ITEM_LOOKBACK_DAYS = 60
+const NASA_RSS_ITEM_LOOKBACK_MS = NASA_RSS_ITEM_LOOKBACK_DAYS * 24 * 60 * 60 * 1000
 const EVENT_CACHE_MAX = 200
 const ACTIVE_USER_WINDOW_MS = 2 * 60 * 1000
 const ACTIVE_USERS_METRIC_TYPE = 'custom.googleapis.com/livegrid/active_users_current'
@@ -181,6 +192,11 @@ type SheetValues = {
 type CacheEntry<T> = {
   value: T
   expiresAt: number
+}
+
+type SystemHealthCheck = {
+  status: 'ok' | 'degraded' | 'error'
+  detail?: string
 }
 
 type ClientTelemetrySeverity = 'info' | 'warn' | 'error'
@@ -454,6 +470,10 @@ function logClientTelemetryEvent(payload: ClientTelemetryPayload, identifiers: {
   log.info('client.info', baseData, payload.error)
 }
 
+function getRuntimeProjectId() {
+  return process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || admin.app().options.projectId || ''
+}
+
 async function getMetadataAccessToken() {
   const response = await fetch('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', {
     headers: {
@@ -477,7 +497,7 @@ type GaugeMetricPoint = {
 
 async function writeGaugeMetrics(metrics: GaugeMetricPoint[], now = Timestamp.now()) {
   if (TEST_MODE || process.env.FUNCTIONS_EMULATOR === 'true') return
-  const projectId = process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT || admin.app().options.projectId
+  const projectId = getRuntimeProjectId()
   if (!projectId) {
     log.warn('presence.metric_project_missing')
     return
@@ -618,90 +638,6 @@ function extractPreferredSheetUrlFromHtml(html: string) {
   return extractSheetUrlFromHtml(html)
 }
 
-const MONTH_INDEX: Record<string, number> = {
-  jan: 0, january: 0,
-  feb: 1, february: 1,
-  mar: 2, march: 2,
-  apr: 3, april: 3,
-  may: 4,
-  jun: 5, june: 5,
-  jul: 6, july: 6,
-  aug: 7, august: 7,
-  sep: 8, sept: 8, september: 8,
-  oct: 9, october: 9,
-  nov: 10, november: 10,
-  dec: 11, december: 11
-}
-
-function buildUtcDate(year: number, monthIndex: number, day: number) {
-  return new Date(Date.UTC(year, monthIndex, day, 0, 0, 0))
-}
-
-function parseDateRangeFromText(text: string, fallbackDate?: Date | null) {
-  if (!text) return null
-  const normalized = text.replace(/\u2013|\u2014/g, '-')
-  const fallbackYear = fallbackDate?.getUTCFullYear?.() ?? fallbackDate?.getFullYear?.() ?? new Date().getUTCFullYear()
-
-  const monthRegex = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b[^0-9]*([0-9]{1,2})(?:\s*-\s*([0-9]{1,2}))?(?:[^0-9]+([0-9]{4}))?/i
-  const monthMatch = normalized.match(monthRegex)
-  if (monthMatch) {
-    const monthName = monthMatch[1].toLowerCase()
-    const monthIndex = MONTH_INDEX[monthName]
-    const startDay = parseInt(monthMatch[2], 10)
-    const endDay = monthMatch[3] ? parseInt(monthMatch[3], 10) : startDay
-    const year = monthMatch[4] ? parseInt(monthMatch[4], 10) : fallbackYear
-    if (!Number.isNaN(startDay) && monthIndex != null && !Number.isNaN(year)) {
-      const start = buildUtcDate(year, monthIndex, startDay)
-      const end = buildUtcDate(year, monthIndex, endDay)
-      return { start, end }
-    }
-  }
-
-  const numericRegex = /\b(\d{1,2})[\/-](\d{1,2})(?:\s*-\s*(\d{1,2}))?(?:[\/-](\d{2,4}))?/i
-  const numericMatch = normalized.match(numericRegex)
-  if (numericMatch) {
-    const month = parseInt(numericMatch[1], 10)
-    const startDay = parseInt(numericMatch[2], 10)
-    const endDay = numericMatch[3] ? parseInt(numericMatch[3], 10) : startDay
-    let year = numericMatch[4] ? parseInt(numericMatch[4], 10) : fallbackYear
-    if (year < 100) year += 2000
-    if (!Number.isNaN(month) && !Number.isNaN(startDay) && !Number.isNaN(year)) {
-      const monthIndex = Math.min(Math.max(month - 1, 0), 11)
-      const start = buildUtcDate(year, monthIndex, startDay)
-      const end = buildUtcDate(year, monthIndex, endDay)
-      return { start, end }
-    }
-  }
-
-  return null
-}
-
-function resolveEventDateRange({
-  title,
-  html,
-  fallbackDate
-}: {
-  title: string
-  html?: string | null
-  fallbackDate?: Date | null
-}) {
-  const fromTitle = parseDateRangeFromText(title, fallbackDate)
-  if (fromTitle) return fromTitle
-  if (html) {
-    const fromHtml = parseDateRangeFromText(html, fallbackDate)
-    if (fromHtml) return fromHtml
-  }
-  if (fallbackDate) {
-    const day = buildUtcDate(
-      fallbackDate.getUTCFullYear?.() ?? fallbackDate.getFullYear(),
-      fallbackDate.getUTCMonth?.() ?? fallbackDate.getMonth(),
-      fallbackDate.getUTCDate?.() ?? fallbackDate.getDate()
-    )
-    return { start: day, end: day }
-  }
-  return null
-}
-
 function buildRequestId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
@@ -728,6 +664,15 @@ function parseTimestamp(isoUtc: string) {
   if (Number.isNaN(date.getTime())) return null
   // Timestamp from firebase-admin/firestore avoids the emulator crash seen with admin.firestore.Timestamp.
   return Timestamp.fromDate(date)
+}
+
+function parseTimestampValue(value: any) {
+  if (!value) return null
+  if (value instanceof Timestamp) return value
+  if (typeof value?.toMillis === 'function') return Timestamp.fromMillis(value.toMillis())
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return Timestamp.fromDate(value)
+  if (typeof value === 'string') return parseTimestamp(value)
+  return null
 }
 
 export const clientTelemetry = onRequest({
@@ -836,11 +781,15 @@ export const systemHealth = onRequest({
   }
 
   const checkedAt = new Date().toISOString()
-  const checks: Record<string, { status: 'ok' | 'degraded' | 'error'; detail?: string }> = {
+  const requestHost = getRequestHost(req)
+  const checks: Record<string, SystemHealthCheck> = {
     firebaseAdmin: {
       status: admin.apps.length > 0 ? 'ok' : 'error'
     },
     firestore: {
+      status: 'ok'
+    },
+    auth: {
       status: 'ok'
     },
     sheetsConfig: {
@@ -861,14 +810,16 @@ export const systemHealth = onRequest({
     }
   }
 
-  try {
-    checks.sheetsProbe = await runSystemSheetsHealthProbe()
-  } catch (err: any) {
-    checks.sheetsProbe = {
+  const [authCheck, sheetsProbeCheck] = await Promise.all([
+    runSystemAuthHealthProbe(requestHost),
+    runSystemSheetsHealthProbe().catch((err: any): SystemHealthCheck => ({
       status: 'error',
       detail: err?.message || 'Sheet health probe failed'
-    }
-  }
+    }))
+  ])
+
+  checks.auth = authCheck
+  checks.sheetsProbe = sheetsProbeCheck
 
   const statuses = Object.values(checks).map(check => check.status)
   const status = statuses.includes('error')
@@ -878,6 +829,23 @@ export const systemHealth = onRequest({
       : 'ok'
 
   const payload = { status, checkedAt, checks }
+  for (const [checkName, check] of Object.entries(checks)) {
+    if (check.status === 'ok') continue
+    log.warn('system.health_check_failed', {
+      checkedAt,
+      host: requestHost || undefined,
+      check: checkName,
+      checkStatus: check.status,
+      detail: check.detail || undefined
+    })
+  }
+  if (checks.auth.status !== 'ok') {
+    log.warn('system.auth_health_failed', {
+      checkedAt,
+      host: requestHost || undefined,
+      auth: checks.auth
+    })
+  }
   if (status === 'ok') {
     log.info('system.health_ok', payload)
   } else {
@@ -952,7 +920,7 @@ async function collectSystemSheetsHealthProbeIds() {
   return candidates.slice(0, targetCount)
 }
 
-async function runSystemSheetsHealthProbe(): Promise<{ status: 'ok' | 'degraded' | 'error'; detail?: string }> {
+async function runSystemSheetsHealthProbe(): Promise<SystemHealthCheck> {
   const candidates = await collectSystemSheetsHealthProbeIds()
   if (!candidates.length) {
     return {
@@ -981,9 +949,162 @@ async function runSystemSheetsHealthProbe(): Promise<{ status: 'ok' | 'degraded'
   }
 }
 
+function normalizeHost(value: unknown) {
+  if (typeof value !== 'string') return ''
+  const host = value.split(',')[0]?.trim().toLowerCase() || ''
+  if (!host) return ''
+  return host.replace(/:\d+$/, '')
+}
+
+function getRequestHost(req: { get: (name: string) => string | undefined }) {
+  return normalizeHost(req.get('x-forwarded-host') || req.get('host') || '')
+}
+
+function shouldValidateAuthorizedDomain(host: string) {
+  if (!host || host === 'localhost' || host === '127.0.0.1') return false
+  if (host.endsWith('.cloudfunctions.net') || host.endsWith('.run.app')) return false
+  return true
+}
+
+async function fetchIdentityToolkitAdminResource<T>(accessToken: string, resourcePath: string): Promise<T> {
+  const response = await fetch(`${IDENTITY_TOOLKIT_ADMIN_BASE}/${resourcePath}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Identity Toolkit request failed (${response.status}): ${text}`)
+  }
+  return response.json() as Promise<T>
+}
+
+async function runSystemAuthHealthProbe(expectedHost?: string): Promise<SystemHealthCheck> {
+  if (TEST_MODE || process.env.FUNCTIONS_EMULATOR === 'true') {
+    return {
+      status: 'ok',
+      detail: 'Auth probe skipped in test/emulator mode.'
+    }
+  }
+
+  const projectId = getRuntimeProjectId()
+  if (!projectId) {
+    return {
+      status: 'error',
+      detail: 'Unable to resolve runtime project id for Firebase Auth probe.'
+    }
+  }
+
+  try {
+    await admin.auth().listUsers(1)
+  } catch (err: any) {
+    return {
+      status: 'error',
+      detail: `Firebase Auth Admin probe failed: ${err?.message || 'listUsers failed'}`
+    }
+  }
+
+  try {
+    const accessToken = await getMetadataAccessToken()
+    const [projectConfig, googleProviderConfig] = await Promise.all([
+      fetchIdentityToolkitAdminResource<{
+        authorizedDomains?: string[]
+        signIn?: {
+          email?: {
+            enabled?: boolean
+          }
+        }
+      }>(accessToken, `projects/${projectId}/config`),
+      fetchIdentityToolkitAdminResource<{
+        enabled?: boolean
+      }>(accessToken, `projects/${projectId}/defaultSupportedIdpConfigs/google.com`)
+    ])
+
+    const issues: string[] = []
+    const warnings: string[] = []
+
+    if (googleProviderConfig?.enabled !== true) {
+      issues.push('Google sign-in is disabled.')
+    }
+
+    if (projectConfig?.signIn?.email?.enabled !== true) {
+      warnings.push('Email/password sign-in is disabled.')
+    }
+
+    const normalizedExpectedHost = normalizeHost(expectedHost || '')
+    const authorizedDomains = Array.isArray(projectConfig.authorizedDomains)
+      ? projectConfig.authorizedDomains.map(domain => normalizeHost(domain)).filter(Boolean)
+      : []
+
+    if (normalizedExpectedHost && shouldValidateAuthorizedDomain(normalizedExpectedHost) && !authorizedDomains.includes(normalizedExpectedHost)) {
+      issues.push(`Authorized domains are missing ${normalizedExpectedHost}.`)
+    }
+
+    const confirmations = [
+      'Firebase Auth Admin API reachable.',
+      googleProviderConfig?.enabled === true ? 'Google sign-in enabled.' : '',
+      projectConfig?.signIn?.email?.enabled === true ? 'Email/password sign-in enabled.' : '',
+      normalizedExpectedHost && shouldValidateAuthorizedDomain(normalizedExpectedHost) && authorizedDomains.includes(normalizedExpectedHost)
+        ? `Authorized domains include ${normalizedExpectedHost}.`
+        : ''
+    ].filter(Boolean)
+
+    if (issues.length) {
+      return {
+        status: 'error',
+        detail: [...issues, ...warnings, ...confirmations].join(' ')
+      }
+    }
+
+    if (warnings.length) {
+      return {
+        status: 'degraded',
+        detail: [...warnings, ...confirmations].join(' ')
+      }
+    }
+
+    return {
+      status: 'ok',
+      detail: confirmations.join(' ')
+    }
+  } catch (err: any) {
+    return {
+      status: 'error',
+      detail: `Firebase Auth config probe failed: ${err?.message || 'config fetch failed'}`
+    }
+  }
+}
+
 function computeNotificationExpiry(fireAt: Timestamp | null) {
   if (!fireAt) return null
   return Timestamp.fromMillis(fireAt.toMillis() + NOTIFICATION_TTL_MS)
+}
+
+function getScheduledSessionStart(data: any) {
+  return parseTimestampValue(data?.sessionStart)
+    || parseTimestampValue(data?.payload?.data?.startTime)
+    || parseTimestampValue(data?.payload?.data?.sessionStartIsoUtc)
+}
+
+function isScheduledNotificationStale(data: any, now: Timestamp) {
+  const sessionStart = getScheduledSessionStart(data)
+  return Boolean(sessionStart && sessionStart.toMillis() <= now.toMillis())
+}
+
+async function markScheduledNotificationStale(
+  docRef: FirebaseFirestore.DocumentReference,
+  data: any,
+  now: Timestamp,
+  reason = 'session_started'
+) {
+  await docRef.update({
+    status: 'stale',
+    staleReason: reason,
+    staleAt: now,
+    leaseUntil: null,
+    updatedAt: now,
+    expiresAt: computeNotificationExpiry(parseTimestampValue(data?.fireAt) || now)
+  })
 }
 
 function deriveScheduledNotificationStatus(data: any, now: Timestamp) {
@@ -1051,9 +1172,12 @@ type NormalizedEvent = {
   eventId: string
   title: string
   sheetUrl: string
+  spreadsheetId: string | null
   eventUrl: string | null
-  startDate: Date
-  endDate: Date
+  startDate: Date | null
+  endDate: Date | null
+  dateSource: string | null
+  dateResolved: boolean
   sourceUpdatedAt: Date | null
 }
 
@@ -1061,68 +1185,107 @@ function buildEventId(source: string, seed: string) {
   return `${source}-${createHash('sha256').update(seed).digest('hex').slice(0, 24)}`
 }
 
-function normalizeNasaEvents(rssXml: string) {
+async function fetchNasaEventPageHtml(eventUrl: string) {
+  if (!eventUrl) return null
+  const fixture = readFixtureText('nasa-event.html')
+  if (fixture) return fixture
+
+  try {
+    const response = await fetch(eventUrl)
+    if (!response.ok) return null
+    return await response.text()
+  } catch (err) {
+    log.warn('nasa_feed.event_page_fetch_failed', { eventUrl }, err)
+    return null
+  }
+}
+
+async function normalizeNasaEvents(rssXml: string) {
   const items = Array.from(rssXml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)).map(match => match[1])
   const now = Date.now()
-  const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000
+  const nowDate = new Date(now)
   const events: NormalizedEvent[] = []
 
-  items.forEach((itemXml, index) => {
+  for (const [index, itemXml] of items.entries()) {
     const titleRaw = extractXmlTag(itemXml, 'title') || `Event ${index + 1}`
     const title = decodeHtmlEntities(titleRaw).trim()
     const pubDateStr = extractXmlTag(itemXml, 'pubDate') || extractXmlTag(itemXml, 'dc:date')
     const pubDate = pubDateStr ? new Date(pubDateStr) : null
-    if (!pubDate || Number.isNaN(pubDate.getTime())) return
-    if (now - pubDate.getTime() > sixtyDaysMs) return
+    if (!pubDate || Number.isNaN(pubDate.getTime())) continue
+    const isOldRssItem = now - pubDate.getTime() > NASA_RSS_ITEM_LOOKBACK_MS
 
     const content = extractXmlTag(itemXml, 'content:encoded')
       || extractXmlTag(itemXml, 'description')
       || ''
     const sheetUrl = extractPreferredSheetUrlFromHtml(content)
-    if (!sheetUrl) return
+    if (!sheetUrl) continue
 
     const eventUrl = extractXmlTag(itemXml, 'link')
     const guid = extractXmlTag(itemXml, 'guid') || eventUrl || title
     const eventId = buildEventId('nasa', guid)
+    let eventPageHtml = ''
+    let dateResolution = resolveEventDateRangeFromCandidates([
+      { text: title, source: 'title' },
+      { text: content, source: 'feed-content' }
+    ], { fallbackDate: pubDate })
 
-    const range = resolveEventDateRange({ title, html: content, fallbackDate: pubDate })
-    if (!range) return
+    if (!dateResolution.dateResolved && eventUrl) {
+      eventPageHtml = (await fetchNasaEventPageHtml(eventUrl)) || ''
+      if (eventPageHtml) {
+        dateResolution = resolveEventDateRangeFromCandidates([
+          { text: title, source: 'title' },
+          { text: content, source: 'feed-content' },
+          { text: eventPageHtml, source: 'event-page' }
+        ], { fallbackDate: pubDate })
+      }
+    }
+
+    if (isOldRssItem && !isResolvedEventDateRelevant(dateResolution.end || dateResolution.start, nowDate, EVENT_CACHE_STALE_MS)) {
+      continue
+    }
 
     events.push({
       source: 'nasa',
       eventId,
       title,
       sheetUrl,
+      spreadsheetId: extractSpreadsheetId(sheetUrl),
       eventUrl: eventUrl || null,
-      startDate: range.start,
-      endDate: range.end,
+      startDate: dateResolution.start,
+      endDate: dateResolution.end,
+      dateSource: dateResolution.dateSource,
+      dateResolved: dateResolution.dateResolved,
       sourceUpdatedAt: pubDate
     })
-  })
+  }
 
   return events
 }
 
-function normalizeHodEvents(events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string }>) {
+function normalizeHodEvents(events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string; listingDateText?: string | null }>) {
   const normalized: NormalizedEvent[] = []
   events.forEach((event, index) => {
-    const { eventUrl, title, sheetUrl, html } = event
+    const { eventUrl, title, sheetUrl, html, listingDateText } = event
     const idMatch = eventUrl.match(/-(\d{5,})(?:\/)?$/)
     const eventIdSeed = idMatch && idMatch[1] ? `hod-${idMatch[1]}` : `${eventUrl}-${index}`
     const eventId = buildEventId('hod', eventIdSeed)
-    const range = resolveEventDateRange({ title, html })
-    const fallback = new Date()
-    const startDate = range?.start || fallback
-    const endDate = range?.end || startDate
+    const dateResolution = resolveEventDateRangeFromCandidates([
+      { text: listingDateText, source: 'org-listing' },
+      { text: title, source: 'title' },
+      { text: html, source: 'event-page' }
+    ])
 
     normalized.push({
       source: 'hod',
       eventId,
       title,
       sheetUrl,
+      spreadsheetId: extractSpreadsheetId(sheetUrl),
       eventUrl,
-      startDate,
-      endDate,
+      startDate: dateResolution.start,
+      endDate: dateResolution.end,
+      dateSource: dateResolution.dateSource,
+      dateResolved: dateResolution.dateResolved,
       sourceUpdatedAt: null
     })
   })
@@ -1141,9 +1304,12 @@ async function refreshEventCacheForSource(source: 'nasa' | 'hod', events: Normal
     const payloadHash = createHash('sha256').update(JSON.stringify({
       title: event.title,
       sheetUrl: event.sheetUrl,
+      spreadsheetId: event.spreadsheetId,
       eventUrl: event.eventUrl,
-      startDate: event.startDate.toISOString(),
-      endDate: event.endDate.toISOString()
+      startDateKey: toDateKey(event.startDate),
+      endDateKey: toDateKey(event.endDate),
+      dateSource: event.dateSource,
+      dateResolved: event.dateResolved
     })).digest('hex')
 
     batch.set(docRef, {
@@ -1151,10 +1317,15 @@ async function refreshEventCacheForSource(source: 'nasa' | 'hod', events: Normal
       eventId: event.eventId,
       title: event.title,
       sheetUrl: event.sheetUrl,
+      spreadsheetId: event.spreadsheetId,
       eventUrl: event.eventUrl,
       label: event.source === 'nasa' ? `[NASA-SE] ${event.title}` : `[HOD-MA] ${event.title}`,
-      startDate: Timestamp.fromDate(event.startDate),
-      endDate: Timestamp.fromDate(event.endDate),
+      startDate: event.startDate ? Timestamp.fromDate(event.startDate) : null,
+      endDate: event.endDate ? Timestamp.fromDate(event.endDate) : null,
+      startDateKey: toDateKey(event.startDate),
+      endDateKey: toDateKey(event.endDate),
+      dateSource: event.dateSource,
+      dateResolved: event.dateResolved,
       sourceUpdatedAt: event.sourceUpdatedAt ? Timestamp.fromDate(event.sourceUpdatedAt) : null,
       updatedAt: now,
       lastSeenAt: now,
@@ -1167,7 +1338,7 @@ async function refreshEventCacheForSource(source: 'nasa' | 'hod', events: Normal
     await batch.commit()
   }
 
-  const staleCutoff = Timestamp.fromMillis(now.toMillis() - EVENT_CACHE_STALE_DAYS * 24 * 60 * 60 * 1000)
+  const staleCutoff = Timestamp.fromMillis(now.toMillis() - EVENT_CACHE_STALE_MS)
   const staleSnap = await eventCacheCollection
     .where('source', '==', source)
     .where('lastSeenAt', '<', staleCutoff)
@@ -1176,10 +1347,15 @@ async function refreshEventCacheForSource(source: 'nasa' | 'hod', events: Normal
 
   if (!staleSnap.empty) {
     const staleBatch = db.batch()
+    let staleUpdateCount = 0
     staleSnap.docs.forEach(doc => {
+      if (!shouldDeactivateStaleEventCacheEntry(doc.data(), now.toDate(), EVENT_CACHE_STALE_MS)) return
       staleBatch.set(doc.ref, { isActive: false, updatedAt: now }, { merge: true })
+      staleUpdateCount += 1
     })
-    await staleBatch.commit()
+    if (staleUpdateCount > 0) {
+      await staleBatch.commit()
+    }
   }
 }
 
@@ -1187,13 +1363,14 @@ async function fetchHodEventDetails() {
   const fixtureOrg = readFixtureText('hod-org.html')
   const fixtureEvent = readFixtureText('hod-event.html')
   if (fixtureOrg && fixtureEvent) {
-    const eventLinks = extractEventLinksFromOrg(fixtureOrg).slice(0, HOD_MA_EVENT_LIMIT)
-    const events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string }> = []
-    for (const eventUrl of eventLinks) {
+    const listings = extractHodEventListingsFromOrg(fixtureOrg).slice(0, HOD_MA_EVENT_LIMIT)
+    const events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string; listingDateText?: string | null }> = []
+    for (const listing of listings) {
+      const eventUrl = listing.eventUrl
       const sheetUrl = extractSheetUrlFromHtml(fixtureEvent)
       if (!sheetUrl) continue
       const title = extractEventTitle(fixtureEvent, eventUrl)
-      events.push({ eventUrl, title, sheetUrl, html: fixtureEvent })
+      events.push({ eventUrl, title, sheetUrl, html: fixtureEvent, listingDateText: listing.dateText })
     }
     return events
   }
@@ -1205,10 +1382,11 @@ async function fetchHodEventDetails() {
     throw new Error(`HOD org fetch failed (${upstream.status})`)
   }
   const body = await upstream.text()
-  const eventLinks = extractEventLinksFromOrg(body).slice(0, HOD_MA_EVENT_LIMIT)
-  const events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string }> = []
+  const listings = extractHodEventListingsFromOrg(body).slice(0, HOD_MA_EVENT_LIMIT)
+  const events: Array<{ eventUrl: string; title: string; sheetUrl: string; html: string; listingDateText?: string | null }> = []
 
-  for (const eventUrl of eventLinks) {
+  for (const listing of listings) {
+    const eventUrl = listing.eventUrl
     try {
       const eventResp = await fetch(eventUrl, {
         headers: { 'User-Agent': HOD_MA_USER_AGENT }
@@ -1219,7 +1397,7 @@ async function fetchHodEventDetails() {
       if (!sheetUrl) continue
 
       const title = extractEventTitle(eventHtml, eventUrl)
-      events.push({ eventUrl, title, sheetUrl, html: eventHtml })
+      events.push({ eventUrl, title, sheetUrl, html: eventHtml, listingDateText: listing.dateText })
     } catch (err) {
       log.warn('hod_ma.event_inspect_failed', { eventUrl }, err)
     }
@@ -1278,9 +1456,10 @@ export const hodMaEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, a
     const fixtureOrg = readFixtureText('hod-org.html')
     const fixtureEvent = readFixtureText('hod-event.html')
     if (fixtureOrg && fixtureEvent) {
-      const eventLinks = extractEventLinksFromOrg(fixtureOrg).slice(0, HOD_MA_EVENT_LIMIT)
+      const listings = extractHodEventListingsFromOrg(fixtureOrg).slice(0, HOD_MA_EVENT_LIMIT)
       const events = []
-      for (const eventUrl of eventLinks) {
+      for (const listing of listings) {
+        const eventUrl = listing.eventUrl
         const sheetUrl = extractSheetUrlFromHtml(fixtureEvent)
         if (!sheetUrl) continue
         const title = extractEventTitle(fixtureEvent, eventUrl)
@@ -1306,10 +1485,11 @@ export const hodMaEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, a
     }
 
     const body = await upstream.text()
-    const eventLinks = extractEventLinksFromOrg(body).slice(0, HOD_MA_EVENT_LIMIT)
+    const listings = extractHodEventListingsFromOrg(body).slice(0, HOD_MA_EVENT_LIMIT)
     const events = []
 
-    for (const eventUrl of eventLinks) {
+    for (const listing of listings) {
+      const eventUrl = listing.eventUrl
       try {
         const eventResp = await fetch(eventUrl, {
           headers: { 'User-Agent': HOD_MA_USER_AGENT }
@@ -1357,7 +1537,7 @@ export const refreshEventCache = onSchedule(
         }
         rssXml = nasaResp.ok ? await nasaResp.text() : ''
       }
-      const nasaEvents = rssXml ? normalizeNasaEvents(rssXml) : []
+      const nasaEvents = rssXml ? await normalizeNasaEvents(rssXml) : []
 
       const hodRaw = await fetchHodEventDetails()
       const hodEvents = normalizeHodEvents(hodRaw)
@@ -1405,14 +1585,19 @@ export const cachedEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, 
           source: data.source,
           eventId: data.eventId,
           title: data.title,
-        sheetUrl: data.sheetUrl,
-        eventUrl: data.eventUrl || null,
-        label: data.label,
-        startDate: data.startDate?.toDate?.().toISOString?.() || null,
-        endDate: data.endDate?.toDate?.().toISOString?.() || null,
-        updatedAt: data.updatedAt?.toDate?.().toISOString?.() || null
-      }
-    })
+          sheetUrl: data.sheetUrl,
+          spreadsheetId: data.spreadsheetId || extractSpreadsheetId(data.sheetUrl) || null,
+          eventUrl: data.eventUrl || null,
+          label: data.label,
+          startDate: data.startDate?.toDate?.().toISOString?.() || null,
+          endDate: data.endDate?.toDate?.().toISOString?.() || null,
+          startDateKey: data.startDateKey || toDateKey(data.startDate?.toDate?.() || null),
+          endDateKey: data.endDateKey || toDateKey(data.endDate?.toDate?.() || null),
+          dateSource: data.dateSource || null,
+          dateResolved: data.dateResolved !== false && Boolean(data.startDate || data.startDateKey),
+          updatedAt: data.updatedAt?.toDate?.().toISOString?.() || null
+        }
+      })
 
     res.status(200).json({
       events,
@@ -1448,10 +1633,15 @@ export const testSeedEventCache = onRequest({ cors: true, region: SCHEDULER_REGI
     eventId,
     title: body.title || 'Test Event',
     sheetUrl: body.sheetUrl || 'https://docs.google.com/spreadsheets/d/TEST_SHEET_ID/edit',
+    spreadsheetId: body.spreadsheetId || extractSpreadsheetId(body.sheetUrl || 'https://docs.google.com/spreadsheets/d/TEST_SHEET_ID/edit') || null,
     eventUrl: body.eventUrl || null,
     label: body.label || `[${source.toUpperCase()}] Test Event`,
     startDate: Timestamp.fromDate(startDate),
     endDate: Timestamp.fromDate(endDate),
+    startDateKey: body.startDateKey || toDateKey(startDate),
+    endDateKey: body.endDateKey || toDateKey(endDate),
+    dateSource: body.dateSource || 'seed',
+    dateResolved: body.dateResolved !== false,
     updatedAt: Timestamp.now(),
     lastSeenAt: Timestamp.now(),
     isActive: true
@@ -1646,6 +1836,25 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
       throw new HttpsError('invalid-argument', 'Each notification requires payload.title and payload.body')
     }
 
+    const sessionStart = parseTimestamp(item.sessionStartIsoUtc)
+    if (!sessionStart) {
+      throw new HttpsError('invalid-argument', 'Each notification requires a valid sessionStartIsoUtc')
+    }
+    if (sessionStart.toMillis() <= normalizedNow.toMillis()) {
+      log.warn('notifications.sync_skip_stale', {
+        uid,
+        eventId,
+        runGroupId: item.runGroupId,
+        sessionStartIsoUtc: item.sessionStartIsoUtc
+      })
+      continue
+    }
+
+    const fireAt = parseTimestamp(item.fireAtIsoUtc)
+    if (!fireAt) {
+      throw new HttpsError('invalid-argument', 'Each notification requires a valid fireAtIsoUtc')
+    }
+
     const notifId = buildNotifId({
       uid,
       eventId,
@@ -1673,6 +1882,10 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
     if (!fireAt) {
       throw new HttpsError('invalid-argument', `Invalid fireAtIsoUtc for ${notifId}`)
     }
+    const sessionStart = parseTimestamp(item.sessionStartIsoUtc)
+    if (!sessionStart) {
+      throw new HttpsError('invalid-argument', `Invalid sessionStartIsoUtc for ${notifId}`)
+    }
 
     const docRef = scheduledCollection.doc(notifId)
     if (existing?.exists && existingStatus === 'sent') {
@@ -1693,8 +1906,10 @@ export const syncScheduledNotifications = onCall({ region: SCHEDULER_REGION }, a
       uid,
       eventId,
       runGroupId: item.runGroupId,
+      sessionStart,
       fireAt,
       expiresAt: computeNotificationExpiry(fireAt),
+      offsetMinutes: item.offsetMinutes,
       dedupeKey: notifId,
       payload,
       updatedAt: now
@@ -1855,6 +2070,19 @@ export async function dispatchScheduledNotifications(now: Timestamp | Date | { t
       log.debug('scheduler.skip_lease', { docId: doc.id })
       continue
     }
+
+    if (isScheduledNotificationStale(data, normalizedNow)) {
+      log.warn('scheduler.skip_stale_notification', {
+        docId: doc.id,
+        eventId: data.eventId || null,
+        runGroupId: data.runGroupId || null,
+        sessionStart: getScheduledSessionStart(data)?.toDate().toISOString() || null,
+        now: normalizedNow.toDate().toISOString()
+      })
+      await markScheduledNotificationStale(doc.ref, data, normalizedNow)
+      continue
+    }
+
     const uid = data.uid as string
     const payload = data.payload || {}
     const title = payload.title || 'LiveGrid'

@@ -19,6 +19,29 @@ output "firebase_web_app_config" {
   sensitive   = true
 }
 
+output "firebase_auth_authorized_domains" {
+  value       = local.firebase_auth_authorized_domains
+  description = "Firebase Auth authorized domains managed by Terraform."
+}
+
+output "firebase_auth_google_hosted_origins" {
+  value = [
+    for domain in local.firebase_auth_authorized_domains :
+    "https://${domain}"
+    if !contains(["localhost", "127.0.0.1"], domain)
+  ]
+  description = "Hosted JavaScript origins to use if you manually create a Google OAuth web client."
+}
+
+output "firebase_auth_google_hosted_redirect_uris" {
+  value = [
+    for domain in local.firebase_auth_authorized_domains :
+    "https://${domain}/__/auth/handler"
+    if !contains(["localhost", "127.0.0.1"], domain)
+  ]
+  description = "Hosted redirect URIs to use if you manually create a Google OAuth web client."
+}
+
 output "sheets_api_key_secret_name" {
   value       = var.manage_sheets_api_key ? google_secret_manager_secret.sheets_api_key[0].secret_id : null
   description = "Secret Manager secret id for the deployed Sheets API key."

@@ -9,3 +9,6 @@ deploy_service_account_email  = "firebase-adminsdk-fbsvc@livegrid-dev-7acfc.iam.
 # Set these before the first apply if they differ from the production values.
 firestore_location_id  = "nam5"
 app_engine_location_id = "us-central"
+
+# Optional: set these via TF_VAR_firebase_auth_google_client_id and
+# TF_VAR_firebase_auth_google_client_secret to let Terraform manage Google sign-in.

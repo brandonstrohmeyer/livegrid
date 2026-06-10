@@ -4,8 +4,6 @@
     "columns": 12,
     "tiles": [
       {
-        "xPos": 0,
-        "yPos": 0,
         "width": 3,
         "height": 4,
         "widget": {
@@ -20,6 +18,13 @@
                 }
               }
             },
+            "thresholds": [
+              {
+                "value": 1,
+                "color": "RED",
+                "direction": "BELOW"
+              }
+            ],
             "sparkChartView": {
               "sparkChartType": "SPARK_LINE"
             }
@@ -28,7 +33,6 @@
       },
       {
         "xPos": 3,
-        "yPos": 0,
         "width": 3,
         "height": 4,
         "widget": {
@@ -43,6 +47,13 @@
                 }
               }
             },
+            "thresholds": [
+              {
+                "value": 1,
+                "color": "RED",
+                "direction": "BELOW"
+              }
+            ],
             "sparkChartView": {
               "sparkChartType": "SPARK_LINE"
             }
@@ -51,7 +62,6 @@
       },
       {
         "xPos": 6,
-        "yPos": 0,
         "width": 3,
         "height": 4,
         "widget": {
@@ -67,6 +77,13 @@
                 }
               }
             },
+            "thresholds": [
+              {
+                "value": 0.5,
+                "color": "RED",
+                "direction": "ABOVE"
+              }
+            ],
             "sparkChartView": {
               "sparkChartType": "SPARK_LINE"
             }
@@ -75,15 +92,14 @@
       },
       {
         "xPos": 9,
-        "yPos": 0,
         "width": 3,
         "height": 4,
         "widget": {
-          "title": "Client Errors",
+          "title": "Auth Health Failures",
           "scorecard": {
             "timeSeriesQuery": {
               "timeSeriesFilter": {
-                "filter": "metric.type=\"logging.googleapis.com/user/livegrid_client_errors\"",
+                "filter": "metric.type=\"logging.googleapis.com/user/livegrid_auth_health_failures\"",
                 "aggregation": {
                   "alignmentPeriod": "60s",
                   "perSeriesAligner": "ALIGN_DELTA",
@@ -91,6 +107,13 @@
                 }
               }
             },
+            "thresholds": [
+              {
+                "value": 0.5,
+                "color": "RED",
+                "direction": "ABOVE"
+              }
+            ],
             "sparkChartView": {
               "sparkChartType": "SPARK_LINE"
             }
@@ -98,7 +121,40 @@
         }
       },
       {
-        "xPos": 0,
+        "yPos": 4,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Backend Failures By Check",
+          "xyChart": {
+            "dataSets": [
+              {
+                "plotType": "LINE",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_health_check_failures\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_DELTA",
+                      "crossSeriesReducer": "REDUCE_SUM",
+                      "groupByFields": [
+                        "metric.label.check"
+                      ]
+                    }
+                  }
+                },
+                "targetAxis": "Y1"
+              }
+            ],
+            "yAxis": {
+              "label": "count/min",
+              "scale": "LINEAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 6,
         "yPos": 4,
         "width": 6,
         "height": 4,
@@ -118,7 +174,8 @@
                       "crossSeriesReducer": "REDUCE_SUM"
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -132,21 +189,38 @@
                       "crossSeriesReducer": "REDUCE_SUM"
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
-                "legendTemplate": "rejected telemetry",
+                "legendTemplate": "auth health failures",
                 "timeSeriesQuery": {
                   "timeSeriesFilter": {
-                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_client_telemetry_rejected\"",
+                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_auth_health_failures\"",
                     "aggregation": {
                       "alignmentPeriod": "60s",
                       "perSeriesAligner": "ALIGN_DELTA",
                       "crossSeriesReducer": "REDUCE_SUM"
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
+              },
+              {
+                "plotType": "LINE",
+                "legendTemplate": "client auth failures",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"logging.googleapis.com/user/livegrid_client_auth_failures\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_DELTA",
+                      "crossSeriesReducer": "REDUCE_SUM"
+                    }
+                  }
+                },
+                "targetAxis": "Y1"
               }
             ],
             "yAxis": {
@@ -157,8 +231,7 @@
         }
       },
       {
-        "xPos": 6,
-        "yPos": 4,
+        "yPos": 8,
         "width": 6,
         "height": 4,
         "widget": {
@@ -180,7 +253,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -197,7 +271,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -214,7 +289,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               }
             ],
             "yAxis": {
@@ -225,7 +301,7 @@
         }
       },
       {
-        "xPos": 0,
+        "xPos": 6,
         "yPos": 8,
         "width": 6,
         "height": 4,
@@ -248,7 +324,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               },
               {
                 "plotType": "LINE",
@@ -265,7 +342,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               }
             ],
             "yAxis": {
@@ -276,8 +354,7 @@
         }
       },
       {
-        "xPos": 6,
-        "yPos": 8,
+        "yPos": 12,
         "width": 6,
         "height": 4,
         "widget": {
@@ -298,7 +375,8 @@
                       ]
                     }
                   }
-                }
+                },
+                "targetAxis": "Y1"
               }
             ],
             "yAxis": {
@@ -309,14 +387,14 @@
         }
       },
       {
-        "xPos": 0,
+        "xPos": 6,
         "yPos": 12,
         "width": 6,
         "height": 4,
         "widget": {
-          "title": "Health And Sheets Logs",
+          "title": "Health Failure Detail Logs",
           "logsPanel": {
-            "filter": "resource.type=\"cloud_run_revision\" AND ((resource.labels.service_name=\"sheetsapi\" AND severity>=WARNING) OR jsonPayload.event=\"system.health_failed\")",
+            "filter": "resource.type=\"cloud_run_revision\" AND ((resource.labels.service_name=\"sheetsapi\" AND severity>=WARNING) OR jsonPayload.event=\"system.health_failed\" OR jsonPayload.event=\"system.health_check_failed\" OR jsonPayload.event=\"system.auth_health_failed\")",
             "resourceNames": [
               "projects/${project_id}"
             ]
@@ -324,14 +402,13 @@
         }
       },
       {
-        "xPos": 6,
-        "yPos": 12,
-        "width": 6,
+        "yPos": 16,
+        "width": 12,
         "height": 4,
         "widget": {
-          "title": "Client And Dispatcher Incident Logs",
+          "title": "Client, Auth, And Dispatcher Incident Logs",
           "logsPanel": {
-            "filter": "resource.type=\"cloud_run_revision\" AND ((jsonPayload.event=\"client.error\" OR jsonPayload.event=\"client.health_failed\" OR jsonPayload.event=\"client.telemetry_rejected\") OR (resource.labels.service_name=\"schedulednotificationdispatcher\" AND severity>=WARNING))",
+            "filter": "resource.type=\"cloud_run_revision\" AND (((jsonPayload.event=\"client.error\" AND jsonPayload.sourceEvent=\"auth.redirect_failed\") OR jsonPayload.event=\"client.health_failed\" OR jsonPayload.event=\"client.telemetry_rejected\") OR (resource.labels.service_name=\"schedulednotificationdispatcher\" AND severity>=WARNING))",
             "resourceNames": [
               "projects/${project_id}"
             ]

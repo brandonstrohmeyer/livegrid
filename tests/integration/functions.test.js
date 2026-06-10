@@ -128,6 +128,7 @@ describe('functions emulator', () => {
     const payload = await response.json()
     expect(payload.checks).toBeTruthy()
     expect(payload.checks.firebaseAdmin.status).toBe('ok')
+    expect(payload.checks.auth.status).toBe('ok')
     expect(payload.checks.sheetsProbe.status).toBe('ok')
   })
 
@@ -183,5 +184,86 @@ describe('functions emulator', () => {
     expect(snap.empty).toBe(false)
     const doc = snap.docs[0].data()
     expect(doc.status).toBe('pending')
+    expect(doc.sessionStart?.toDate?.().toISOString()).toBe(sessionStart)
+    expect(doc.offsetMinutes).toBe(10)
+  })
+
+  it('does not sync stale scheduled notifications after the session start', async () => {
+    const auth = await createUser({ email: 'stale-sync-test@example.com', password: 'secret123' })
+    const fireAt = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    const sessionStart = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+    const response = await callFunction('syncScheduledNotifications', {
+      body: {
+        data: {
+          eventId: 'event-stale-sync',
+          desiredNotifications: [
+            {
+              runGroupId: 'HPDE 1',
+              sessionStartIsoUtc: sessionStart,
+              offsetMinutes: 10,
+              fireAtIsoUtc: fireAt,
+              payload: {
+                title: 'Stale session',
+                body: 'HPDE 1 already started',
+                data: { eventId: 'event-stale-sync' }
+              }
+            }
+          ]
+        }
+      },
+      idToken: auth.idToken
+    })
+    expect(response.ok).toBe(true)
+    const payload = await response.json()
+    expect(payload.result?.count ?? payload.count).toBe(0)
+
+    const snap = await db.collection('scheduledNotifications').where('eventId', '==', 'event-stale-sync').get()
+    expect(snap.empty).toBe(true)
+  })
+
+  it('removes pending notifications when syncing an empty event payload', async () => {
+    const auth = await createUser({ email: 'cleanup-test@example.com', password: 'secret123' })
+    const fireAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+    const sessionStart = new Date(Date.now() + 30 * 60 * 1000).toISOString()
+
+    const seedResp = await callFunction('syncScheduledNotifications', {
+      body: {
+        data: {
+          eventId: 'event-cleanup',
+          desiredNotifications: [
+            {
+              runGroupId: 'HPDE 1',
+              sessionStartIsoUtc: sessionStart,
+              offsetMinutes: 10,
+              fireAtIsoUtc: fireAt,
+              payload: {
+                title: 'Upcoming session',
+                body: 'HPDE 1 starts soon',
+                data: { eventId: 'event-cleanup' }
+              }
+            }
+          ]
+        }
+      },
+      idToken: auth.idToken
+    })
+    expect(seedResp.ok).toBe(true)
+
+    let snap = await db.collection('scheduledNotifications').where('eventId', '==', 'event-cleanup').get()
+    expect(snap.empty).toBe(false)
+
+    const cleanupResp = await callFunction('syncScheduledNotifications', {
+      body: {
+        data: {
+          eventId: 'event-cleanup',
+          desiredNotifications: []
+        }
+      },
+      idToken: auth.idToken
+    })
+    expect(cleanupResp.ok).toBe(true)
+
+    snap = await db.collection('scheduledNotifications').where('eventId', '==', 'event-cleanup').get()
+    expect(snap.empty).toBe(true)
   })
 })

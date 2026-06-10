@@ -87,6 +87,7 @@ Notes:
 - `VITE_FUNCTIONS_BASE_URL` lets the frontend call the Functions emulator.
 - `npm run dev` reads `.env.development`.
 - `npm run build` reads `.env.production`.
+- Terraform now manages the base Firebase Auth config and authorized domains. To have Terraform also manage Google sign-in, provide `TF_VAR_firebase_auth_google_client_id` and `TF_VAR_firebase_auth_google_client_secret`.
 - `firebase deploy --only hosting --project dev` now builds in Vite `development` mode automatically.
 - After any manual deploy that creates or updates Hosting-backed 2nd gen functions, run `npm run firebase:postdeploy:public-routes -- --project <project-id>`.
 - Follow that with `npm run firebase:verify:public-routes -- --project <project-id>` to confirm the Cloud Run access state actually stuck.
@@ -99,11 +100,62 @@ Notes:
 
 ## Firebase Services
 
+### Terraform
+
+Terraform is applied locally; there is no GitHub Actions workflow that runs `terraform plan` or `terraform apply`.
+
+Terraform state uses the GCS backend in `terraform/backend.tf`:
+
+```text
+bucket = "stro-livegrid-tfstate"
+prefix = "terraform/state"
+```
+
+Workspace names are short environment names:
+
+- Dev: `dev`
+- Prod: `prod`
+
+Use the matching tfvars file for each workspace:
+
+```bash
+cd terraform
+
+terraform init
+
+terraform workspace select dev
+terraform plan -var-file=development.tfvars
+terraform apply -var-file=development.tfvars
+
+terraform workspace select prod
+terraform plan -var-file=production.tfvars
+terraform apply -var-file=production.tfvars
+```
+
+Authenticate locally with Google Cloud before running Terraform:
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project livegrid-dev-7acfc
+gcloud auth application-default set-quota-project livegrid-dev-7acfc
+```
+
+For production, switch the active project and quota project to `livegrid-c33c6` before planning or applying.
+
 ### Auth + Preferences Sync
 
 - Sign-in supports Google, Apple, and email/password.
 - Preferences are stored locally when signed out.
 - When signed in, preferences sync to Firestore under `users/{uid}`.
+
+Manual Google sign-in setup after Terraform:
+
+1. Run `terraform apply` for the target workspace first. This config now enables Firebase Auth itself, turns on email/password sign-in, and manages the authorized domains.
+2. Run `terraform output firebase_auth_google_hosted_origins` and `terraform output firebase_auth_google_hosted_redirect_uris` to get the exact hosted origins and `__/auth/handler` redirect URIs for that environment.
+3. In the Firebase console, open `Authentication` -> `Sign-in method` -> `Google`, enable the provider, and choose the support email.
+4. If Firebase prompts for or links you to an OAuth client, use the Terraform outputs for the hosted origins and redirect URIs.
+5. Retry sign-in. Once Google sign-in works, optionally capture the resulting OAuth client id/secret and feed them back into Terraform with `TF_VAR_firebase_auth_google_client_id` and `TF_VAR_firebase_auth_google_client_secret` so Terraform can manage the Google provider state too.
 
 ### Cloud Functions + Hosting
 
@@ -116,7 +168,7 @@ Functions power the RSS proxy and push endpoints:
 Health monitoring uses:
 
 - `/healthz.json` for static Hosting liveness
-- `/api/health` for backend readiness plus a live Sheets probe against a recently seen spreadsheet id when one is available
+- `/api/health` for backend readiness plus a live Sheets probe and Firebase Auth configuration checks for the deployed host
 
 Deploy with:
 

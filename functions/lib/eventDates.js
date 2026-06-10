@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.toDateKey = toDateKey;
+exports.parseDateKeyToUtcDate = parseDateKeyToUtcDate;
+exports.isResolvedEventDateRelevant = isResolvedEventDateRelevant;
 exports.parseDateRangeFromText = parseDateRangeFromText;
 exports.resolveEventDateRangeFromCandidates = resolveEventDateRangeFromCandidates;
 exports.extractHodEventListingsFromOrg = extractHodEventListingsFromOrg;
@@ -66,6 +68,26 @@ function toDateKey(date) {
     const month = String(date.getUTCMonth() + 1).padStart(2, '0');
     const day = String(date.getUTCDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+}
+function parseDateKeyToUtcDate(dateKey) {
+    if (!dateKey || typeof dateKey !== 'string')
+        return null;
+    const match = dateKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match)
+        return null;
+    const year = parseInt(match[1], 10);
+    const monthIndex = parseInt(match[2], 10) - 1;
+    const day = parseInt(match[3], 10);
+    if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || !Number.isFinite(day))
+        return null;
+    return buildUtcDate(year, monthIndex, day);
+}
+function isResolvedEventDateRelevant(endDate, now, graceMs = 0) {
+    if (!isValidDate(endDate) || !isValidDate(now))
+        return false;
+    const endOfEventDay = buildUtcDate(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate());
+    endOfEventDay.setUTCHours(23, 59, 59, 999);
+    return endOfEventDay.getTime() + graceMs >= now.getTime();
 }
 function parseDateRangeFromText(text, fallbackDate) {
     if (!text)

@@ -90,6 +90,32 @@ export function toDateKey(date: Date | null | undefined) {
   return `${year}-${month}-${day}`
 }
 
+export function parseDateKeyToUtcDate(dateKey: string | null | undefined) {
+  if (!dateKey || typeof dateKey !== 'string') return null
+  const match = dateKey.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return null
+  const year = parseInt(match[1], 10)
+  const monthIndex = parseInt(match[2], 10) - 1
+  const day = parseInt(match[3], 10)
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || !Number.isFinite(day)) return null
+  return buildUtcDate(year, monthIndex, day)
+}
+
+export function isResolvedEventDateRelevant(
+  endDate: Date | null | undefined,
+  now: Date,
+  graceMs = 0
+) {
+  if (!isValidDate(endDate) || !isValidDate(now)) return false
+  const endOfEventDay = buildUtcDate(
+    endDate!.getUTCFullYear(),
+    endDate!.getUTCMonth(),
+    endDate!.getUTCDate()
+  )
+  endOfEventDay.setUTCHours(23, 59, 59, 999)
+  return endOfEventDay.getTime() + graceMs >= now.getTime()
+}
+
 export function parseDateRangeFromText(text: string, fallbackDate?: Date | null): DateRange | null {
   if (!text) return null
 

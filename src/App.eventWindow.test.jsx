@@ -119,6 +119,7 @@ describe('App event window state', () => {
     vi.setSystemTime(new Date(2026, 3, 1, 12, 0, 0))
 
     await renderAppWithEvent({
+      prefs: { selectedDay: 'Saturday' },
       events: [
         {
           id: 'nasa:event-1',

@@ -252,6 +252,63 @@ describe('scheduled notification dispatcher', () => {
     expect(doc.data()?.status).toBe('sent')
   })
 
+  it('marks due notifications stale instead of sending after the session start', async () => {
+    const { uid } = await seedUserWithTokens({ email: 'stale-session@example.com', tokens: ['token-ok'] })
+    const nowMs = Date.now()
+    const fireAt = admin.firestore.Timestamp.fromMillis(nowMs - 10 * 60 * 1000)
+    const sessionStart = admin.firestore.Timestamp.fromMillis(nowMs - 5 * 60 * 1000)
+
+    await db.collection('scheduledNotifications').doc('stale-session').set({
+      uid,
+      eventId: 'event-stale-dispatch',
+      runGroupId: 'HPDE 1',
+      status: 'pending',
+      leaseUntil: null,
+      fireAt,
+      sessionStart,
+      payload: { title: 'Stale', body: 'Do not send', data: {} },
+      dedupeKey: 'stale-session',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    })
+
+    const dispatchResp = await callFunction('testDispatchScheduledNotifications', { method: 'POST' })
+    expect(dispatchResp.ok).toBe(true)
+
+    const doc = await db.collection('scheduledNotifications').doc('stale-session').get()
+    expect(doc.data()?.status).toBe('stale')
+    expect(doc.data()?.staleReason).toBe('session_started')
+    expect(doc.data()?.sentAt).toBeUndefined()
+  })
+
+  it('does not retry stuck sending notifications after the session start', async () => {
+    const { uid } = await seedUserWithTokens({ email: 'stale-stuck-session@example.com', tokens: ['token-ok'] })
+    const nowMs = Date.now()
+    const fireAt = admin.firestore.Timestamp.fromMillis(nowMs - 15 * 60 * 1000)
+    const sessionStart = admin.firestore.Timestamp.fromMillis(nowMs - 10 * 60 * 1000)
+    const leaseUntil = admin.firestore.Timestamp.fromMillis(nowMs - 2 * 60 * 1000)
+
+    await db.collection('scheduledNotifications').doc('stale-stuck-lease').set({
+      uid,
+      eventId: 'event-stale-stuck',
+      runGroupId: 'HPDE 1',
+      status: 'sending',
+      leaseUntil,
+      fireAt,
+      sessionStart,
+      payload: { title: 'Stale stuck', body: 'Do not retry', data: {} },
+      dedupeKey: 'stale-stuck-lease',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    })
+
+    const dispatchResp = await callFunction('testDispatchScheduledNotifications', { method: 'POST' })
+    expect(dispatchResp.ok).toBe(true)
+
+    const doc = await db.collection('scheduledNotifications').doc('stale-stuck-lease').get()
+    expect(doc.data()?.status).toBe('stale')
+    expect(doc.data()?.staleReason).toBe('session_started')
+    expect(doc.data()?.sentAt).toBeUndefined()
+  })
+
   it('repairs missing status during sync before dispatching', async () => {
     const auth = await createUser({ email: 'missing-status@example.com', password: 'secret123' })
     const uid = auth.localId

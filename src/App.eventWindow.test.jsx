@@ -12,34 +12,46 @@ vi.mock('./firebaseClient', () => ({
   ensureFirestorePersistence: () => Promise.resolve()
 }))
 
-function buildSheetsTabResponse() {
+function buildSheetsTabResponse({
+  spreadsheetTitle = 'Test Weekend',
+  tabs = [{ sheetId: 123, title: 'Saturday' }]
+} = {}) {
   return {
-    spreadsheetTitle: 'Test Weekend',
-    tabs: [{ sheetId: 123, title: 'Saturday' }]
+    spreadsheetTitle,
+    tabs
   }
 }
 
-function buildSheetsValuesResponse() {
+function buildSheetsValuesResponse({
+  spreadsheetTitle = 'Test Weekend',
+  sheetTitle = 'Saturday',
+  rows = [
+    ['Saturday', '', '', '', ''],
+    ['8:00 AM', '20', 'HPDE 1', '', ''],
+    ['8:20 AM', '20', 'HPDE 2', '', '']
+  ]
+} = {}) {
   return {
-    spreadsheetTitle: 'Test Weekend',
-    sheetTitle: 'Saturday',
+    spreadsheetTitle,
+    sheetTitle,
     headers: ['Time', 'Duration', 'Session', 'Classroom', 'Notes'],
-    rows: [
-      ['Saturday', '', '', '', ''],
-      ['8:00 AM', '20', 'HPDE 1', '', ''],
-      ['8:20 AM', '20', 'HPDE 2', '', '']
-    ]
+    rows
   }
 }
 
 async function renderAppWithEvent({
   customUrl = 'https://docs.google.com/spreadsheets/d/TEST_SHEET_ID/edit#gid=123',
-  events = []
+  spreadsheetId = 'TEST_SHEET_ID',
+  events = [],
+  prefs = {},
+  tabsResponse,
+  valuesResponse
 } = {}) {
   window.localStorage.setItem(
     'nasaDashboardPrefs',
     JSON.stringify({
-      customUrl
+      customUrl,
+      ...prefs
     })
   )
 
@@ -56,21 +68,21 @@ async function renderAppWithEvent({
     if (url.includes('sheets/resolve')) {
       return {
         ok: true,
-        json: async () => ({ spreadsheetId: 'TEST_SHEET_ID' })
+        json: async () => ({ spreadsheetId })
       }
     }
 
-    if (url.includes('/sheets/TEST_SHEET_ID/tabs')) {
+    if (url.includes(`/sheets/${spreadsheetId}/tabs`)) {
       return {
         ok: true,
-        json: async () => buildSheetsTabResponse()
+        json: async () => buildSheetsTabResponse(tabsResponse)
       }
     }
 
-    if (url.includes('/sheets/TEST_SHEET_ID/tab/123')) {
+    if (url.includes(`/sheets/${spreadsheetId}/tab/123`)) {
       return {
         ok: true,
-        json: async () => buildSheetsValuesResponse()
+        json: async () => buildSheetsValuesResponse(valuesResponse)
       }
     }
 
@@ -107,6 +119,7 @@ describe('App event window state', () => {
     vi.setSystemTime(new Date(2026, 3, 1, 12, 0, 0))
 
     await renderAppWithEvent({
+      prefs: { selectedDay: 'Saturday' },
       events: [
         {
           id: 'nasa:event-1',
@@ -251,5 +264,48 @@ describe('App event window state', () => {
     expect(await screen.findByRole('option', { name: /\[NASA-SE\] Active Weekend/i })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: /\[HOD-MA\] Unresolved Weekend/i })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: /\[NASA-SE\] Past Weekend/i })).not.toBeInTheDocument()
+  })
+
+  it('renders an unmapped selected sheet day without using parser dates for the event window', async () => {
+    const savannahSheetId = '175rBaDl6dds924rlAcfHFvfIF98HC3jyH_OgvM45W6Q'
+    vi.setSystemTime(new Date(2026, 5, 10, 9, 38, 38))
+
+    await renderAppWithEvent({
+      customUrl: `https://docs.google.com/spreadsheets/d/${savannahSheetId}/`,
+      spreadsheetId: savannahSheetId,
+      prefs: { selectedDay: 'Sunday' },
+      tabsResponse: {
+        spreadsheetTitle: '2025 Savannah Sizzler',
+        tabs: [{ sheetId: 123, title: 'Schedule' }]
+      },
+      valuesResponse: {
+        spreadsheetTitle: '2025 Savannah Sizzler',
+        sheetTitle: 'Schedule',
+        rows: [
+          ['Friday', '', '', '', ''],
+          ['7:30 AM', '600', 'Thunder Race #1', '', ''],
+          ['Sunday', '', '', '', ''],
+          ['7:30 AM', '30', 'Thunder Race #2', '', '']
+        ]
+      },
+      events: [
+        {
+          id: 'nasa:savannah-sizzler',
+          source: 'nasa',
+          title: '2025 Savannah Sizzler',
+          sheetUrl: `https://docs.google.com/spreadsheets/d/${savannahSheetId}/`,
+          spreadsheetId: savannahSheetId,
+          startDateKey: '2026-09-04',
+          endDateKey: '2026-09-05',
+          dateSource: 'title',
+          dateResolved: true
+        }
+      ]
+    })
+
+    expect(await screen.findByText(/Activation state: upcoming/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/2025 Savannah Sizzler - Schedule/i).length).toBeGreaterThan(0)
+    expect(screen.getByText(/Anchored window start:/i).textContent).toContain('9/4/2026')
+    expect(screen.getByText(/Anchored window start:/i).textContent).not.toContain('6/10/2026')
   })
 })

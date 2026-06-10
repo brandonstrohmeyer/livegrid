@@ -47,6 +47,7 @@ const crypto_1 = require("crypto");
 const fs_1 = require("fs");
 const path_1 = __importDefault(require("path"));
 const eventDates_1 = require("./eventDates");
+const eventCache_1 = require("./eventCache");
 const logging_1 = require("./logging");
 admin.initializeApp();
 const db = admin.firestore();
@@ -152,6 +153,9 @@ const HOD_MA_ORG_URL = 'https://www.motorsportreg.com/orgs/hooked-on-driving/mid
 const HOD_MA_EVENT_LIMIT = 20;
 const HOD_MA_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const EVENT_CACHE_STALE_DAYS = 14;
+const EVENT_CACHE_STALE_MS = EVENT_CACHE_STALE_DAYS * 24 * 60 * 60 * 1000;
+const NASA_RSS_ITEM_LOOKBACK_DAYS = 60;
+const NASA_RSS_ITEM_LOOKBACK_MS = NASA_RSS_ITEM_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
 const EVENT_CACHE_MAX = 200;
 const ACTIVE_USER_WINDOW_MS = 2 * 60 * 1000;
 const ACTIVE_USERS_METRIC_TYPE = 'custom.googleapis.com/livegrid/active_users_current';
@@ -1065,7 +1069,7 @@ async function fetchNasaEventPageHtml(eventUrl) {
 async function normalizeNasaEvents(rssXml) {
     const items = Array.from(rssXml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)).map(match => match[1]);
     const now = Date.now();
-    const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000;
+    const nowDate = new Date(now);
     const events = [];
     for (const [index, itemXml] of items.entries()) {
         const titleRaw = extractXmlTag(itemXml, 'title') || `Event ${index + 1}`;
@@ -1074,8 +1078,7 @@ async function normalizeNasaEvents(rssXml) {
         const pubDate = pubDateStr ? new Date(pubDateStr) : null;
         if (!pubDate || Number.isNaN(pubDate.getTime()))
             continue;
-        if (now - pubDate.getTime() > sixtyDaysMs)
-            continue;
+        const isOldRssItem = now - pubDate.getTime() > NASA_RSS_ITEM_LOOKBACK_MS;
         const content = extractXmlTag(itemXml, 'content:encoded')
             || extractXmlTag(itemXml, 'description')
             || '';
@@ -1099,6 +1102,9 @@ async function normalizeNasaEvents(rssXml) {
                     { text: eventPageHtml, source: 'event-page' }
                 ], { fallbackDate: pubDate });
             }
+        }
+        if (isOldRssItem && !(0, eventDates_1.isResolvedEventDateRelevant)(dateResolution.end || dateResolution.start, nowDate, EVENT_CACHE_STALE_MS)) {
+            continue;
         }
         events.push({
             source: 'nasa',
@@ -1186,7 +1192,7 @@ async function refreshEventCacheForSource(source, events) {
     if (events.length) {
         await batch.commit();
     }
-    const staleCutoff = firestore_1.Timestamp.fromMillis(now.toMillis() - EVENT_CACHE_STALE_DAYS * 24 * 60 * 60 * 1000);
+    const staleCutoff = firestore_1.Timestamp.fromMillis(now.toMillis() - EVENT_CACHE_STALE_MS);
     const staleSnap = await eventCacheCollection
         .where('source', '==', source)
         .where('lastSeenAt', '<', staleCutoff)
@@ -1194,10 +1200,16 @@ async function refreshEventCacheForSource(source, events) {
         .get();
     if (!staleSnap.empty) {
         const staleBatch = db.batch();
+        let staleUpdateCount = 0;
         staleSnap.docs.forEach(doc => {
+            if (!(0, eventCache_1.shouldDeactivateStaleEventCacheEntry)(doc.data(), now.toDate(), EVENT_CACHE_STALE_MS))
+                return;
             staleBatch.set(doc.ref, { isActive: false, updatedAt: now }, { merge: true });
+            staleUpdateCount += 1;
         });
-        await staleBatch.commit();
+        if (staleUpdateCount > 0) {
+            await staleBatch.commit();
+        }
     }
 }
 async function fetchHodEventDetails() {

@@ -10,7 +10,6 @@ import {
 import { FaApple, FaEnvelope, FaGoogle } from 'react-icons/fa'
 import { auth, isFirebaseConfigured } from '../firebaseClient'
 import { describeAuthError } from '../authErrors'
-import { log } from '../logging.js'
 
 const googleProvider = new GoogleAuthProvider()
 googleProvider.setCustomParameters({ prompt: 'select_account' })
@@ -26,56 +25,11 @@ export default function FirebaseAuthUI({ onAppleSignInClick } = {}) {
   const emailFormRef = useRef(null)
   const cardRef = useRef(null)
   const [lockedWidth, setLockedWidth] = useState(null)
-  const debugAuthLayout = true
-  const logAuthLayout = useCallback((label) => {
-    if (!debugAuthLayout) return
-    const card = cardRef.current
-    const sidebarContainer = card?.closest('.ps-sidebar-container')
-    const accountPanel = card?.closest('.account-panel')
-    const buttons = card ? Array.from(card.querySelectorAll('.auth-btn')) : []
-    const metrics = (el) => {
-      if (!el) return null
-      const rect = el.getBoundingClientRect()
-      const style = window.getComputedStyle(el)
-      return {
-        tag: el.tagName,
-        className: el.className,
-        width: Math.round(rect.width),
-        height: Math.round(rect.height),
-        clientWidth: el.clientWidth,
-        scrollWidth: el.scrollWidth,
-        offsetWidth: el.offsetWidth,
-        paddingX: `${style.paddingLeft} ${style.paddingRight}`,
-        borderX: `${style.borderLeftWidth} ${style.borderRightWidth}`,
-        boxSizing: style.boxSizing,
-        display: style.display
-      }
-    }
-    const buttonMetrics = buttons.map((btn, index) => ({
-      index,
-      text: btn.textContent?.trim(),
-      ...metrics(btn)
-    }))
-    log.debug('auth_layout.metrics', {
-      label,
-      showEmail,
-      lockedWidth,
-      card: metrics(card),
-      accountPanel: metrics(accountPanel),
-      sidebarContainer: metrics(sidebarContainer),
-      buttonMetrics
-    })
-  }, [debugAuthLayout, lockedWidth, showEmail])
-  const measureCardWidth = useCallback((label = 'measure') => {
+  const measureCardWidth = useCallback(() => {
     if (!cardRef.current) return
     const width = Math.round(cardRef.current.getBoundingClientRect().width)
-    setLockedWidth(prev => {
-      if (debugAuthLayout && prev !== width) {
-        log.debug('auth_layout.locked_width_change', { label, prev, next: width })
-      }
-      return prev === width ? prev : width
-    })
-  }, [debugAuthLayout])
+    setLockedWidth(prev => prev === width ? prev : width)
+  }, [])
 
   if (!isFirebaseConfigured) {
     return (
@@ -156,7 +110,7 @@ export default function FirebaseAuthUI({ onAppleSignInClick } = {}) {
 
   useLayoutEffect(() => {
     if (showEmail) return
-    measureCardWidth('layout-effect')
+    measureCardWidth()
   }, [showEmail, measureCardWidth])
 
   useLayoutEffect(() => {
@@ -164,7 +118,7 @@ export default function FirebaseAuthUI({ onAppleSignInClick } = {}) {
     if (!cardRef.current) return undefined
     if (typeof ResizeObserver === 'undefined') return undefined
     const observer = new ResizeObserver(() => {
-      measureCardWidth('resize-observer')
+      measureCardWidth()
     })
     observer.observe(cardRef.current)
     return () => observer.disconnect()
@@ -173,28 +127,10 @@ export default function FirebaseAuthUI({ onAppleSignInClick } = {}) {
   useEffect(() => {
     if (showEmail) return undefined
     if (typeof ResizeObserver !== 'undefined') return undefined
-    const handleResize = () => measureCardWidth('window-resize')
+    const handleResize = () => measureCardWidth()
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [showEmail, measureCardWidth])
-
-  useEffect(() => {
-    logAuthLayout('render')
-  })
-
-  useEffect(() => {
-    const raf1 = requestAnimationFrame(() => logAuthLayout('raf-1'))
-    const raf2 = requestAnimationFrame(() => logAuthLayout('raf-2'))
-    return () => {
-      cancelAnimationFrame(raf1)
-      cancelAnimationFrame(raf2)
-    }
-  }, [showEmail, logAuthLayout])
-
-  useEffect(() => {
-    if (lockedWidth === null) return
-    log.debug('auth_layout.locked_width_updated', { lockedWidth })
-  }, [lockedWidth])
 
   return (
     <section className="auth-panel" aria-label="Sign in">
@@ -227,10 +163,7 @@ export default function FirebaseAuthUI({ onAppleSignInClick } = {}) {
           <button
             type="button"
             className="auth-btn secondary"
-            onClick={() => {
-              logAuthLayout('email-toggle:before')
-              setShowEmail(prev => !prev)
-            }}
+            onClick={() => setShowEmail(prev => !prev)}
             disabled={busy}
           >
             <FaEnvelope size={13} aria-hidden="true" />

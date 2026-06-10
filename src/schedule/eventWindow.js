@@ -132,7 +132,7 @@ function buildWindowFromDateKeys(startDateKey, endDateKey) {
 
 function anchorEntry(entry, dayDateMap, singleDayFallbackKey) {
   const dateKey = entry?.day ? dayDateMap[entry.day] || null : singleDayFallbackKey
-  const anchoredStart = anchorDateToKey(entry?.start, dateKey)
+  const anchoredStart = dateKey ? anchorDateToKey(entry?.start, dateKey) : null
   const anchoredEnd = computeAnchoredEnd(entry, anchoredStart, dateKey)
   return {
     ...entry,

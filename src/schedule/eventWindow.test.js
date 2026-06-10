@@ -87,4 +87,49 @@ describe('eventWindow helpers', () => {
     expect(anchored.windowStart.toLocaleDateString('en-US')).toBe('7/18/2026')
     expect(anchored.windowEnd.toLocaleDateString('en-US')).toBe('7/19/2026')
   })
+
+  it('does not let unmapped schedule days determine the anchored event window', () => {
+    const schedule = {
+      runGroups: ['All', 'Thunder Race'],
+      days: ['Friday', 'Sunday'],
+      warnings: [],
+      sessions: [
+        {
+          session: 'Thunder Race #1',
+          day: 'Friday',
+          start: new Date(2026, 5, 10, 7, 30, 0),
+          end: new Date(2026, 5, 10, 17, 30, 0),
+          duration: 600,
+          runGroupIds: ['Thunder Race'],
+          note: '',
+          classroom: ''
+        },
+        {
+          session: 'Thunder Race #2',
+          day: 'Sunday',
+          start: new Date(2026, 5, 10, 7, 30, 0),
+          end: new Date(2026, 5, 10, 8, 0, 0),
+          duration: 30,
+          runGroupIds: ['Thunder Race'],
+          note: '',
+          classroom: ''
+        }
+      ],
+      activities: []
+    }
+
+    const anchored = anchorScheduleToEventDates(schedule, {
+      startDateKey: '2026-09-04',
+      endDateKey: '2026-09-05'
+    })
+
+    expect(anchored.dayDateMap).toEqual({
+      Friday: '2026-09-04'
+    })
+    expect(anchored.schedule.sessions[0].start.toLocaleString('en-US')).toContain('9/4/2026')
+    expect(anchored.schedule.sessions[1].start).toBeNull()
+    expect(anchored.windowSource).toBe('schedule')
+    expect(anchored.windowStart.toLocaleString('en-US')).toContain('9/4/2026')
+    expect(anchored.windowEnd.toLocaleString('en-US')).toContain('9/4/2026')
+  })
 })

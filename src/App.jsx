@@ -3434,7 +3434,7 @@ export default function App() {
               {rows.map((r, idx) => {
                 const isNow = current && r.start && current.start &&
                              r.start.getTime() === current.start.getTime()
-                const end = r.end || addMinutes(r.start, r.duration || 20)
+                const end = r.start ? (r.end || addMinutes(r.start, r.duration || 20)) : null
                 const status = r.start && end && end < nowWithOffset ? 'past' :
                               isNow ? 'now' : 'future'
 

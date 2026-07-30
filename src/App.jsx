@@ -1018,11 +1018,10 @@ export default function App() {
     }
   }, [optionsExpanded, customUrl])
   
-  // Toggle body class for debug mode overflow handling and disable auto-scroll
+  // Toggle body class for debug mode overflow handling.
   useEffect(() => {
     if (showDebugPanel) {
       document.body.classList.add('debug-mode')
-      setAutoScrollEnabled(false) // Disable auto-scroll when debug panel opens
     } else {
       document.body.classList.remove('debug-mode')
     }

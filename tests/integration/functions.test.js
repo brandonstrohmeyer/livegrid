@@ -140,6 +140,22 @@ describe('functions emulator', () => {
     const resolvePayload = await resolveResp.json()
     expect(resolvePayload.spreadsheetId).toBe('TEST_SHEET_ID')
 
+    const resolveEventResp = await callFunction('sheetsApi/sheets/resolve-event', {
+      body: {
+        url: 'https://docs.google.com/spreadsheets/d/TEST_SHEET_ID/edit',
+        source: 'hod'
+      }
+    })
+    expect(resolveEventResp.ok).toBe(true)
+    const resolveEventPayload = await resolveEventResp.json()
+    expect(resolveEventPayload.event).toMatchObject({
+      source: 'hod',
+      title: 'Test Schedule Sheet',
+      spreadsheetId: 'TEST_SHEET_ID',
+      dateResolved: false
+    })
+    expect(resolveEventPayload.event.id).toMatch(/^hod:hod-/)
+
     const tabsResp = await callFunction('sheetsApi/sheets/TEST_SHEET_ID/tabs', { method: 'GET' })
     expect(tabsResp.ok).toBe(true)
     const tabsPayload = await tabsResp.json()

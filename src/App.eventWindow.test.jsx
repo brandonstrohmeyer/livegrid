@@ -44,9 +44,11 @@ async function renderAppWithEvent({
   spreadsheetId = 'TEST_SHEET_ID',
   events = [],
   prefs = {},
+  locationSearch = '',
   tabsResponse,
   valuesResponse
 } = {}) {
+  window.history.replaceState({}, '', locationSearch ? `/${locationSearch}` : '/')
   window.localStorage.setItem(
     'nasaDashboardPrefs',
     JSON.stringify({
@@ -108,6 +110,7 @@ describe('App event window state', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     window.localStorage.clear()
+    window.history.replaceState({}, '', '/')
   })
 
   afterEach(() => {
@@ -198,6 +201,36 @@ describe('App event window state', () => {
 
     expect(await screen.findByText(/Activation state: unmatched/i)).toBeInTheDocument()
     expect(screen.getByText(/Match source: none/i)).toBeInTheDocument()
+  })
+
+  it('prefills the selected schedule from a Google Sheet URL query parameter', async () => {
+    const querySheetUrl = 'https://docs.google.com/spreadsheets/d/QUERY_SHEET_ID/edit#gid=123'
+    vi.setSystemTime(new Date(2026, 3, 1, 12, 0, 0))
+
+    await renderAppWithEvent({
+      customUrl: 'https://docs.google.com/spreadsheets/d/SAVED_SHEET_ID/edit#gid=123',
+      spreadsheetId: 'QUERY_SHEET_ID',
+      locationSearch: `?sheetUrl=${encodeURIComponent(querySheetUrl)}`,
+      events: [
+        {
+          id: 'hod:query-event',
+          source: 'hod',
+          title: 'QR Weekend',
+          sheetUrl: querySheetUrl,
+          spreadsheetId: 'QUERY_SHEET_ID',
+          dateSource: null,
+          dateResolved: false
+        }
+      ]
+    })
+
+    expect(await screen.findByText(/Spreadsheet id: QUERY_SHEET_ID/i)).toBeInTheDocument()
+    expect(screen.getByText(/Match source: hod \(spreadsheetId\)/i)).toBeInTheDocument()
+    const fetchedUrls = globalThis.fetch.mock.calls.map(([input]) => (
+      typeof input === 'string' ? input : input?.url || ''
+    ))
+    expect(fetchedUrls.some(url => url.includes('/sheets/QUERY_SHEET_ID/tabs'))).toBe(true)
+    expect(fetchedUrls.some(url => url.includes('/sheets/SAVED_SHEET_ID/tabs'))).toBe(false)
   })
 
   it('shows fallback mode for known-source events with unresolved dates', async () => {

@@ -10,6 +10,19 @@
     { "file": "AMP Feb 20-22 LIVE Scheduler Template - Sunday.csv", "label": "AMP Feb 20-22 Sunday" },
     { "file": "Live Schedule CMP 8_2-3 - Sat.csv", "label": "CMP 8/2-3 Saturday" },
     { "file": "Live Schedule CMP 8_2-3 - Sun.csv", "label": "CMP 8/2-3 Sunday" },
+    {
+      "file": "LIVE Schedule - CMP Aug 1-2 - Summer of Speed w_ TT - Friday.csv",
+      "label": "CMP Summer of Speed Friday (load-in)",
+      "overrides": { "allowNoClassroom": true }
+    },
+    {
+      "file": "LIVE Schedule - CMP Aug 1-2 - Summer of Speed w_ TT - Saturday.csv",
+      "label": "CMP Summer of Speed Saturday"
+    },
+    {
+      "file": "LIVE Schedule - CMP Aug 1-2 - Summer of Speed w_ TT - Sunday.csv",
+      "label": "CMP Summer of Speed Sunday"
+    },
     { "file": "Live Schedule RA 8_9-10 - Sat.csv", "label": "Road Atlanta 8/9-10 Saturday" },
     { "file": "Live Schedule RA 8_9-10 - Sun.csv", "label": "Road Atlanta 8/9-10 Sunday" },
     { "file": "NCCAR Live Scheduler - Saturday July 5 (3RG).csv", "label": "NCCAR July 5 Saturday" },

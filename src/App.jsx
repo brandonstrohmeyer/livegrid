@@ -472,8 +472,11 @@ export default function App() {
   const [hodError, setHodError] = useState(null)
   const [selectedRssEventId, setSelectedRssEventId] = useState('')
   const [selectedHodEventId, setSelectedHodEventId] = useState('')
+  const [directSheetEvent, setDirectSheetEvent] = useState(null)
+  const [directSheetEventResolving, setDirectSheetEventResolving] = useState(false)
   const [eventsLookupReady, setEventsLookupReady] = useState(false)
   const eventsFetchStartedRef = useRef(false)
+  const directSheetEventRequestRef = useRef(0)
   const sheetSelectionRef = useRef({ url: '', spreadsheetId: '', sheetId: null, sheetTitle: '', spreadsheetTitle: '' })
   const [forceShowStaleBanner, setForceShowStaleBanner] = useState(false)
   const upcomingNotificationTrackerRef = useRef(new Map())
@@ -599,14 +602,31 @@ export default function App() {
     ...rssEvents,
     ...hodEvents
   ]), [rssEvents, hodEvents])
+  const selectedSpreadsheetId = useMemo(() => extractSpreadsheetId(customUrl), [customUrl])
+  const currentDirectSheetEvent = useMemo(() => {
+    if (!directSheetEvent || !selectedSpreadsheetId) return null
+    const directSpreadsheetId = directSheetEvent.spreadsheetId
+      || extractSpreadsheetId(directSheetEvent.sheetUrl || '')
+    return directSpreadsheetId === selectedSpreadsheetId ? directSheetEvent : null
+  }, [directSheetEvent, selectedSpreadsheetId])
+  const allKnownEvents = useMemo(() => {
+    if (!currentDirectSheetEvent) return allCachedEvents
+    const cachedMatch = matchCachedEventForSheet(allCachedEvents, {
+      customUrl,
+      spreadsheetId: selectedSpreadsheetId
+    })
+    return cachedMatch.event
+      ? allCachedEvents
+      : [...allCachedEvents, currentDirectSheetEvent]
+  }, [allCachedEvents, currentDirectSheetEvent, customUrl, selectedSpreadsheetId])
   const combinedEvents = useMemo(() => (
-    allCachedEvents
+    allKnownEvents
       .filter(ev => !isCachedEventPast(ev, now))
       .map(ev => ({
         ...ev,
         label: ev.label || (ev.source === 'hod' ? `[HOD-MA] ${ev.title}` : `[NASA-SE] ${ev.title}`)
       }))
-  ), [allCachedEvents, now])
+  ), [allKnownEvents, now])
   const selectedEventId = useMemo(
     () => selectedRssEventId || selectedHodEventId || '',
     [selectedRssEventId, selectedHodEventId]
@@ -616,13 +636,12 @@ export default function App() {
     if (isLocalDemoScheduleActive) return true
     return false
   }, [customUrl, isLocalDemoScheduleActive])
-  const selectedSpreadsheetId = useMemo(() => extractSpreadsheetId(customUrl), [customUrl])
   const eventMatchResult = useMemo(() => (
-    matchCachedEventForSheet(allCachedEvents, {
+    matchCachedEventForSheet(allKnownEvents, {
       customUrl,
       spreadsheetId: selectedSpreadsheetId
     })
-  ), [allCachedEvents, customUrl, selectedSpreadsheetId])
+  ), [allKnownEvents, customUrl, selectedSpreadsheetId])
   const matchedEvent = eventMatchResult.event || null
   const anchoredScheduleInfo = useMemo(() => {
     if (matchedEvent?.dateResolved) {
@@ -860,7 +879,10 @@ export default function App() {
   
   // Reset sheet name when URL changes
   useEffect(() => {
+    directSheetEventRequestRef.current += 1
     setSheetName('')
+    setDirectSheetEvent(null)
+    setDirectSheetEventResolving(false)
   }, [customUrl])
 
   useEffect(() => {
@@ -965,7 +987,7 @@ export default function App() {
       hasSelectedSchedule,
       isLocalDemoScheduleActive,
       matchedEvent,
-      eventsLookupReady,
+      eventsLookupReady: eventsLookupReady && !directSheetEventResolving,
       anchoredWindowStart: anchoredScheduleInfo.windowStart,
       anchoredWindowEnd: anchoredScheduleInfo.windowEnd,
       now: nowWithOffset
@@ -975,6 +997,7 @@ export default function App() {
     isLocalDemoScheduleActive,
     matchedEvent,
     eventsLookupReady,
+    directSheetEventResolving,
     anchoredScheduleInfo,
     nowWithOffset
   ])
@@ -1493,6 +1516,33 @@ export default function App() {
         if (parserIdToUse !== scheduleParserId) {
           setScheduleParserId(parserIdToUse)
         }
+
+        const source = parserIdToUse === 'hod-ma' ? 'hod' : 'nasa'
+        const cachedEventMatch = matchCachedEventForSheet(allCachedEvents, {
+          customUrl,
+          spreadsheetId
+        })
+        const hasMatchingDirectEvent = currentDirectSheetEvent?.source === source
+        if (!cachedEventMatch.event && !hasMatchingDirectEvent) {
+          const requestToken = directSheetEventRequestRef.current + 1
+          directSheetEventRequestRef.current = requestToken
+          setDirectSheetEventResolving(true)
+          try {
+            const resolvedEvent = await callSheetsApi('sheets/resolve-event', {
+              method: 'POST',
+              body: { url: customUrl, source }
+            })
+            if (directSheetEventRequestRef.current === requestToken && resolvedEvent?.event) {
+              setDirectSheetEvent(resolvedEvent.event)
+            }
+          } catch (eventError) {
+            log.warn('events.direct_sheet_resolve_failed', { spreadsheetId, source }, eventError)
+          } finally {
+            if (directSheetEventRequestRef.current === requestToken) {
+              setDirectSheetEventResolving(false)
+            }
+          }
+        }
       } else if (debugMode) {
         if (sheetDayTabs.length) {
           setSheetDayTabs([])
@@ -1584,7 +1634,7 @@ export default function App() {
     if (!isScheduleActive) return undefined
     const timer = setInterval(fetchSchedule, 30000)
     return () => clearInterval(timer)
-  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasSelectedSchedule, isScheduleActive, scheduleParserId, dayTabSelectionKey])
+  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasSelectedSchedule, isScheduleActive, scheduleParserId, dayTabSelectionKey, currentDirectSheetEvent])
   
   useEffect(() => {
     upcomingNotificationTrackerRef.current.clear()
@@ -3505,6 +3555,12 @@ export default function App() {
                   </label>
                 ))}
               </div>
+            </div>
+          )}
+
+          {hasSelectedSchedule && !isScheduleActive && (
+            <div className="run-groups-empty-state" role="status">
+              Upcoming sessions appear here only while the selected event is active.
             </div>
           )}
           

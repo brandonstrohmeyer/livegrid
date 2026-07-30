@@ -1,5 +1,23 @@
 # API Reference
 
+## URL Query Parameters
+
+### sheetUrl
+
+Prefills the selected schedule from a Google Sheets URL. This is intended for
+event-specific links and QR codes.
+
+Example:
+
+```text
+https://livegrid.stro.io/?sheetUrl=https%3A%2F%2Fdocs.google.com%2Fspreadsheets%2Fd%2FYOUR_SHEET_ID%2Fedit%23gid%3D123
+```
+
+Aliases: `sheet`, `scheduleUrl`, `schedule`.
+
+When building the URL, encode the Google Sheets URL so any `#gid=...` fragment
+and query string values stay inside the parameter value.
+
 ## Utility Functions (scheduleUtils.js)
 
 ### parseTimeToToday(timeStr, dayOffset = 0)

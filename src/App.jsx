@@ -62,6 +62,7 @@ const functionEndpoint = (proxyPath, functionName) => {
 }
 
 const cachedEventsEndpoint = functionEndpoint('cached-events', 'cachedEvents')
+const sheetUrlQueryParamNames = ['sheetUrl', 'sheet', 'scheduleUrl', 'schedule']
 
 const sheetsEndpoint = (path) => {
   if (!functionsBaseUrl) {
@@ -93,6 +94,41 @@ async function callSheetsApi(path, { method = 'GET', body } = {}) {
     })
   }
   return payload
+}
+
+export function getSheetUrlFromQuery(search) {
+  if (!search || typeof search !== 'string') return ''
+
+  try {
+    const params = new URLSearchParams(search)
+    const rawValue = sheetUrlQueryParamNames
+      .map(name => params.get(name))
+      .find(value => typeof value === 'string' && value.trim())
+
+    if (!rawValue) return ''
+
+    let candidate = rawValue.trim()
+    if (!/^https?:\/\//i.test(candidate) && /^docs\.google\.com\/spreadsheets\//i.test(candidate)) {
+      candidate = `https://${candidate}`
+    }
+
+    const gid = (params.get('gid') || '').trim()
+    if (gid && !/[#?&]gid=/.test(candidate)) {
+      const hashIndex = candidate.indexOf('#')
+      if (hashIndex >= 0) {
+        const base = candidate.slice(0, hashIndex)
+        const fragment = candidate.slice(hashIndex + 1)
+        candidate = `${base}#${fragment ? `${fragment}&` : ''}gid=${encodeURIComponent(gid)}`
+      } else {
+        candidate = `${candidate}#gid=${encodeURIComponent(gid)}`
+      }
+    }
+
+    return extractSpreadsheetId(candidate) ? candidate : ''
+  } catch (err) {
+    log.warn('schedule_query.parse_failed', undefined, err)
+    return ''
+  }
 }
 
 function csvEscape(value) {
@@ -396,7 +432,8 @@ export function getMobileSessionEndStatus(session, nowWithOffset) {
 export default function App() {
   // Check URL parameters for demo mode BEFORE any state initialization
   const urlParams = new URLSearchParams(window.location.search)
-  const isDemoMode = urlParams.get('demo') === 'true' || urlParams.get('demo') === '1'
+  const querySheetUrl = getSheetUrlFromQuery(window.location.search)
+  const isDemoMode = !querySheetUrl && (urlParams.get('demo') === 'true' || urlParams.get('demo') === '1')
   
   // Calculate demo offsets once if needed
   const getDemoOffsets = () => {
@@ -442,7 +479,8 @@ export default function App() {
     'scheduleParserId',
     () => DEFAULT_SCHEDULE_PARSER_ID
   )
-  const [customUrl, setCustomUrl] = useSyncedPreference('customUrl', () => '')
+  const [storedCustomUrl, setCustomUrl] = useSyncedPreference('customUrl', () => querySheetUrl || '')
+  const customUrl = querySheetUrl || storedCustomUrl
   const [autoScrollEnabled, setAutoScrollEnabled] = useSyncedPreference('autoScrollEnabled', () => true)
   const [staleThresholdMinutes, setStaleThresholdMinutes] = useSyncedPreference(
     'staleThresholdMinutes',
@@ -472,8 +510,11 @@ export default function App() {
   const [hodError, setHodError] = useState(null)
   const [selectedRssEventId, setSelectedRssEventId] = useState('')
   const [selectedHodEventId, setSelectedHodEventId] = useState('')
+  const [directSheetEvent, setDirectSheetEvent] = useState(null)
+  const [directSheetEventResolving, setDirectSheetEventResolving] = useState(false)
   const [eventsLookupReady, setEventsLookupReady] = useState(false)
   const eventsFetchStartedRef = useRef(false)
+  const directSheetEventRequestRef = useRef(0)
   const sheetSelectionRef = useRef({ url: '', spreadsheetId: '', sheetId: null, sheetTitle: '', spreadsheetTitle: '' })
   const [forceShowStaleBanner, setForceShowStaleBanner] = useState(false)
   const upcomingNotificationTrackerRef = useRef(new Map())
@@ -599,14 +640,31 @@ export default function App() {
     ...rssEvents,
     ...hodEvents
   ]), [rssEvents, hodEvents])
+  const selectedSpreadsheetId = useMemo(() => extractSpreadsheetId(customUrl), [customUrl])
+  const currentDirectSheetEvent = useMemo(() => {
+    if (!directSheetEvent || !selectedSpreadsheetId) return null
+    const directSpreadsheetId = directSheetEvent.spreadsheetId
+      || extractSpreadsheetId(directSheetEvent.sheetUrl || '')
+    return directSpreadsheetId === selectedSpreadsheetId ? directSheetEvent : null
+  }, [directSheetEvent, selectedSpreadsheetId])
+  const allKnownEvents = useMemo(() => {
+    if (!currentDirectSheetEvent) return allCachedEvents
+    const cachedMatch = matchCachedEventForSheet(allCachedEvents, {
+      customUrl,
+      spreadsheetId: selectedSpreadsheetId
+    })
+    return cachedMatch.event
+      ? allCachedEvents
+      : [...allCachedEvents, currentDirectSheetEvent]
+  }, [allCachedEvents, currentDirectSheetEvent, customUrl, selectedSpreadsheetId])
   const combinedEvents = useMemo(() => (
-    allCachedEvents
+    allKnownEvents
       .filter(ev => !isCachedEventPast(ev, now))
       .map(ev => ({
         ...ev,
         label: ev.label || (ev.source === 'hod' ? `[HOD-MA] ${ev.title}` : `[NASA-SE] ${ev.title}`)
       }))
-  ), [allCachedEvents, now])
+  ), [allKnownEvents, now])
   const selectedEventId = useMemo(
     () => selectedRssEventId || selectedHodEventId || '',
     [selectedRssEventId, selectedHodEventId]
@@ -616,13 +674,12 @@ export default function App() {
     if (isLocalDemoScheduleActive) return true
     return false
   }, [customUrl, isLocalDemoScheduleActive])
-  const selectedSpreadsheetId = useMemo(() => extractSpreadsheetId(customUrl), [customUrl])
   const eventMatchResult = useMemo(() => (
-    matchCachedEventForSheet(allCachedEvents, {
+    matchCachedEventForSheet(allKnownEvents, {
       customUrl,
       spreadsheetId: selectedSpreadsheetId
     })
-  ), [allCachedEvents, customUrl, selectedSpreadsheetId])
+  ), [allKnownEvents, customUrl, selectedSpreadsheetId])
   const matchedEvent = eventMatchResult.event || null
   const anchoredScheduleInfo = useMemo(() => {
     if (matchedEvent?.dateResolved) {
@@ -860,8 +917,24 @@ export default function App() {
   
   // Reset sheet name when URL changes
   useEffect(() => {
+    directSheetEventRequestRef.current += 1
     setSheetName('')
+    setDirectSheetEvent(null)
+    setDirectSheetEventResolving(false)
   }, [customUrl])
+
+  useEffect(() => {
+    if (!querySheetUrl || storedCustomUrl === querySheetUrl) return
+    setCustomUrl(querySheetUrl)
+    setSelectedRssEventId('')
+    setSelectedHodEventId('')
+    setSelectedCsvFile('')
+    setDebugMode(false)
+    setClockOffset(0)
+    setDayOffset(0)
+    setClockOffsetInput('0')
+    setDayOffsetInput('0')
+  }, [querySheetUrl, setCustomUrl, setSelectedCsvFile, storedCustomUrl])
 
   useEffect(() => {
     if (!customUrl || !matchedEvent || matchedEvent.source !== 'nasa') {
@@ -945,11 +1018,10 @@ export default function App() {
     }
   }, [optionsExpanded, customUrl])
   
-  // Toggle body class for debug mode overflow handling and disable auto-scroll
+  // Toggle body class for debug mode overflow handling.
   useEffect(() => {
     if (showDebugPanel) {
       document.body.classList.add('debug-mode')
-      setAutoScrollEnabled(false) // Disable auto-scroll when debug panel opens
     } else {
       document.body.classList.remove('debug-mode')
     }
@@ -965,7 +1037,7 @@ export default function App() {
       hasSelectedSchedule,
       isLocalDemoScheduleActive,
       matchedEvent,
-      eventsLookupReady,
+      eventsLookupReady: eventsLookupReady && !directSheetEventResolving,
       anchoredWindowStart: anchoredScheduleInfo.windowStart,
       anchoredWindowEnd: anchoredScheduleInfo.windowEnd,
       now: nowWithOffset
@@ -975,6 +1047,7 @@ export default function App() {
     isLocalDemoScheduleActive,
     matchedEvent,
     eventsLookupReady,
+    directSheetEventResolving,
     anchoredScheduleInfo,
     nowWithOffset
   ])
@@ -1493,6 +1566,33 @@ export default function App() {
         if (parserIdToUse !== scheduleParserId) {
           setScheduleParserId(parserIdToUse)
         }
+
+        const source = parserIdToUse === 'hod-ma' ? 'hod' : 'nasa'
+        const cachedEventMatch = matchCachedEventForSheet(allCachedEvents, {
+          customUrl,
+          spreadsheetId
+        })
+        const hasMatchingDirectEvent = currentDirectSheetEvent?.source === source
+        if (!cachedEventMatch.event && !hasMatchingDirectEvent) {
+          const requestToken = directSheetEventRequestRef.current + 1
+          directSheetEventRequestRef.current = requestToken
+          setDirectSheetEventResolving(true)
+          try {
+            const resolvedEvent = await callSheetsApi('sheets/resolve-event', {
+              method: 'POST',
+              body: { url: customUrl, source }
+            })
+            if (directSheetEventRequestRef.current === requestToken && resolvedEvent?.event) {
+              setDirectSheetEvent(resolvedEvent.event)
+            }
+          } catch (eventError) {
+            log.warn('events.direct_sheet_resolve_failed', { spreadsheetId, source }, eventError)
+          } finally {
+            if (directSheetEventRequestRef.current === requestToken) {
+              setDirectSheetEventResolving(false)
+            }
+          }
+        }
       } else if (debugMode) {
         if (sheetDayTabs.length) {
           setSheetDayTabs([])
@@ -1584,7 +1684,7 @@ export default function App() {
     if (!isScheduleActive) return undefined
     const timer = setInterval(fetchSchedule, 30000)
     return () => clearInterval(timer)
-  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasSelectedSchedule, isScheduleActive, scheduleParserId, dayTabSelectionKey])
+  }, [dayOffset, selectedCsvFile, customUrl, debugMode, hasSelectedSchedule, isScheduleActive, scheduleParserId, dayTabSelectionKey, currentDirectSheetEvent])
   
   useEffect(() => {
     upcomingNotificationTrackerRef.current.clear()
@@ -3505,6 +3605,12 @@ export default function App() {
                   </label>
                 ))}
               </div>
+            </div>
+          )}
+
+          {hasSelectedSchedule && !isScheduleActive && (
+            <div className="run-groups-empty-state" role="status">
+              Upcoming sessions appear here only while the selected event is active.
             </div>
           )}
           

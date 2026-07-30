@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import React from 'react'
+import fs from 'fs'
+import Papa from 'papaparse'
 import { AuthProvider } from './contexts/AuthContext'
 import { PreferencesProvider } from './contexts/PreferencesContext'
 
@@ -25,6 +27,7 @@ function buildSheetsTabResponse({
 function buildSheetsValuesResponse({
   spreadsheetTitle = 'Test Weekend',
   sheetTitle = 'Saturday',
+  headers = ['Time', 'Duration', 'Session', 'Classroom', 'Notes'],
   rows = [
     ['Saturday', '', '', '', ''],
     ['8:00 AM', '20', 'HPDE 1', '', ''],
@@ -34,9 +37,14 @@ function buildSheetsValuesResponse({
   return {
     spreadsheetTitle,
     sheetTitle,
-    headers: ['Time', 'Duration', 'Session', 'Classroom', 'Notes'],
+    headers,
     rows
   }
+}
+
+function loadCsvFixtureRows(relativePath) {
+  const csvText = fs.readFileSync(new URL(relativePath, import.meta.url), 'utf-8')
+  return Papa.parse(csvText, { skipEmptyLines: false }).data
 }
 
 async function renderAppWithEvent({
@@ -44,9 +52,12 @@ async function renderAppWithEvent({
   spreadsheetId = 'TEST_SHEET_ID',
   events = [],
   prefs = {},
+  locationSearch = '',
   tabsResponse,
-  valuesResponse
+  valuesResponse,
+  directEvent
 } = {}) {
+  window.history.replaceState({}, '', locationSearch ? `/${locationSearch}` : '/')
   window.localStorage.setItem(
     'nasaDashboardPrefs',
     JSON.stringify({
@@ -62,6 +73,25 @@ async function renderAppWithEvent({
       return {
         ok: true,
         json: async () => ({ events })
+      }
+    }
+
+    if (url.includes('sheets/resolve-event')) {
+      const source = JSON.parse(init.body || '{}').source || 'nasa'
+      return {
+        ok: true,
+        json: async () => ({
+          event: directEvent || {
+            id: `${source}:direct-sheet-event`,
+            source,
+            title: tabsResponse?.spreadsheetTitle || 'Test Weekend',
+            sheetUrl: customUrl,
+            spreadsheetId,
+            eventUrl: null,
+            dateSource: null,
+            dateResolved: false
+          }
+        })
       }
     }
 
@@ -108,6 +138,7 @@ describe('App event window state', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     window.localStorage.clear()
+    window.history.replaceState({}, '', '/')
   })
 
   afterEach(() => {
@@ -140,6 +171,8 @@ describe('App event window state', () => {
     expect(screen.getByText(/Spreadsheet id: TEST_SHEET_ID/i)).toBeInTheDocument()
     expect(screen.getByText('Event selected')).toBeInTheDocument()
     expect(screen.getByText(/Test Weekend is selected, but the live schedule has not started yet\. Event dates: Apr 3 - Apr 5, 2026\./i)).toBeInTheDocument()
+    expect(screen.getByText(/Upcoming sessions appear here only while the selected event is active\./i)).toBeInTheDocument()
+    expect(screen.queryByText(/Starts in/i)).not.toBeInTheDocument()
   })
 
   it('shows an active matched event with anchored current-session timing', async () => {
@@ -191,13 +224,91 @@ describe('App event window state', () => {
     expect(screen.getByText(/Test Weekend is selected, but this event has already ended\./i)).toBeInTheDocument()
   })
 
-  it('keeps unmatched pasted sheets inactive', async () => {
+  it('creates event metadata for an uncached direct HoD sheet URL', async () => {
+    vi.setSystemTime(new Date(2026, 6, 30, 12, 0, 0))
+    const spreadsheetId = '1piRvxR1vx6z-YhuxMFpriXlSdVma5aBxSPr5vEJn2V8'
+    const customUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?gid=1649313883#gid=1649313883`
+    const title = 'LIVE Schedule - CMP Aug 1-2 - Summer of Speed w/ TT'
+
+    await renderAppWithEvent({
+      customUrl,
+      spreadsheetId,
+      events: [],
+      prefs: {
+        selectedDay: 'Saturday',
+        selectedGroups: ['All']
+      },
+      tabsResponse: {
+        spreadsheetTitle: title,
+        tabs: [{ sheetId: 123, title: 'Saturday' }]
+      },
+      valuesResponse: {
+        spreadsheetTitle: title,
+        sheetTitle: 'Saturday',
+        headers: [],
+        rows: loadCsvFixtureRows('./schedule/parsers/hod-ma/fixtures/LIVE Schedule - CMP Aug 1-2 - Summer of Speed w_ TT - Saturday.csv')
+      },
+      directEvent: {
+        id: 'hod:hod-direct-sheet-event',
+        eventId: 'hod-direct-sheet-event',
+        source: 'hod',
+        title,
+        sheetUrl: customUrl,
+        spreadsheetId,
+        eventUrl: null,
+        label: `[HOD-MA] ${title}`,
+        startDate: '2026-08-01T00:00:00.000Z',
+        endDate: '2026-08-02T00:00:00.000Z',
+        startDateKey: '2026-08-01',
+        endDateKey: '2026-08-02',
+        dateSource: 'sheet-title',
+        dateResolved: true
+      }
+    })
+
+    expect(await screen.findByText(/Activation state: upcoming/i)).toBeInTheDocument()
+    expect(screen.getByText(/Match source: hod \(spreadsheetId\)/i)).toBeInTheDocument()
+    expect(screen.getByText(/Matched event id: hod:hod-direct-sheet-event/i)).toBeInTheDocument()
+    expect(screen.getByText(/Date source: sheet-title/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Selected sheet is not linked to a known event\./i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Starts in/i)).not.toBeInTheDocument()
+
+    const resolveEventCall = globalThis.fetch.mock.calls.find(([input]) => {
+      const url = typeof input === 'string' ? input : input?.url || ''
+      return url.includes('sheets/resolve-event')
+    })
+    expect(resolveEventCall).toBeTruthy()
+    expect(JSON.parse(resolveEventCall[1].body)).toMatchObject({ url: customUrl, source: 'hod' })
+  })
+
+  it('prefills the selected schedule from a Google Sheet URL query parameter', async () => {
+    const querySheetUrl = 'https://docs.google.com/spreadsheets/d/QUERY_SHEET_ID/edit#gid=123'
     vi.setSystemTime(new Date(2026, 3, 1, 12, 0, 0))
 
-    await renderAppWithEvent({ events: [] })
+    await renderAppWithEvent({
+      customUrl: 'https://docs.google.com/spreadsheets/d/SAVED_SHEET_ID/edit#gid=123',
+      spreadsheetId: 'QUERY_SHEET_ID',
+      locationSearch: `?sheetUrl=${encodeURIComponent(querySheetUrl)}`,
+      events: [
+        {
+          id: 'hod:query-event',
+          source: 'hod',
+          title: 'QR Weekend',
+          sheetUrl: querySheetUrl,
+          spreadsheetId: 'QUERY_SHEET_ID',
+          dateSource: null,
+          dateResolved: false
+        }
+      ]
+    })
 
-    expect(await screen.findByText(/Activation state: unmatched/i)).toBeInTheDocument()
-    expect(screen.getByText(/Match source: none/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Spreadsheet id: QUERY_SHEET_ID/i)).toBeInTheDocument()
+    expect(screen.getByText(/Match source: hod \(spreadsheetId\)/i)).toBeInTheDocument()
+    const fetchedUrls = globalThis.fetch.mock.calls.map(([input]) => (
+      typeof input === 'string' ? input : input?.url || ''
+    ))
+    expect(fetchedUrls.some(url => url.includes('/sheets/QUERY_SHEET_ID/tabs'))).toBe(true)
+    expect(fetchedUrls.some(url => url.includes('/sheets/SAVED_SHEET_ID/tabs'))).toBe(false)
   })
 
   it('shows fallback mode for known-source events with unresolved dates', async () => {

@@ -1049,6 +1049,43 @@ function buildMessage({ tokenList, title, body, data, tag }) {
 function buildEventId(source, seed) {
     return `${source}-${(0, crypto_1.createHash)('sha256').update(seed).digest('hex').slice(0, 24)}`;
 }
+function createDirectSheetEvent({ source, sheetUrl, spreadsheetId, spreadsheetTitle }) {
+    const title = spreadsheetTitle?.trim() || 'Google Sheets Event';
+    const dateResolution = (0, eventDates_1.resolveEventDateRangeFromCandidates)([
+        { text: title, source: 'sheet-title' }
+    ]);
+    return {
+        source,
+        eventId: buildEventId(source, `sheet:${spreadsheetId}`),
+        title,
+        sheetUrl,
+        spreadsheetId,
+        eventUrl: null,
+        startDate: dateResolution.start,
+        endDate: dateResolution.end,
+        dateSource: dateResolution.dateSource,
+        dateResolved: dateResolution.dateResolved,
+        sourceUpdatedAt: null
+    };
+}
+function serializeNormalizedEvent(event) {
+    return {
+        id: `${event.source}:${event.eventId}`,
+        source: event.source,
+        eventId: event.eventId,
+        title: event.title,
+        sheetUrl: event.sheetUrl,
+        spreadsheetId: event.spreadsheetId,
+        eventUrl: event.eventUrl,
+        label: event.source === 'nasa' ? `[NASA-SE] ${event.title}` : `[HOD-MA] ${event.title}`,
+        startDate: event.startDate?.toISOString() || null,
+        endDate: event.endDate?.toISOString() || null,
+        startDateKey: (0, eventDates_1.toDateKey)(event.startDate),
+        endDateKey: (0, eventDates_1.toDateKey)(event.endDate),
+        dateSource: event.dateSource,
+        dateResolved: event.dateResolved
+    };
+}
 async function fetchNasaEventPageHtml(eventUrl) {
     if (!eventUrl)
         return null;
@@ -2648,6 +2685,34 @@ exports.sheetsApi = (0, https_1.onRequest)({
                 return;
             }
             res.json({ spreadsheetId });
+            return;
+        }
+        if (req.method === 'POST' && path === 'sheets/resolve-event') {
+            const { url, source } = req.body || {};
+            const spreadsheetId = extractSpreadsheetId(url);
+            if (!spreadsheetId) {
+                res.status(400).json({ error: 'Invalid Google Sheets URL' });
+                return;
+            }
+            if (source !== 'nasa' && source !== 'hod') {
+                res.status(400).json({ error: 'source must be nasa or hod' });
+                return;
+            }
+            const metadata = await getSheetMetadata(spreadsheetId);
+            const event = createDirectSheetEvent({
+                source,
+                sheetUrl: url,
+                spreadsheetId,
+                spreadsheetTitle: metadata.spreadsheetTitle
+            });
+            logging_1.log.info('sheets.event_resolved', {
+                requestId,
+                spreadsheetId,
+                source,
+                dateResolved: event.dateResolved,
+                dateSource: event.dateSource
+            });
+            res.json({ event: serializeNormalizedEvent(event) });
             return;
         }
         const tabsMatch = path.match(/^sheets\/([^/]+)\/tabs$/);

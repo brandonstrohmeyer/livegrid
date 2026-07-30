@@ -56,6 +56,20 @@ describe('App smoke', () => {
     expect(await screen.findByText('Sessions')).toBeInTheDocument()
   })
 
+  it('enables auto-scroll by default for a first-time visitor', async () => {
+    const { default: App } = await import('./App')
+    render(
+      <AuthProvider>
+        <PreferencesProvider>
+          <App />
+        </PreferencesProvider>
+      </AuthProvider>
+    )
+
+    const autoScrollToggle = await screen.findByLabelText(/Auto-scroll to current session/i)
+    expect(autoScrollToggle).toBeChecked()
+  })
+
   it('does not load schedule.csv outside demo mode when a stale csv preference exists', async () => {
     window.localStorage.setItem(
       'nasaDashboardPrefs',

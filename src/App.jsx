@@ -62,6 +62,7 @@ const functionEndpoint = (proxyPath, functionName) => {
 }
 
 const cachedEventsEndpoint = functionEndpoint('cached-events', 'cachedEvents')
+const sheetUrlQueryParamNames = ['sheetUrl', 'sheet', 'scheduleUrl', 'schedule']
 
 const sheetsEndpoint = (path) => {
   if (!functionsBaseUrl) {
@@ -93,6 +94,41 @@ async function callSheetsApi(path, { method = 'GET', body } = {}) {
     })
   }
   return payload
+}
+
+export function getSheetUrlFromQuery(search) {
+  if (!search || typeof search !== 'string') return ''
+
+  try {
+    const params = new URLSearchParams(search)
+    const rawValue = sheetUrlQueryParamNames
+      .map(name => params.get(name))
+      .find(value => typeof value === 'string' && value.trim())
+
+    if (!rawValue) return ''
+
+    let candidate = rawValue.trim()
+    if (!/^https?:\/\//i.test(candidate) && /^docs\.google\.com\/spreadsheets\//i.test(candidate)) {
+      candidate = `https://${candidate}`
+    }
+
+    const gid = (params.get('gid') || '').trim()
+    if (gid && !/[#?&]gid=/.test(candidate)) {
+      const hashIndex = candidate.indexOf('#')
+      if (hashIndex >= 0) {
+        const base = candidate.slice(0, hashIndex)
+        const fragment = candidate.slice(hashIndex + 1)
+        candidate = `${base}#${fragment ? `${fragment}&` : ''}gid=${encodeURIComponent(gid)}`
+      } else {
+        candidate = `${candidate}#gid=${encodeURIComponent(gid)}`
+      }
+    }
+
+    return extractSpreadsheetId(candidate) ? candidate : ''
+  } catch (err) {
+    log.warn('schedule_query.parse_failed', undefined, err)
+    return ''
+  }
 }
 
 function csvEscape(value) {
@@ -396,7 +432,8 @@ export function getMobileSessionEndStatus(session, nowWithOffset) {
 export default function App() {
   // Check URL parameters for demo mode BEFORE any state initialization
   const urlParams = new URLSearchParams(window.location.search)
-  const isDemoMode = urlParams.get('demo') === 'true' || urlParams.get('demo') === '1'
+  const querySheetUrl = getSheetUrlFromQuery(window.location.search)
+  const isDemoMode = !querySheetUrl && (urlParams.get('demo') === 'true' || urlParams.get('demo') === '1')
   
   // Calculate demo offsets once if needed
   const getDemoOffsets = () => {
@@ -442,7 +479,8 @@ export default function App() {
     'scheduleParserId',
     () => DEFAULT_SCHEDULE_PARSER_ID
   )
-  const [customUrl, setCustomUrl] = useSyncedPreference('customUrl', () => '')
+  const [storedCustomUrl, setCustomUrl] = useSyncedPreference('customUrl', () => querySheetUrl || '')
+  const customUrl = querySheetUrl || storedCustomUrl
   const [autoScrollEnabled, setAutoScrollEnabled] = useSyncedPreference('autoScrollEnabled', () => true)
   const [staleThresholdMinutes, setStaleThresholdMinutes] = useSyncedPreference(
     'staleThresholdMinutes',
@@ -884,6 +922,19 @@ export default function App() {
     setDirectSheetEvent(null)
     setDirectSheetEventResolving(false)
   }, [customUrl])
+
+  useEffect(() => {
+    if (!querySheetUrl || storedCustomUrl === querySheetUrl) return
+    setCustomUrl(querySheetUrl)
+    setSelectedRssEventId('')
+    setSelectedHodEventId('')
+    setSelectedCsvFile('')
+    setDebugMode(false)
+    setClockOffset(0)
+    setDayOffset(0)
+    setClockOffsetInput('0')
+    setDayOffsetInput('0')
+  }, [querySheetUrl, setCustomUrl, setSelectedCsvFile, storedCustomUrl])
 
   useEffect(() => {
     if (!customUrl || !matchedEvent || matchedEvent.source !== 'nasa') {

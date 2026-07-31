@@ -1531,7 +1531,7 @@ exports.adminEvents = (0, https_1.onRequest)({ cors: true, region: SCHEDULER_REG
         res.status(204).send('');
         return;
     }
-    if (req.method !== 'GET' && req.method !== 'POST') {
+    if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'DELETE') {
         res.status(405).send('Method not allowed');
         return;
     }
@@ -1554,6 +1554,39 @@ exports.adminEvents = (0, https_1.onRequest)({ cors: true, region: SCHEDULER_REG
     }
     catch (err) {
         res.status(400).json({ error: 'Invalid JSON body' });
+        return;
+    }
+    if (req.method === 'DELETE') {
+        const rawId = truncateString(req.query?.id || req.query?.eventId || body?.id || body?.eventId, 220);
+        const docId = rawId.startsWith('manual:') ? rawId : '';
+        if (!docId) {
+            res.status(400).json({ error: 'Manual event id is required' });
+            return;
+        }
+        const docRef = eventCacheCollection.doc(docId);
+        const existing = await docRef.get();
+        if (!existing.exists) {
+            res.status(404).json({ error: 'Manual event not found' });
+            return;
+        }
+        const data = existing.data();
+        if (data?.source !== 'manual' || data?.isPersistent !== true) {
+            res.status(400).json({ error: 'Only manually added events can be deleted' });
+            return;
+        }
+        const now = firestore_1.Timestamp.now();
+        await docRef.set({
+            isActive: false,
+            updatedAt: now,
+            deletedAt: now,
+            deletedByUid: decoded.uid,
+            deletedByEmail: decoded.email || null
+        }, { merge: true });
+        logging_1.log.info('admin.event_deleted', {
+            uid: decoded.uid,
+            eventId: data.eventId || docId
+        });
+        res.status(200).json({ status: 'deleted', id: docId });
         return;
     }
     const title = truncateString(body?.title, 160);

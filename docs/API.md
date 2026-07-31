@@ -48,6 +48,21 @@ Body:
 The stored event uses `source: "manual"`, `dateSource: "admin"`,
 `dateResolved: true`, and the standard `startDateKey` / `endDateKey` format.
 
+### DELETE /api/admin-events
+
+Removes a persistent manual event from the shared cache.
+Requires `Authorization: Bearer <Firebase ID token>`.
+
+Body:
+
+```json
+{
+  "id": "manual:manual-event-id"
+}
+```
+
+Only events with `source: "manual"` and `isPersistent: true` can be deleted.
+
 ## Utility Functions (scheduleUtils.js)
 
 ### parseTimeToToday(timeStr, dayOffset = 0)

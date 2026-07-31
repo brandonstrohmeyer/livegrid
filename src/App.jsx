@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback, useLayoutEffect } from 'react'
 import version from './version.js'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
-import { MdAdminPanelSettings, MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose } from 'react-icons/md'
+import { MdAdminPanelSettings, MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose, MdDelete } from 'react-icons/md'
 import { GiFullMotorcycleHelmet } from 'react-icons/gi'
 import { FaInstagram } from 'react-icons/fa'
 import { FaEnvelope } from 'react-icons/fa'
@@ -550,6 +550,7 @@ export default function App() {
     endDate: ''
   })
   const [adminSubmitting, setAdminSubmitting] = useState(false)
+  const [adminDeletingEventId, setAdminDeletingEventId] = useState('')
   const [adminFormMessage, setAdminFormMessage] = useState(null)
   const eventsFetchStartedRef = useRef(false)
   const directSheetEventRequestRef = useRef(0)
@@ -667,7 +668,6 @@ export default function App() {
       setShowHelpSection(false)
       setShowAccountSection(false)
       setShowNotificationsSection(false)
-      setShowAdminSection(false)
     }
   }, [sidebarOpen])
 
@@ -680,6 +680,13 @@ export default function App() {
     ...hodEvents,
     ...manualEvents
   ]), [rssEvents, hodEvents, manualEvents])
+  const adminManualEvents = useMemo(() => (
+    [...manualEvents].sort((a, b) => {
+      const dateCompare = String(a.startDateKey || a.startDate || '').localeCompare(String(b.startDateKey || b.startDate || ''))
+      if (dateCompare) return dateCompare
+      return String(a.title || '').localeCompare(String(b.title || ''))
+    })
+  ), [manualEvents])
   const selectedSpreadsheetId = useMemo(() => extractSpreadsheetId(customUrl), [customUrl])
   const currentDirectSheetEvent = useMemo(() => {
     if (!directSheetEvent || !selectedSpreadsheetId) return null
@@ -2311,6 +2318,41 @@ export default function App() {
       setAdminSubmitting(false)
     }
   }
+
+  async function handleAdminEventDelete(eventId) {
+    const manualEvent = manualEvents.find(ev => ev.id === eventId)
+    if (!manualEvent?.id) return
+    if (typeof window !== 'undefined' && !window.confirm(`Delete "${manualEvent.title || 'this event'}"?`)) return
+
+    setAdminDeletingEventId(eventId)
+    setAdminFormMessage(null)
+    try {
+      const authToken = await getAuthToken()
+      if (!authToken) throw new Error('Sign in again before deleting an event.')
+      await callAdminEvents({
+        method: 'DELETE',
+        authToken,
+        body: { id: eventId }
+      })
+      await fetchCachedEvents()
+      if (selectedManualEventId === eventId) {
+        setSelectedManualEventId('')
+      }
+      setAdminFormMessage({ type: 'success', text: 'Persistent event deleted.' })
+    } catch (error) {
+      log.error('admin.event_delete_failed', undefined, error)
+      setAdminFormMessage({ type: 'error', text: error?.message || 'Could not delete event.' })
+    } finally {
+      setAdminDeletingEventId('')
+    }
+  }
+
+  const adminEventFields = [
+    { key: 'title', label: 'Event title', type: 'text', placeholder: 'Event name' },
+    { key: 'sheetUrl', label: 'Spreadsheet URL', type: 'url', placeholder: 'https://docs.google.com/spreadsheets/d/...' },
+    { key: 'startDate', label: 'Start date', type: 'date', placeholder: '' },
+    { key: 'endDate', label: 'End date', type: 'date', placeholder: '' }
+  ]
   
   // Dynamic sizing based on content density
   const upcomingCount = Object.entries(nextSessionsByGroup).length
@@ -2330,6 +2372,7 @@ export default function App() {
   const sidebarContentPadding = '12px'
   const sidebarScrollPadding = '16px'
   const mainContentPaddingBottom = `calc(${mainPaddingBottomPx}px + ${safeAreaPaddingExpr})`
+  const isAdminViewActive = adminAccess === 'allowed' && showAdminSection
   const sidebarMenuItemStyles = useMemo(() => ({
     button: {
       '&:hover': {
@@ -2353,6 +2396,268 @@ export default function App() {
       color: '#b4c6dd'
     }
   }), [sidebarOpen])
+
+  function renderAdminConsole() {
+    return (
+      <main
+        style={{
+          width: '100%',
+          flex: '1 1 auto',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'flex-start',
+          paddingTop: isMobile ? '48px' : '36px'
+        }}
+      >
+        <section
+          style={{
+            width: '100%',
+            maxWidth: '760px',
+            background: '#f8fafc',
+            border: '1px solid #d8dee9',
+            borderRadius: '8px',
+            boxShadow: '0 1px 3px rgba(15,23,42,0.08)',
+            padding: isMobile ? '18px' : '24px',
+            boxSizing: 'border-box'
+          }}
+        >
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            marginBottom: '20px'
+          }}>
+            <div>
+              <div style={{fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b', fontWeight: 700}}>
+                Admin
+              </div>
+              <h1 style={{margin: '4px 0 0 0', fontSize: isMobile ? '1.55rem' : '1.9rem', color: '#1f2937'}}>
+                Persistent Event
+              </h1>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowAdminSection(false)}
+              aria-label="Close admin console"
+              style={{
+                width: '40px',
+                height: '40px',
+                borderRadius: '8px',
+                border: '1px solid #cbd5e1',
+                background: '#fff',
+                color: '#334155',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              <MdClose size={18} />
+            </button>
+          </div>
+
+          <form onSubmit={handleAdminEventSubmit}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+              gap: '14px'
+            }}>
+              {adminEventFields.map(field => (
+                <label
+                  key={field.key}
+                  style={{
+                    display: 'block',
+                    fontSize: '0.86rem',
+                    fontWeight: 700,
+                    color: '#334155',
+                    gridColumn: field.key === 'sheetUrl' ? '1 / -1' : undefined
+                  }}
+                >
+                  {field.label}
+                  <input
+                    type={field.type}
+                    value={adminForm[field.key]}
+                    onChange={e => setAdminForm(prev => ({ ...prev, [field.key]: e.target.value }))}
+                    placeholder={field.placeholder}
+                    required
+                    style={{
+                      width: '100%',
+                      marginTop: '6px',
+                      padding: '10px 11px',
+                      borderRadius: '6px',
+                      border: '1px solid #cbd5e1',
+                      background: '#fff',
+                      color: '#111827',
+                      boxSizing: 'border-box',
+                      fontSize: '0.95rem'
+                    }}
+                  />
+                </label>
+              ))}
+            </div>
+
+            {adminFormMessage && (
+              <div
+                style={{
+                  marginTop: '16px',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  fontSize: '0.88rem',
+                  color: adminFormMessage.type === 'error' ? '#991b1b' : '#166534',
+                  border: adminFormMessage.type === 'error' ? '1px solid #fecaca' : '1px solid #bbf7d0',
+                  background: adminFormMessage.type === 'error' ? '#fef2f2' : '#f0fdf4'
+                }}
+              >
+                {adminFormMessage.text}
+              </div>
+            )}
+
+            <div style={{display: 'flex', justifyContent: 'flex-end', marginTop: '18px'}}>
+              <button
+                type="submit"
+                disabled={adminSubmitting}
+                style={{
+                  minWidth: '140px',
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  background: adminSubmitting ? '#94a3b8' : '#5e81ac',
+                  color: '#f8fafc',
+                  fontWeight: 700,
+                  cursor: adminSubmitting ? 'wait' : 'pointer'
+                }}
+              >
+                {adminSubmitting ? 'Creating...' : 'Create event'}
+              </button>
+            </div>
+          </form>
+
+          <div
+            style={{
+              marginTop: '28px',
+              paddingTop: '22px',
+              borderTop: '1px solid #d8dee9'
+            }}
+          >
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              marginBottom: '12px'
+            }}>
+              <h2 style={{margin: 0, fontSize: '1rem', color: '#1f2937'}}>
+                Manual Events
+              </h2>
+              {manualLoading && (
+                <span style={{fontSize: '0.82rem', color: '#64748b'}}>
+                  Loading...
+                </span>
+              )}
+            </div>
+
+            {manualError && (
+              <div style={{
+                padding: '10px 12px',
+                borderRadius: '8px',
+                border: '1px solid #fecaca',
+                background: '#fef2f2',
+                color: '#991b1b',
+                fontSize: '0.88rem'
+              }}>
+                {manualError}
+              </div>
+            )}
+
+            {!manualError && !manualLoading && adminManualEvents.length === 0 && (
+              <div style={{
+                padding: '14px 12px',
+                borderRadius: '8px',
+                border: '1px solid #d8dee9',
+                background: '#fff',
+                color: '#64748b',
+                fontSize: '0.9rem'
+              }}>
+                No manual events.
+              </div>
+            )}
+
+            {!manualError && adminManualEvents.length > 0 && (
+              <div style={{display: 'grid', gap: '10px'}}>
+                {adminManualEvents.map(manualEvent => {
+                  const dateRange = formatEventDateRange(
+                    manualEvent.startDateKey || manualEvent.startDate,
+                    manualEvent.endDateKey || manualEvent.endDate || manualEvent.startDateKey || manualEvent.startDate
+                  )
+                  const deleting = adminDeletingEventId === manualEvent.id
+                  return (
+                    <div
+                      key={manualEvent.id}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: isMobile ? '1fr' : '1fr auto',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '12px',
+                        borderRadius: '8px',
+                        border: '1px solid #d8dee9',
+                        background: '#fff'
+                      }}
+                    >
+                      <div style={{minWidth: 0}}>
+                        <div style={{
+                          color: '#1f2937',
+                          fontWeight: 700,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap'
+                        }}>
+                          {manualEvent.title || 'Untitled event'}
+                        </div>
+                        <div style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '8px',
+                          marginTop: '4px',
+                          color: '#64748b',
+                          fontSize: '0.83rem'
+                        }}>
+                          {dateRange && <span>{dateRange}</span>}
+                          {manualEvent.spreadsheetId && <span>{manualEvent.spreadsheetId}</span>}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleAdminEventDelete(manualEvent.id)}
+                        disabled={deleting || adminSubmitting}
+                        aria-label={`Delete ${manualEvent.title || 'manual event'}`}
+                        title="Delete manual event"
+                        style={{
+                          width: isMobile ? '100%' : '40px',
+                          height: '40px',
+                          borderRadius: '8px',
+                          border: '1px solid #fecaca',
+                          background: deleting ? '#f1f5f9' : '#fff',
+                          color: deleting ? '#94a3b8' : '#b91c1c',
+                          cursor: deleting || adminSubmitting ? 'wait' : 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        <MdDelete size={18} />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+      </main>
+    )
+  }
   
   return (
     <div style={{ display: 'flex', height: viewportHeightStyle, minHeight: viewportMinHeightStyle }}>
@@ -2469,7 +2774,10 @@ export default function App() {
             {/* Settings */}
             <MenuItem
               icon={<MdSettings size={20} />}
-              onClick={() => setOptionsExpanded(!optionsExpanded)}
+              onClick={() => {
+                setShowAdminSection(false)
+                setOptionsExpanded(!optionsExpanded)
+              }}
             >
               Settings
             </MenuItem>
@@ -2718,118 +3026,20 @@ export default function App() {
             )}
           </div>
           {adminAccess === 'allowed' && (
-            <>
-              <Menu menuItemStyles={sidebarMenuItemStyles}>
-                <MenuItem
-                  icon={<MdAdminPanelSettings size={20} />}
-                  onClick={() => {
-                    if (!sidebarOpen) {
-                      setSidebarOpen(true)
-                      setShowAdminSection(true)
-                      setShowAccountSection(false)
-                      setShowHelpSection(false)
-                      setShowNotificationsSection(false)
-                      return
-                    }
-                    setShowAdminSection(prev => {
-                      const next = !prev
-                      if (next) {
-                        if (showAccountSection) setShowAccountSection(false)
-                        if (showHelpSection) setShowHelpSection(false)
-                        if (showNotificationsSection) setShowNotificationsSection(false)
-                      }
-                      return next
-                    })
-                  }}
-                >
-                  Admin
-                </MenuItem>
-              </Menu>
-              <div
-                style={{
-                  margin: '0 16px 16px 16px',
-                  padding: showAdminSection && sidebarOpen ? '16px 20px 18px 20px' : '0 16px',
-                  borderRadius: '14px',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                  background: '#1f2630',
-                  color: '#e5e9f0',
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                  maxHeight: showAdminSection && sidebarOpen ? 'calc(var(--vp-dvh, 100dvh) * 0.72)' : 0,
-                  overflowX: 'hidden',
-                  overflowY: showAdminSection && sidebarOpen ? 'auto' : 'hidden',
-                  transition: 'max-height 0.4s cubic-bezier(.4,0,.2,1), padding 0.3s cubic-bezier(.4,0,.2,1)',
-                  display: sidebarOpen ? 'block' : 'none'
+            <Menu menuItemStyles={sidebarMenuItemStyles}>
+              <MenuItem
+                icon={<MdAdminPanelSettings size={20} />}
+                onClick={() => {
+                  setShowAdminSection(prev => !prev)
+                  setShowAccountSection(false)
+                  setShowHelpSection(false)
+                  setShowNotificationsSection(false)
+                  if (isMobile) setSidebarOpen(false)
                 }}
               >
-                {showAdminSection && sidebarOpen && (
-                  <form onSubmit={handleAdminEventSubmit}>
-                    <div style={{fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.7}}>
-                      Persistent Event
-                    </div>
-                    {[
-                      { key: 'title', label: 'Event title', type: 'text', placeholder: 'Event name' },
-                      { key: 'sheetUrl', label: 'Spreadsheet URL', type: 'url', placeholder: 'https://docs.google.com/spreadsheets/d/...' },
-                      { key: 'startDate', label: 'Start date', type: 'date', placeholder: '' },
-                      { key: 'endDate', label: 'End date', type: 'date', placeholder: '' }
-                    ].map(field => (
-                      <label key={field.key} style={{display: 'block', marginTop: '12px', fontSize: '0.82rem', fontWeight: 600}}>
-                        {field.label}
-                        <input
-                          type={field.type}
-                          value={adminForm[field.key]}
-                          onChange={e => setAdminForm(prev => ({ ...prev, [field.key]: e.target.value }))}
-                          placeholder={field.placeholder}
-                          required
-                          style={{
-                            width: '100%',
-                            marginTop: '5px',
-                            padding: '8px',
-                            borderRadius: '6px',
-                            border: '1px solid rgba(229,233,240,0.28)',
-                            background: '#141922',
-                            color: '#e5e9f0',
-                            boxSizing: 'border-box',
-                            fontSize: '0.85rem'
-                          }}
-                        />
-                      </label>
-                    ))}
-                    {adminFormMessage && (
-                      <div
-                        style={{
-                          marginTop: '12px',
-                          padding: '8px 10px',
-                          borderRadius: '8px',
-                          fontSize: '0.8rem',
-                          color: adminFormMessage.type === 'error' ? '#fecaca' : '#bbf7d0',
-                          border: adminFormMessage.type === 'error' ? '1px solid rgba(248,113,113,0.5)' : '1px solid rgba(16,185,129,0.45)',
-                          background: adminFormMessage.type === 'error' ? 'rgba(248,113,113,0.18)' : 'rgba(16,185,129,0.18)'
-                        }}
-                      >
-                        {adminFormMessage.text}
-                      </div>
-                    )}
-                    <button
-                      type="submit"
-                      disabled={adminSubmitting}
-                      style={{
-                        width: '100%',
-                        marginTop: '14px',
-                        padding: '9px 12px',
-                        borderRadius: '8px',
-                        border: 'none',
-                        background: adminSubmitting ? '#475569' : '#5e81ac',
-                        color: '#f8fafc',
-                        fontWeight: 700,
-                        cursor: adminSubmitting ? 'wait' : 'pointer'
-                      }}
-                    >
-                      {adminSubmitting ? 'Creating...' : 'Create event'}
-                    </button>
-                  </form>
-                )}
-              </div>
-            </>
+                Admin
+              </MenuItem>
+            </Menu>
           )}
           </div>
           <div style={{flex: '0 0 auto', display: 'flex', flexDirection: 'column', marginTop: 'auto'}}>
@@ -3106,7 +3316,7 @@ export default function App() {
         paddingBottom: mainContentPaddingBottom,
         // backgroundColor: '#2e3440',
         minHeight: viewportMinHeightStyle,
-        height: showDebugPanel ? 'auto' : viewportHeightStyle, // Auto height when debug panel is open
+        height: showDebugPanel || isAdminViewActive ? 'auto' : viewportHeightStyle,
         overflow: 'visible',
         display: 'flex',
         flexDirection: 'column',
@@ -3153,6 +3363,8 @@ export default function App() {
         </button>
       )}
 
+      {isAdminViewActive ? renderAdminConsole() : (
+        <>
       {/* Header with Clock and Info Panel */}
       <div style={{
         display: 'flex',
@@ -3942,6 +4154,8 @@ export default function App() {
           </section>
         ) : null}
       </div>
+        </>
+      )}
       </div>
     </div>
   )

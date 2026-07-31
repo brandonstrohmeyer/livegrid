@@ -1705,7 +1705,7 @@ export const adminEvents = onRequest({ cors: true, region: SCHEDULER_REGION, inv
     return
   }
 
-  if (req.method !== 'GET' && req.method !== 'POST') {
+  if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'DELETE') {
     res.status(405).send('Method not allowed')
     return
   }
@@ -1730,6 +1730,45 @@ export const adminEvents = onRequest({ cors: true, region: SCHEDULER_REGION, inv
     body = parseRequestBody(req.body) as Record<string, any> | null
   } catch (err: any) {
     res.status(400).json({ error: 'Invalid JSON body' })
+    return
+  }
+
+  if (req.method === 'DELETE') {
+    const rawId = truncateString(req.query?.id || req.query?.eventId || body?.id || body?.eventId, 220)
+    const docId = rawId.startsWith('manual:') ? rawId : ''
+    if (!docId) {
+      res.status(400).json({ error: 'Manual event id is required' })
+      return
+    }
+
+    const docRef = eventCacheCollection.doc(docId)
+    const existing = await docRef.get()
+    if (!existing.exists) {
+      res.status(404).json({ error: 'Manual event not found' })
+      return
+    }
+
+    const data = existing.data() as any
+    if (data?.source !== 'manual' || data?.isPersistent !== true) {
+      res.status(400).json({ error: 'Only manually added events can be deleted' })
+      return
+    }
+
+    const now = Timestamp.now()
+    await docRef.set({
+      isActive: false,
+      updatedAt: now,
+      deletedAt: now,
+      deletedByUid: decoded.uid,
+      deletedByEmail: decoded.email || null
+    }, { merge: true })
+
+    log.info('admin.event_deleted', {
+      uid: decoded.uid,
+      eventId: data.eventId || docId
+    })
+
+    res.status(200).json({ status: 'deleted', id: docId })
     return
   }
 

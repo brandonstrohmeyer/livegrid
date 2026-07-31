@@ -11,6 +11,8 @@
     "firebase:verify:public-routes": "node scripts/verify-hosting-public-access.mjs",
     "firebase:cleanup:legacy-sheets-env": "node scripts/cleanup-legacy-sheets-env.mjs",
     "firebase:verify:sheets-runtime": "node scripts/verify-sheets-runtime-config.mjs",
+    "admin:set": "node scripts/set-livegrid-admin.mjs",
+    "admin:unset": "node scripts/set-livegrid-admin.mjs --remove",
     "version:current": "node scripts/build-version.js current",
     "version:ensure": "node scripts/build-version.js ensure",
     "version:bump:patch": "node scripts/build-version.js bump patch",

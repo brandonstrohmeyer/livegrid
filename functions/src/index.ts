@@ -229,16 +229,40 @@ const clientTelemetryIpRateLimit = new Map<string, { count: number; resetAt: num
 const clientTelemetryFingerprintRateLimit = new Map<string, { count: number; resetAt: number }>()
 
 async function authenticate(req: { get: (name: string) => string | undefined }) {
+  const decoded = await authenticateDecodedToken(req)
+  return decoded?.uid || null
+}
+
+async function authenticateDecodedToken(req: { get: (name: string) => string | undefined }) {
   const authHeader = req.get('authorization') || ''
   if (!authHeader.startsWith('Bearer ')) return null
   const token = authHeader.substring(7)
   try {
     const decoded = await admin.auth().verifyIdToken(token)
-    return decoded.uid
+    return decoded
   } catch (err: any) {
     log.warn('auth.verify_failed', undefined, err)
     return null
   }
+}
+
+function parseCommaSeparatedEnv(value: string | undefined) {
+  return (value || '')
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(Boolean)
+}
+
+function isLiveGridAdmin(decoded: admin.auth.DecodedIdToken | null) {
+  if (!decoded) return false
+  if (decoded.admin === true || decoded.livegridAdmin === true) return true
+
+  const allowedUids = new Set(parseCommaSeparatedEnv(process.env.LIVEGRID_ADMIN_UIDS))
+  if (allowedUids.has(decoded.uid)) return true
+
+  const email = typeof decoded.email === 'string' ? decoded.email.trim().toLowerCase() : ''
+  const allowedEmails = new Set(parseCommaSeparatedEnv(process.env.LIVEGRID_ADMIN_EMAILS).map(entry => entry.toLowerCase()))
+  return Boolean(email && allowedEmails.has(email))
 }
 
 function sanitizeData(payload: Record<string, unknown> = {}) {
@@ -1168,7 +1192,7 @@ function buildMessage({ tokenList, title, body, data, tag }: {
 }
 
 type NormalizedEvent = {
-  source: 'nasa' | 'hod'
+  source: 'nasa' | 'hod' | 'manual'
   eventId: string
   title: string
   sheetUrl: string
@@ -1183,6 +1207,21 @@ type NormalizedEvent = {
 
 function buildEventId(source: string, seed: string) {
   return `${source}-${createHash('sha256').update(seed).digest('hex').slice(0, 24)}`
+}
+
+function buildEventLabel(event: Pick<NormalizedEvent, 'source' | 'title'>) {
+  if (event.source === 'nasa') return `[NASA-SE] ${event.title}`
+  if (event.source === 'hod') return `[HOD-MA] ${event.title}`
+  return `[CUSTOM] ${event.title}`
+}
+
+function parseDateKeyAsUtcDate(value: unknown) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null
+  const date = new Date(`${trimmed}T00:00:00.000Z`)
+  if (Number.isNaN(date.getTime())) return null
+  return toDateKey(date) === trimmed ? date : null
 }
 
 function createDirectSheetEvent({
@@ -1225,7 +1264,7 @@ function serializeNormalizedEvent(event: NormalizedEvent) {
     sheetUrl: event.sheetUrl,
     spreadsheetId: event.spreadsheetId,
     eventUrl: event.eventUrl,
-    label: event.source === 'nasa' ? `[NASA-SE] ${event.title}` : `[HOD-MA] ${event.title}`,
+    label: buildEventLabel(event),
     startDate: event.startDate?.toISOString() || null,
     endDate: event.endDate?.toISOString() || null,
     startDateKey: toDateKey(event.startDate),
@@ -1369,7 +1408,7 @@ async function refreshEventCacheForSource(source: 'nasa' | 'hod', events: Normal
       sheetUrl: event.sheetUrl,
       spreadsheetId: event.spreadsheetId,
       eventUrl: event.eventUrl,
-      label: event.source === 'nasa' ? `[NASA-SE] ${event.title}` : `[HOD-MA] ${event.title}`,
+      label: buildEventLabel(event),
       startDate: event.startDate ? Timestamp.fromDate(event.startDate) : null,
       endDate: event.endDate ? Timestamp.fromDate(event.endDate) : null,
       startDateKey: toDateKey(event.startDate),
@@ -1620,7 +1659,7 @@ export const cachedEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, 
   try {
     const sourceParam = (req.query?.source || '').toString().trim()
     let query: FirebaseFirestore.Query = eventCacheCollection
-    if (sourceParam === 'nasa' || sourceParam === 'hod') {
+    if (sourceParam === 'nasa' || sourceParam === 'hod' || sourceParam === 'manual') {
       query = query.where('source', '==', sourceParam)
     }
     query = query.orderBy('startDate').limit(EVENT_CACHE_MAX)
@@ -1658,6 +1697,128 @@ export const cachedEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, 
     log.error('event_cache.read_failed', undefined, err)
     res.status(500).json({ error: 'Failed to read cached events' })
   }
+})
+
+export const adminEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('')
+    return
+  }
+
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    res.status(405).send('Method not allowed')
+    return
+  }
+
+  const decoded = await authenticateDecodedToken(req)
+  if (!decoded) {
+    res.status(401).json({ error: 'Authentication required' })
+    return
+  }
+  if (!isLiveGridAdmin(decoded)) {
+    res.status(403).json({ error: 'Admin access required' })
+    return
+  }
+
+  if (req.method === 'GET') {
+    res.status(200).json({ admin: true })
+    return
+  }
+
+  let body: Record<string, any> | null = null
+  try {
+    body = parseRequestBody(req.body) as Record<string, any> | null
+  } catch (err: any) {
+    res.status(400).json({ error: 'Invalid JSON body' })
+    return
+  }
+
+  const title = truncateString(body?.title, 160)
+  const sheetUrl = truncateString(body?.sheetUrl || body?.url, 1024)
+  const spreadsheetId = extractSpreadsheetId(sheetUrl)
+  const startDate = parseDateKeyAsUtcDate(body?.startDateKey || body?.startDate)
+  const endDate = parseDateKeyAsUtcDate(body?.endDateKey || body?.endDate)
+
+  if (!title) {
+    res.status(400).json({ error: 'title is required' })
+    return
+  }
+  if (!spreadsheetId) {
+    res.status(400).json({ error: 'Valid Google Sheets URL is required' })
+    return
+  }
+  if (!startDate || !endDate) {
+    res.status(400).json({ error: 'startDate and endDate must use YYYY-MM-DD format' })
+    return
+  }
+  if (endDate.getTime() < startDate.getTime()) {
+    res.status(400).json({ error: 'endDate cannot be before startDate' })
+    return
+  }
+
+  const event: NormalizedEvent = {
+    source: 'manual',
+    eventId: buildEventId('manual', `sheet:${spreadsheetId}:${toDateKey(startDate)}:${toDateKey(endDate)}:${title.toLowerCase()}`),
+    title,
+    sheetUrl,
+    spreadsheetId,
+    eventUrl: null,
+    startDate,
+    endDate,
+    dateSource: 'admin',
+    dateResolved: true,
+    sourceUpdatedAt: null
+  }
+
+  const docId = `${event.source}:${event.eventId}`
+  const now = Timestamp.now()
+  const payloadHash = createHash('sha256').update(JSON.stringify({
+    title: event.title,
+    sheetUrl: event.sheetUrl,
+    spreadsheetId: event.spreadsheetId,
+    eventUrl: event.eventUrl,
+    startDateKey: toDateKey(event.startDate),
+    endDateKey: toDateKey(event.endDate),
+    dateSource: event.dateSource,
+    dateResolved: event.dateResolved
+  })).digest('hex')
+  const docRef = eventCacheCollection.doc(docId)
+  const existing = await docRef.get()
+
+  await docRef.set({
+    source: event.source,
+    eventId: event.eventId,
+    title: event.title,
+    sheetUrl: event.sheetUrl,
+    spreadsheetId: event.spreadsheetId,
+    eventUrl: event.eventUrl,
+    label: buildEventLabel(event),
+    startDate: Timestamp.fromDate(startDate),
+    endDate: Timestamp.fromDate(endDate),
+    startDateKey: toDateKey(event.startDate),
+    endDateKey: toDateKey(event.endDate),
+    dateSource: event.dateSource,
+    dateResolved: event.dateResolved,
+    sourceUpdatedAt: null,
+    updatedAt: now,
+    lastSeenAt: now,
+    contentHash: payloadHash,
+    isActive: true,
+    isPersistent: true,
+    createdByUid: decoded.uid,
+    createdByEmail: decoded.email || null,
+    ...(existing.exists ? {} : { createdAt: now })
+  }, { merge: true })
+
+  log.info('admin.event_upserted', {
+    uid: decoded.uid,
+    eventId: event.eventId,
+    spreadsheetId,
+    startDateKey: toDateKey(event.startDate),
+    endDateKey: toDateKey(event.endDate)
+  })
+
+  res.status(200).json({ status: 'ok', event: serializeNormalizedEvent(event) })
 })
 
 export const testSeedEventCache = onRequest({ cors: true, region: SCHEDULER_REGION }, async (req, res) => {

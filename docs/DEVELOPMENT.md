@@ -63,6 +63,29 @@ Functions env is project-specific inside `functions/`:
 For local Functions emulation, put `GOOGLE_SHEETS_API_KEY` in `functions/.env.local`.
 Deployed functions use Secret Manager `SHEETS_API_KEY`.
 
+Admin console access is server-enforced by `adminEvents`. Grant users with a
+Firebase Auth custom claim (`livegridAdmin: true` or `admin: true`) or by
+setting comma-separated Functions env vars:
+
+```
+LIVEGRID_ADMIN_UIDS=uid-1,uid-2
+LIVEGRID_ADMIN_EMAILS=admin@example.com
+```
+
+Use the helper script to add or remove the `livegridAdmin` claim. It calls the
+Identity Toolkit API with the active `gcloud` access token and an explicit quota
+project header.
+
+```bash
+npm run admin:set -- --project dev --email user@example.com
+npm run admin:set -- --project prod --email user@example.com
+npm run admin:unset -- --project dev --email user@example.com
+```
+
+Project aliases `dev` and `prod` resolve to `livegrid-dev-7acfc` and
+`livegrid-c33c6`. The user must sign out and sign back in after the claim
+changes so their Firebase ID token includes the latest custom claims.
+
 Frontend variables:
 
 ```

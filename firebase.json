@@ -33,6 +33,10 @@
         "function": "cachedEvents"
       },
       {
+        "source": "/api/admin-events",
+        "function": "adminEvents"
+      },
+      {
         "source": "/api/register-push-token",
         "function": "registerPushToken"
       },

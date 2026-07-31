@@ -18,6 +18,36 @@ Aliases: `sheet`, `scheduleUrl`, `schedule`.
 When building the URL, encode the Google Sheets URL so any `#gid=...` fragment
 and query string values stay inside the parameter value.
 
+## Cloud Functions
+
+### GET /api/admin-events
+
+Checks whether the signed-in Firebase user can access the admin console.
+Requires `Authorization: Bearer <Firebase ID token>`.
+
+Admins are users with a Firebase custom claim of `livegridAdmin: true` or
+`admin: true`, or users listed in the Functions env vars
+`LIVEGRID_ADMIN_UIDS` / `LIVEGRID_ADMIN_EMAILS`.
+
+### POST /api/admin-events
+
+Creates or updates a persistent event in `eventCache` using the same public
+shape returned by auto-discovered events.
+
+Body:
+
+```json
+{
+  "title": "Event title",
+  "sheetUrl": "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit#gid=123",
+  "startDate": "2026-05-01",
+  "endDate": "2026-05-02"
+}
+```
+
+The stored event uses `source: "manual"`, `dateSource: "admin"`,
+`dateResolved: true`, and the standard `startDateKey` / `endDateKey` format.
+
 ## Utility Functions (scheduleUtils.js)
 
 ### parseTimeToToday(timeStr, dayOffset = 0)

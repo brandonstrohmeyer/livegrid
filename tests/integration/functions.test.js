@@ -106,6 +106,23 @@ describe('functions emulator', () => {
       startDateKey: '2026-05-01',
       endDateKey: '2026-05-02'
     })
+
+    const deleteResp = await callFunction('adminEvents', {
+      method: 'DELETE',
+      body: { id: createPayload.event.id },
+      idToken: adminAuth.idToken
+    })
+    expect(deleteResp.ok).toBe(true)
+    await expect(deleteResp.json()).resolves.toMatchObject({
+      status: 'deleted',
+      id: createPayload.event.id
+    })
+
+    const cachedAfterDeleteResp = await callFunction('cachedEvents', { method: 'GET' })
+    expect(cachedAfterDeleteResp.ok).toBe(true)
+    const cachedAfterDeletePayload = await cachedAfterDeleteResp.json()
+    const deletedEvent = cachedAfterDeletePayload.events.find(event => event.id === createPayload.event.id)
+    expect(deletedEvent).toBeUndefined()
   })
 
   it('registers and unregisters push tokens', async () => {

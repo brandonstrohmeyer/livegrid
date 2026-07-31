@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback, useLayoutEffect } from 'react'
 import version from './version.js'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
-import { MdAdminPanelSettings, MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose } from 'react-icons/md'
+import { MdAdminPanelSettings, MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose, MdDelete } from 'react-icons/md'
 import { GiFullMotorcycleHelmet } from 'react-icons/gi'
 import { FaInstagram } from 'react-icons/fa'
 import { FaEnvelope } from 'react-icons/fa'
@@ -550,6 +550,7 @@ export default function App() {
     endDate: ''
   })
   const [adminSubmitting, setAdminSubmitting] = useState(false)
+  const [adminDeletingEventId, setAdminDeletingEventId] = useState('')
   const [adminFormMessage, setAdminFormMessage] = useState(null)
   const eventsFetchStartedRef = useRef(false)
   const directSheetEventRequestRef = useRef(0)
@@ -679,6 +680,13 @@ export default function App() {
     ...hodEvents,
     ...manualEvents
   ]), [rssEvents, hodEvents, manualEvents])
+  const adminManualEvents = useMemo(() => (
+    [...manualEvents].sort((a, b) => {
+      const dateCompare = String(a.startDateKey || a.startDate || '').localeCompare(String(b.startDateKey || b.startDate || ''))
+      if (dateCompare) return dateCompare
+      return String(a.title || '').localeCompare(String(b.title || ''))
+    })
+  ), [manualEvents])
   const selectedSpreadsheetId = useMemo(() => extractSpreadsheetId(customUrl), [customUrl])
   const currentDirectSheetEvent = useMemo(() => {
     if (!directSheetEvent || !selectedSpreadsheetId) return null
@@ -2311,6 +2319,34 @@ export default function App() {
     }
   }
 
+  async function handleAdminEventDelete(eventId) {
+    const manualEvent = manualEvents.find(ev => ev.id === eventId)
+    if (!manualEvent?.id) return
+    if (typeof window !== 'undefined' && !window.confirm(`Delete "${manualEvent.title || 'this event'}"?`)) return
+
+    setAdminDeletingEventId(eventId)
+    setAdminFormMessage(null)
+    try {
+      const authToken = await getAuthToken()
+      if (!authToken) throw new Error('Sign in again before deleting an event.')
+      await callAdminEvents({
+        method: 'DELETE',
+        authToken,
+        body: { id: eventId }
+      })
+      await fetchCachedEvents()
+      if (selectedManualEventId === eventId) {
+        setSelectedManualEventId('')
+      }
+      setAdminFormMessage({ type: 'success', text: 'Persistent event deleted.' })
+    } catch (error) {
+      log.error('admin.event_delete_failed', undefined, error)
+      setAdminFormMessage({ type: 'error', text: error?.message || 'Could not delete event.' })
+    } finally {
+      setAdminDeletingEventId('')
+    }
+  }
+
   const adminEventFields = [
     { key: 'title', label: 'Event title', type: 'text', placeholder: 'Event name' },
     { key: 'sheetUrl', label: 'Spreadsheet URL', type: 'url', placeholder: 'https://docs.google.com/spreadsheets/d/...' },
@@ -2496,6 +2532,128 @@ export default function App() {
               </button>
             </div>
           </form>
+
+          <div
+            style={{
+              marginTop: '28px',
+              paddingTop: '22px',
+              borderTop: '1px solid #d8dee9'
+            }}
+          >
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              marginBottom: '12px'
+            }}>
+              <h2 style={{margin: 0, fontSize: '1rem', color: '#1f2937'}}>
+                Manual Events
+              </h2>
+              {manualLoading && (
+                <span style={{fontSize: '0.82rem', color: '#64748b'}}>
+                  Loading...
+                </span>
+              )}
+            </div>
+
+            {manualError && (
+              <div style={{
+                padding: '10px 12px',
+                borderRadius: '8px',
+                border: '1px solid #fecaca',
+                background: '#fef2f2',
+                color: '#991b1b',
+                fontSize: '0.88rem'
+              }}>
+                {manualError}
+              </div>
+            )}
+
+            {!manualError && !manualLoading && adminManualEvents.length === 0 && (
+              <div style={{
+                padding: '14px 12px',
+                borderRadius: '8px',
+                border: '1px solid #d8dee9',
+                background: '#fff',
+                color: '#64748b',
+                fontSize: '0.9rem'
+              }}>
+                No manual events.
+              </div>
+            )}
+
+            {!manualError && adminManualEvents.length > 0 && (
+              <div style={{display: 'grid', gap: '10px'}}>
+                {adminManualEvents.map(manualEvent => {
+                  const dateRange = formatEventDateRange(
+                    manualEvent.startDateKey || manualEvent.startDate,
+                    manualEvent.endDateKey || manualEvent.endDate || manualEvent.startDateKey || manualEvent.startDate
+                  )
+                  const deleting = adminDeletingEventId === manualEvent.id
+                  return (
+                    <div
+                      key={manualEvent.id}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: isMobile ? '1fr' : '1fr auto',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '12px',
+                        borderRadius: '8px',
+                        border: '1px solid #d8dee9',
+                        background: '#fff'
+                      }}
+                    >
+                      <div style={{minWidth: 0}}>
+                        <div style={{
+                          color: '#1f2937',
+                          fontWeight: 700,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap'
+                        }}>
+                          {manualEvent.title || 'Untitled event'}
+                        </div>
+                        <div style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '8px',
+                          marginTop: '4px',
+                          color: '#64748b',
+                          fontSize: '0.83rem'
+                        }}>
+                          {dateRange && <span>{dateRange}</span>}
+                          {manualEvent.spreadsheetId && <span>{manualEvent.spreadsheetId}</span>}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleAdminEventDelete(manualEvent.id)}
+                        disabled={deleting || adminSubmitting}
+                        aria-label={`Delete ${manualEvent.title || 'manual event'}`}
+                        title="Delete manual event"
+                        style={{
+                          width: isMobile ? '100%' : '40px',
+                          height: '40px',
+                          borderRadius: '8px',
+                          border: '1px solid #fecaca',
+                          background: deleting ? '#f1f5f9' : '#fff',
+                          color: deleting ? '#94a3b8' : '#b91c1c',
+                          cursor: deleting || adminSubmitting ? 'wait' : 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        <MdDelete size={18} />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         </section>
       </main>
     )

@@ -191,12 +191,12 @@ export function anchorScheduleToEventDates(schedule, eventMeta = {}) {
     .map(activity => anchorEntry(activity, dayDateMap, singleDayFallbackKey))
     .sort(sortByStart)
 
-  let windowStart = null
+  const eventDateWindow = buildWindowFromDateKeys(startDateKey, endDateKey)
+  let windowStart = eventDateWindow.windowStart
   let windowEnd = null
 
   ;[...anchoredSessions, ...anchoredActivities].forEach(entry => {
     if (isValidDate(entry?.start)) {
-      if (!windowStart || entry.start < windowStart) windowStart = entry.start
       const effectiveEnd = isValidDate(entry?.end)
         ? entry.end
         : Number.isFinite(entry?.duration) && entry.duration > 0
@@ -208,9 +208,8 @@ export function anchorScheduleToEventDates(schedule, eventMeta = {}) {
 
   let windowSource = 'schedule'
   if (!windowStart || !windowEnd) {
-    const fallbackWindow = buildWindowFromDateKeys(startDateKey, endDateKey)
-    windowStart = fallbackWindow.windowStart
-    windowEnd = fallbackWindow.windowEnd
+    windowStart = eventDateWindow.windowStart
+    windowEnd = eventDateWindow.windowEnd
     windowSource = windowStart && windowEnd ? 'event-dates' : 'none'
   }
 

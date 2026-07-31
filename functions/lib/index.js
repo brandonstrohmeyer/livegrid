@@ -1526,7 +1526,7 @@ exports.cachedEvents = (0, https_1.onRequest)({ cors: true, region: SCHEDULER_RE
         res.status(500).json({ error: 'Failed to read cached events' });
     }
 });
-exports.adminEvents = (0, https_1.onRequest)({ cors: true, region: SCHEDULER_REGION }, async (req, res) => {
+exports.adminEvents = (0, https_1.onRequest)({ cors: true, region: SCHEDULER_REGION, invoker: 'private' }, async (req, res) => {
     if (req.method === 'OPTIONS') {
         res.status(204).send('');
         return;

@@ -1699,7 +1699,7 @@ export const cachedEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, 
   }
 })
 
-export const adminEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, async (req, res) => {
+export const adminEvents = onRequest({ cors: true, region: SCHEDULER_REGION, invoker: 'private' }, async (req, res) => {
   if (req.method === 'OPTIONS') {
     res.status(204).send('')
     return

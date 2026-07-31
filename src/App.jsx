@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback, useLayoutEffect } from 'react'
 import version from './version.js'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
-import { MdAdminPanelSettings, MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose, MdDelete } from 'react-icons/md'
+import { MdAdminPanelSettings, MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose, MdDelete, MdContentCopy } from 'react-icons/md'
 import { GiFullMotorcycleHelmet } from 'react-icons/gi'
 import { FaInstagram } from 'react-icons/fa'
 import { FaEnvelope } from 'react-icons/fa'
@@ -65,6 +65,11 @@ const cachedEventsEndpoint = functionEndpoint('cached-events', 'cachedEvents')
 const adminEventsEndpoint = functionEndpoint('admin-events', 'adminEvents')
 const sheetUrlQueryParamNames = ['sheetUrl', 'sheet', 'scheduleUrl', 'schedule']
 const eventQueryParamNames = ['event', 'eventId', 'event_id']
+const eventSourceLabels = {
+  hod: 'HOD',
+  manual: 'Manual',
+  nasa: 'NASA'
+}
 
 const sheetsEndpoint = (path) => {
   if (!functionsBaseUrl) {
@@ -573,6 +578,7 @@ export default function App() {
   const [adminSubmitting, setAdminSubmitting] = useState(false)
   const [adminDeletingEventId, setAdminDeletingEventId] = useState('')
   const [adminFormMessage, setAdminFormMessage] = useState(null)
+  const [adminCopiedEventId, setAdminCopiedEventId] = useState('')
   const eventsFetchStartedRef = useRef(false)
   const directSheetEventRequestRef = useRef(0)
   const sheetSelectionRef = useRef({ url: '', spreadsheetId: '', sheetId: null, sheetTitle: '', spreadsheetTitle: '' })
@@ -692,6 +698,12 @@ export default function App() {
     }
   }, [sidebarOpen])
 
+  useEffect(() => {
+    if (!adminCopiedEventId) return undefined
+    const timeoutId = window.setTimeout(() => setAdminCopiedEventId(''), 1800)
+    return () => window.clearTimeout(timeoutId)
+  }, [adminCopiedEventId])
+
   const staleThresholdMs = useMemo(() => Math.max(1, staleThresholdMinutes) * 60000, [staleThresholdMinutes])
   const staleThresholdLabel = useMemo(() => (
     staleThresholdMinutes === 1 ? '1 minute' : `${staleThresholdMinutes} minutes`
@@ -708,6 +720,15 @@ export default function App() {
       return String(a.title || '').localeCompare(String(b.title || ''))
     })
   ), [manualEvents])
+  const adminDiscoveredEvents = useMemo(() => (
+    [...allCachedEvents].sort((a, b) => {
+      const dateCompare = String(a.startDateKey || a.startDate || '').localeCompare(String(b.startDateKey || b.startDate || ''))
+      if (dateCompare) return dateCompare
+      const sourceCompare = String(a.source || '').localeCompare(String(b.source || ''))
+      if (sourceCompare) return sourceCompare
+      return String(a.title || a.label || '').localeCompare(String(b.title || b.label || ''))
+    })
+  ), [allCachedEvents])
   const selectedSpreadsheetId = useMemo(() => extractSpreadsheetId(customUrl), [customUrl])
   const currentDirectSheetEvent = useMemo(() => {
     if (!directSheetEvent || !selectedSpreadsheetId) return null
@@ -1108,15 +1129,15 @@ export default function App() {
   
   // Preferences sync is handled via context
 
-  // Load cached event metadata when the event picker opens or a saved sheet needs resolution.
+  // Load cached event metadata when the event picker opens, a saved sheet needs resolution, or admins inspect events.
   useEffect(() => {
-    if (!optionsExpanded && !customUrl) return
+    if (!optionsExpanded && !customUrl && !(adminAccess === 'allowed' && showAdminSection)) return
 
     if (!eventsFetchStartedRef.current) {
       eventsFetchStartedRef.current = true
       fetchCachedEvents()
     }
-  }, [optionsExpanded, customUrl])
+  }, [adminAccess, optionsExpanded, showAdminSection, customUrl])
   
   // Toggle body class for debug mode overflow handling.
   useEffect(() => {
@@ -2418,6 +2439,16 @@ export default function App() {
     }
   }
 
+  async function handleAdminEventIdCopy(eventId) {
+    if (!eventId || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return
+    try {
+      await navigator.clipboard.writeText(eventId)
+      setAdminCopiedEventId(eventId)
+    } catch (error) {
+      log.warn('admin.event_id_copy_failed', { eventId }, error)
+    }
+  }
+
   const adminEventFields = [
     { key: 'title', label: 'Event title', type: 'text', placeholder: 'Event name' },
     { key: 'sheetUrl', label: 'Spreadsheet URL', type: 'url', placeholder: 'https://docs.google.com/spreadsheets/d/...' },
@@ -2603,6 +2634,164 @@ export default function App() {
               </button>
             </div>
           </form>
+
+          <div
+            style={{
+              marginTop: '28px',
+              paddingTop: '22px',
+              borderTop: '1px solid #d8dee9'
+            }}
+          >
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              marginBottom: '12px'
+            }}>
+              <h2 style={{margin: 0, fontSize: '1rem', color: '#1f2937'}}>
+                Discovered Events
+              </h2>
+              {(rssLoading || hodLoading || manualLoading) && (
+                <span style={{fontSize: '0.82rem', color: '#64748b'}}>
+                  Loading...
+                </span>
+              )}
+            </div>
+
+            {!manualError && !rssError && !hodError && !rssLoading && !hodLoading && !manualLoading && adminDiscoveredEvents.length === 0 && (
+              <div style={{
+                padding: '14px 12px',
+                borderRadius: '8px',
+                border: '1px solid #d8dee9',
+                background: '#fff',
+                color: '#64748b',
+                fontSize: '0.9rem'
+              }}>
+                No discovered events.
+              </div>
+            )}
+
+            {adminDiscoveredEvents.length > 0 && (
+              <div style={{display: 'grid', gap: '10px'}}>
+                {adminDiscoveredEvents.map(discoveredEvent => {
+                  const discoveredEventId = discoveredEvent.id || ''
+                  const dateRange = formatEventDateRange(
+                    discoveredEvent.startDateKey || discoveredEvent.startDate,
+                    discoveredEvent.endDateKey || discoveredEvent.endDate || discoveredEvent.startDateKey || discoveredEvent.startDate
+                  )
+                  const sourceLabel = eventSourceLabels[discoveredEvent.source] || discoveredEvent.source || 'Event'
+                  const copied = adminCopiedEventId === discoveredEventId
+                  return (
+                    <div
+                      key={discoveredEventId || `${discoveredEvent.source}-${discoveredEvent.eventId}-${discoveredEvent.sheetUrl}`}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1fr) auto',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '12px',
+                        borderRadius: '8px',
+                        border: '1px solid #d8dee9',
+                        background: '#fff'
+                      }}
+                    >
+                      <div style={{minWidth: 0}}>
+                        <div style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          alignItems: 'center',
+                          gap: '8px',
+                          color: '#1f2937',
+                          fontWeight: 700
+                        }}>
+                          <span style={{
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}>
+                            {discoveredEvent.title || discoveredEvent.label || 'Untitled event'}
+                          </span>
+                          <span style={{
+                            flex: '0 0 auto',
+                            padding: '2px 6px',
+                            borderRadius: '6px',
+                            background: '#e5e7eb',
+                            color: '#475569',
+                            fontSize: '0.72rem',
+                            fontWeight: 800,
+                            textTransform: 'uppercase'
+                          }}>
+                            {sourceLabel}
+                          </span>
+                        </div>
+                        <div style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '8px',
+                          marginTop: '4px',
+                          color: '#64748b',
+                          fontSize: '0.83rem'
+                        }}>
+                          {dateRange && <span>{dateRange}</span>}
+                          {discoveredEvent.spreadsheetId && <span>{discoveredEvent.spreadsheetId}</span>}
+                        </div>
+                        {discoveredEventId && (
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            minWidth: 0,
+                            marginTop: '8px'
+                          }}>
+                            <code style={{
+                              display: 'block',
+                              minWidth: 0,
+                              maxWidth: '100%',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              userSelect: 'all',
+                              padding: '5px 7px',
+                              borderRadius: '6px',
+                              background: '#f1f5f9',
+                              color: '#334155',
+                              fontSize: '0.78rem'
+                            }}>
+                              {discoveredEventId}
+                            </code>
+                          </div>
+                        )}
+                      </div>
+                      {discoveredEventId && (
+                        <button
+                          type="button"
+                          onClick={() => handleAdminEventIdCopy(discoveredEventId)}
+                          aria-label={`Copy event ID for ${discoveredEvent.title || discoveredEvent.label || 'event'}`}
+                          title={copied ? 'Copied' : 'Copy event ID'}
+                          style={{
+                            width: isMobile ? '100%' : '40px',
+                            height: '40px',
+                            borderRadius: '8px',
+                            border: copied ? '1px solid #bbf7d0' : '1px solid #cbd5e1',
+                            background: copied ? '#f0fdf4' : '#fff',
+                            color: copied ? '#166534' : '#334155',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                        >
+                          <MdContentCopy size={18} />
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
 
           <div
             style={{

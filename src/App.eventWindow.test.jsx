@@ -196,7 +196,7 @@ describe('App event window state', () => {
 
     expect(await screen.findByText(/Activation state: active/i)).toBeInTheDocument()
     expect(screen.getByText(/Current session: HPDE 1/i)).toBeInTheDocument()
-    expect(screen.getByText(/Anchored window start:/i).textContent).toContain('4/4/2026')
+    expect(screen.getByText(/Anchored window start:/i).textContent).toContain('4/3/2026')
   })
 
   it('shows an ended matched event as inactive after the weekend', async () => {

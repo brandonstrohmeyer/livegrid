@@ -1212,7 +1212,7 @@ function buildEventId(source: string, seed: string) {
 function buildEventLabel(event: Pick<NormalizedEvent, 'source' | 'title'>) {
   if (event.source === 'nasa') return `[NASA-SE] ${event.title}`
   if (event.source === 'hod') return `[HOD-MA] ${event.title}`
-  return `[CUSTOM] ${event.title}`
+  return event.title
 }
 
 function parseDateKeyAsUtcDate(value: unknown) {
@@ -1677,7 +1677,7 @@ export const cachedEvents = onRequest({ cors: true, region: SCHEDULER_REGION }, 
           sheetUrl: data.sheetUrl,
           spreadsheetId: data.spreadsheetId || extractSpreadsheetId(data.sheetUrl) || null,
           eventUrl: data.eventUrl || null,
-          label: data.label,
+          label: data.source === 'manual' ? data.title : data.label,
           startDate: data.startDate?.toDate?.().toISOString?.() || null,
           endDate: data.endDate?.toDate?.().toISOString?.() || null,
           startDateKey: data.startDateKey || toDateKey(data.startDate?.toDate?.() || null),

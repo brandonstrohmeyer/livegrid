@@ -78,6 +78,14 @@ describe('event resolution helpers', () => {
       now: new Date('2026-04-04T09:15:00')
     }).status).toBe('active')
 
+    const morningState = resolveSelectedScheduleState({
+      ...base,
+      now: new Date('2026-04-03T07:00:00')
+    })
+    expect(morningState.status).toBe('active')
+    expect(morningState.activeWindowStart.getHours()).toBe(0)
+    expect(morningState.activeWindowStart.getMinutes()).toBe(0)
+
     expect(resolveSelectedScheduleState({
       ...base,
       now: new Date('2026-04-06T09:15:00')

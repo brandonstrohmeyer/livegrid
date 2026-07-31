@@ -1076,7 +1076,7 @@ function buildEventLabel(event) {
         return `[NASA-SE] ${event.title}`;
     if (event.source === 'hod')
         return `[HOD-MA] ${event.title}`;
-    return `[CUSTOM] ${event.title}`;
+    return event.title;
 }
 function parseDateKeyAsUtcDate(value) {
     if (typeof value !== 'string')
@@ -1505,7 +1505,7 @@ exports.cachedEvents = (0, https_1.onRequest)({ cors: true, region: SCHEDULER_RE
                 sheetUrl: data.sheetUrl,
                 spreadsheetId: data.spreadsheetId || extractSpreadsheetId(data.sheetUrl) || null,
                 eventUrl: data.eventUrl || null,
-                label: data.label,
+                label: data.source === 'manual' ? data.title : data.label,
                 startDate: data.startDate?.toDate?.().toISOString?.() || null,
                 endDate: data.endDate?.toDate?.().toISOString?.() || null,
                 startDateKey: data.startDateKey || (0, eventDates_1.toDateKey)(data.startDate?.toDate?.() || null),

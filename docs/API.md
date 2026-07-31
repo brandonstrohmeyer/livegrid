@@ -18,6 +18,22 @@ Aliases: `sheet`, `scheduleUrl`, `schedule`.
 When building the URL, encode the Google Sheets URL so any `#gid=...` fragment
 and query string values stay inside the parameter value.
 
+### event
+
+Prefills the selected schedule from a cached event id. This keeps the selected
+event identity and date range intact, even when multiple events use the same
+Google spreadsheet.
+
+Example:
+
+```text
+https://livegrid.stro.io/?event=manual%3Amanual-event-id
+```
+
+Aliases: `eventId`, `event_id`.
+
+If both `sheetUrl` and `event` are present, `sheetUrl` takes precedence.
+
 ## Cloud Functions
 
 ### GET /api/admin-events

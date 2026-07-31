@@ -64,6 +64,7 @@ const functionEndpoint = (proxyPath, functionName) => {
 const cachedEventsEndpoint = functionEndpoint('cached-events', 'cachedEvents')
 const adminEventsEndpoint = functionEndpoint('admin-events', 'adminEvents')
 const sheetUrlQueryParamNames = ['sheetUrl', 'sheet', 'scheduleUrl', 'schedule']
+const eventQueryParamNames = ['event', 'eventId', 'event_id']
 
 const sheetsEndpoint = (path) => {
   if (!functionsBaseUrl) {
@@ -151,6 +152,24 @@ export function getSheetUrlFromQuery(search) {
     return extractSpreadsheetId(candidate) ? candidate : ''
   } catch (err) {
     log.warn('schedule_query.parse_failed', undefined, err)
+    return ''
+  }
+}
+
+export function getEventIdFromQuery(search) {
+  if (!search || typeof search !== 'string') return ''
+
+  try {
+    const params = new URLSearchParams(search)
+    const rawValue = eventQueryParamNames
+      .map(name => params.get(name))
+      .find(value => typeof value === 'string' && value.trim())
+
+    if (!rawValue) return ''
+    const candidate = rawValue.trim()
+    return /^[a-zA-Z0-9:_-]+$/.test(candidate) ? candidate : ''
+  } catch (err) {
+    log.warn('event_query.parse_failed', undefined, err)
     return ''
   }
 }
@@ -457,7 +476,8 @@ export default function App() {
   // Check URL parameters for demo mode BEFORE any state initialization
   const urlParams = new URLSearchParams(window.location.search)
   const querySheetUrl = getSheetUrlFromQuery(window.location.search)
-  const isDemoMode = !querySheetUrl && (urlParams.get('demo') === 'true' || urlParams.get('demo') === '1')
+  const queryEventId = querySheetUrl ? '' : getEventIdFromQuery(window.location.search)
+  const isDemoMode = !querySheetUrl && !queryEventId && (urlParams.get('demo') === 'true' || urlParams.get('demo') === '1')
   
   // Calculate demo offsets once if needed
   const getDemoOffsets = () => {
@@ -504,7 +524,8 @@ export default function App() {
     () => DEFAULT_SCHEDULE_PARSER_ID
   )
   const [storedCustomUrl, setCustomUrl] = useSyncedPreference('customUrl', () => querySheetUrl || '')
-  const customUrl = querySheetUrl || storedCustomUrl
+  const [queryEventSheetUrl, setQueryEventSheetUrl] = useState('')
+  const customUrl = querySheetUrl || queryEventSheetUrl || (queryEventId ? '' : storedCustomUrl)
   const [autoScrollEnabled, setAutoScrollEnabled] = useSyncedPreference('autoScrollEnabled', () => true)
   const [staleThresholdMinutes, setStaleThresholdMinutes] = useSyncedPreference(
     'staleThresholdMinutes',
@@ -704,6 +725,10 @@ export default function App() {
       ? allCachedEvents
       : [...allCachedEvents, currentDirectSheetEvent]
   }, [allCachedEvents, currentDirectSheetEvent, customUrl, selectedSpreadsheetId])
+  const querySelectedEvent = useMemo(() => {
+    if (!queryEventId) return null
+    return allKnownEvents.find(ev => ev?.id === queryEventId || ev?.eventId === queryEventId) || null
+  }, [allKnownEvents, queryEventId])
   const combinedEvents = useMemo(() => (
     allKnownEvents
       .filter(ev => !isCachedEventPast(ev, now))
@@ -721,12 +746,19 @@ export default function App() {
     if (isLocalDemoScheduleActive) return true
     return false
   }, [customUrl, isLocalDemoScheduleActive])
-  const eventMatchResult = useMemo(() => (
-    matchCachedEventForSheet(allKnownEvents, {
+  const eventMatchResult = useMemo(() => {
+    if (querySelectedEvent) {
+      return {
+        event: querySelectedEvent,
+        matchType: 'eventId',
+        spreadsheetId: querySelectedEvent.spreadsheetId || extractSpreadsheetId(querySelectedEvent.sheetUrl || '')
+      }
+    }
+    return matchCachedEventForSheet(allKnownEvents, {
       customUrl,
       spreadsheetId: selectedSpreadsheetId
     })
-  ), [allKnownEvents, customUrl, selectedSpreadsheetId])
+  }, [allKnownEvents, customUrl, querySelectedEvent, selectedSpreadsheetId])
   const matchedEvent = eventMatchResult.event || null
   const anchoredScheduleInfo = useMemo(() => {
     if (matchedEvent?.dateResolved) {
@@ -973,9 +1005,11 @@ export default function App() {
 
   useEffect(() => {
     if (!querySheetUrl || storedCustomUrl === querySheetUrl) return
+    setQueryEventSheetUrl('')
     setCustomUrl(querySheetUrl)
     setSelectedRssEventId('')
     setSelectedHodEventId('')
+    setSelectedManualEventId('')
     setSelectedCsvFile('')
     setDebugMode(false)
     setClockOffset(0)
@@ -983,6 +1017,16 @@ export default function App() {
     setClockOffsetInput('0')
     setDayOffsetInput('0')
   }, [querySheetUrl, setCustomUrl, setSelectedCsvFile, storedCustomUrl])
+
+  useEffect(() => {
+    if (!queryEventId || querySheetUrl || !eventsLookupReady || !querySelectedEvent?.sheetUrl) return
+    if (queryEventSheetUrl === querySelectedEvent.sheetUrl && selectedEventId === querySelectedEvent.id) return
+
+    selectEventForSchedule(querySelectedEvent, {
+      trackSelection: false,
+      updateQueryEventSheetUrl: true
+    })
+  }, [eventsLookupReady, queryEventId, queryEventSheetUrl, querySelectedEvent, querySheetUrl, selectedEventId])
 
   useEffect(() => {
     if (!customUrl || !matchedEvent || matchedEvent.source !== 'nasa') {
@@ -998,6 +1042,14 @@ export default function App() {
       return
     }
     setSelectedHodEventId(matchedEvent.id || '')
+  }, [customUrl, matchedEvent])
+
+  useEffect(() => {
+    if (!customUrl || !matchedEvent || matchedEvent.source !== 'manual') {
+      setSelectedManualEventId('')
+      return
+    }
+    setSelectedManualEventId(matchedEvent.id || '')
   }, [customUrl, matchedEvent])
 
   useEffect(() => {
@@ -2240,18 +2292,17 @@ export default function App() {
     }
   }
   
-  // Handle selection of an event from the combined event list
-  function handleEventSelect(event) {
-    const eventId = event.target.value
+  function selectEventForSchedule(selectedEvent, {
+    trackSelection = true,
+    updateQueryEventSheetUrl = false
+  } = {}) {
+    const eventId = selectedEvent?.id || ''
     if (!eventId) {
       setSelectedRssEventId('')
       setSelectedHodEventId('')
       setSelectedManualEventId('')
       return
     }
-
-    const selectedEvent = allKnownEvents.find(ev => ev.id === eventId)
-    if (!selectedEvent) return
 
     if (selectedEvent.source === 'nasa') {
       setSelectedRssEventId(eventId)
@@ -2266,13 +2317,20 @@ export default function App() {
       setSelectedRssEventId('')
       setSelectedHodEventId('')
     }
+    if (updateQueryEventSheetUrl) {
+      setQueryEventSheetUrl(selectedEvent.sheetUrl || '')
+    } else if (queryEventSheetUrl) {
+      setQueryEventSheetUrl('')
+    }
     setCustomUrl(selectedEvent.sheetUrl)
 
-    reportEventSelected({
-      authState: user ? 'signed_in' : 'anonymous',
-      source: selectedEvent.source || 'unknown',
-      eventId
-    })
+    if (trackSelection) {
+      reportEventSelected({
+        authState: user ? 'signed_in' : 'anonymous',
+        source: selectedEvent.source || 'unknown',
+        eventId
+      })
+    }
 
     // Exit demo/debug mode and reset offsets when switching to a live sheet
     if (debugMode) {
@@ -2281,6 +2339,19 @@ export default function App() {
       setDayOffset(0)
       setSelectedCsvFile('')
     }
+  }
+
+  // Handle selection of an event from the combined event list
+  function handleEventSelect(event) {
+    const eventId = event.target.value
+    if (!eventId) {
+      selectEventForSchedule(null)
+      return
+    }
+
+    const selectedEvent = allKnownEvents.find(ev => ev.id === eventId)
+    if (!selectedEvent) return
+    selectEventForSchedule(selectedEvent)
   }
 
   async function handleAdminEventSubmit(event) {

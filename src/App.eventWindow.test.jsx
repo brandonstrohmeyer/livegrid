@@ -311,6 +311,54 @@ describe('App event window state', () => {
     expect(fetchedUrls.some(url => url.includes('/sheets/SAVED_SHEET_ID/tabs'))).toBe(false)
   })
 
+  it('prefills the selected schedule from an event id query parameter', async () => {
+    const querySheetUrl = 'https://docs.google.com/spreadsheets/d/MANUAL_QUERY_SHEET_ID/edit#gid=123'
+    vi.setSystemTime(new Date(2026, 6, 31, 12, 0, 0))
+
+    await renderAppWithEvent({
+      customUrl: 'https://docs.google.com/spreadsheets/d/SAVED_SHEET_ID/edit#gid=123',
+      spreadsheetId: 'MANUAL_QUERY_SHEET_ID',
+      locationSearch: '?event=manual%3Amanual-query-event',
+      events: [
+        {
+          id: 'manual:manual-query-event',
+          eventId: 'manual-query-event',
+          source: 'manual',
+          title: 'Manual QR Weekend',
+          sheetUrl: querySheetUrl,
+          spreadsheetId: 'MANUAL_QUERY_SHEET_ID',
+          startDateKey: '2026-07-31',
+          endDateKey: '2026-08-02',
+          dateSource: 'admin',
+          dateResolved: true
+        },
+        {
+          id: 'manual:other-event',
+          eventId: 'other-event',
+          source: 'manual',
+          title: 'Other Manual Weekend',
+          sheetUrl: querySheetUrl,
+          spreadsheetId: 'MANUAL_QUERY_SHEET_ID',
+          startDateKey: '2026-08-07',
+          endDateKey: '2026-08-09',
+          dateSource: 'admin',
+          dateResolved: true
+        }
+      ]
+    })
+
+    expect(await screen.findByText(/Spreadsheet id: MANUAL_QUERY_SHEET_ID/i)).toBeInTheDocument()
+    expect(screen.getByText(/Match source: manual \(eventId\)/i)).toBeInTheDocument()
+    expect(screen.getByText(/Matched event id: manual:manual-query-event/i)).toBeInTheDocument()
+    expect(screen.getByText(/Event start key: 2026-07-31/i)).toBeInTheDocument()
+
+    const fetchedUrls = globalThis.fetch.mock.calls.map(([input]) => (
+      typeof input === 'string' ? input : input?.url || ''
+    ))
+    expect(fetchedUrls.some(url => url.includes('/sheets/MANUAL_QUERY_SHEET_ID/tabs'))).toBe(true)
+    expect(fetchedUrls.some(url => url.includes('/sheets/SAVED_SHEET_ID/tabs'))).toBe(false)
+  })
+
   it('shows fallback mode for known-source events with unresolved dates', async () => {
     vi.setSystemTime(new Date(2026, 2, 31, 7, 50, 0))
 

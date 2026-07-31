@@ -88,7 +88,7 @@ describe('functions emulator', () => {
       source: 'manual',
       title: 'Manual Track Weekend',
       spreadsheetId: 'MANUAL_SHEET_ID',
-      label: '[CUSTOM] Manual Track Weekend',
+      label: 'Manual Track Weekend',
       startDateKey: '2026-05-01',
       endDateKey: '2026-05-02',
       dateSource: 'admin',

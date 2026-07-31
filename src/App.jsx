@@ -114,9 +114,9 @@ async function callAdminEvents({ method = 'GET', body, authToken } = {}) {
 }
 
 function getCachedEventLabel(event) {
+  if (event?.source === 'manual') return event.title || 'Event'
   if (event?.label) return event.label
   if (event?.source === 'hod') return `[HOD-MA] ${event.title}`
-  if (event?.source === 'manual') return `[CUSTOM] ${event.title}`
   return `[NASA-SE] ${event?.title || 'Event'}`
 }
 

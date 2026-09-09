@@ -31,6 +31,17 @@ describe('event date helpers', () => {
     expect(toDateKey(range?.end || null)).toBe('2026-08-02')
   })
 
+  it('uses the last day in a compact multi-day event range', () => {
+    const range = parseDateRangeFromText(
+      'Savannah Sizzler, Sept 4-5-6, Roebling Road',
+      new Date('2026-01-01T00:00:00Z')
+    )
+
+    expect(range).not.toBeNull()
+    expect(toDateKey(range?.start || null)).toBe('2026-09-04')
+    expect(toDateKey(range?.end || null)).toBe('2026-09-06')
+  })
+
   it('resolves NASA dates from an event page when feed text has no date', () => {
     const resolution = resolveEventDateRangeFromCandidates([
       { text: 'NASA-SE Event Without Date', source: 'title' },

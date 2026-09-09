@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import {
+  admin,
   db,
   clearFirestore,
   createUser,
+  signInUser,
   callFunction,
   callHosting,
   projectId
@@ -39,6 +41,88 @@ describe('functions emulator', () => {
     expect(response.ok).toBe(true)
     const payload = await response.json()
     expect(Array.isArray(payload.events)).toBe(true)
+  })
+
+  it('creates admin-managed persistent events in the shared cache', async () => {
+    const password = 'secret123'
+    const auth = await createUser({ email: 'admin-events@example.com', password })
+    await admin.auth().setCustomUserClaims(auth.localId, { livegridAdmin: true })
+    const adminAuth = await signInUser({ email: 'admin-events@example.com', password })
+
+    const unauthorized = await callFunction('adminEvents', {
+      body: {
+        title: 'Rejected Event',
+        sheetUrl: 'https://docs.google.com/spreadsheets/d/REJECTED_SHEET_ID/edit',
+        startDate: '2026-05-01',
+        endDate: '2026-05-02'
+      }
+    })
+    expect(unauthorized.status).toBe(401)
+
+    const nonAdminAuth = await createUser({ email: 'not-admin-events@example.com', password })
+    const forbidden = await callFunction('adminEvents', {
+      method: 'GET',
+      idToken: nonAdminAuth.idToken
+    })
+    expect(forbidden.status).toBe(403)
+
+    const accessResp = await callFunction('adminEvents', {
+      method: 'GET',
+      idToken: adminAuth.idToken
+    })
+    expect(accessResp.ok).toBe(true)
+    await expect(accessResp.json()).resolves.toMatchObject({ admin: true })
+
+    const createResp = await callFunction('adminEvents', {
+      body: {
+        title: 'Manual Track Weekend',
+        sheetUrl: 'https://docs.google.com/spreadsheets/d/MANUAL_SHEET_ID/edit#gid=123',
+        startDate: '2026-05-01',
+        endDate: '2026-05-02'
+      },
+      idToken: adminAuth.idToken
+    })
+    expect(createResp.ok).toBe(true)
+    const createPayload = await createResp.json()
+    expect(createPayload.event).toMatchObject({
+      source: 'manual',
+      title: 'Manual Track Weekend',
+      spreadsheetId: 'MANUAL_SHEET_ID',
+      label: 'Manual Track Weekend',
+      startDateKey: '2026-05-01',
+      endDateKey: '2026-05-02',
+      dateSource: 'admin',
+      dateResolved: true
+    })
+
+    const cachedResp = await callFunction('cachedEvents', { method: 'GET' })
+    expect(cachedResp.ok).toBe(true)
+    const cachedPayload = await cachedResp.json()
+    const cachedEvent = cachedPayload.events.find(event => event.id === createPayload.event.id)
+    expect(cachedEvent).toMatchObject({
+      source: 'manual',
+      title: 'Manual Track Weekend',
+      sheetUrl: 'https://docs.google.com/spreadsheets/d/MANUAL_SHEET_ID/edit#gid=123',
+      startDateKey: '2026-05-01',
+      endDateKey: '2026-05-02'
+    })
+
+    const deleteResp = await callFunction('adminEvents', {
+      method: 'DELETE',
+      body: { id: createPayload.event.id },
+      idToken: adminAuth.idToken
+    })
+    expect(deleteResp.ok).toBe(true)
+    await expect(deleteResp.json()).resolves.toMatchObject({
+      status: 'deleted',
+      id: createPayload.event.id
+    })
+
+    const cachedAfterDeleteResp = await callFunction('cachedEvents', { method: 'GET' })
+    expect(cachedAfterDeleteResp.ok).toBe(true)
+    const cachedAfterDeletePayload = await cachedAfterDeleteResp.json()
+    const deletedEvent = cachedAfterDeletePayload.events.find(event => event.id === createPayload.event.id)
+    expect(deletedEvent).toBeUndefined()
   })
 
   it('registers and unregisters push tokens', async () => {

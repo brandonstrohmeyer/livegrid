@@ -113,7 +113,7 @@ export function resolveSelectedScheduleState({
   }
 
   const fallbackWindow = buildWindowFromEventDates(startDateKey, endDateKey)
-  const activeWindowStart = anchoredWindowStart || fallbackWindow.windowStart
+  const activeWindowStart = fallbackWindow.windowStart || anchoredWindowStart
   const activeWindowEnd = anchoredWindowEnd || fallbackWindow.windowEnd
 
   if (!activeWindowStart || !activeWindowEnd || !(now instanceof Date) || Number.isNaN(now.getTime())) {

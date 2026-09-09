@@ -110,7 +110,7 @@ function parseDateRangeFromText(text, fallbackDate) {
             };
         }
     }
-    const singleMonthRegex = new RegExp(`\\b${MONTH_PATTERN}\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s*-\\s*(\\d{1,2})(?:st|nd|rd|th)?)?(?:[^0-9]+(\\d{4}))?`, 'i');
+    const singleMonthRegex = new RegExp(`\\b${MONTH_PATTERN}\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s*-\\s*(\\d{1,2})(?:st|nd|rd|th)?)*(?:[^0-9]+(\\d{4}))?`, 'i');
     const singleMonthMatch = textWithoutWeekdays.match(singleMonthRegex);
     if (singleMonthMatch) {
         const monthIndex = monthNameToIndex(singleMonthMatch[1]);

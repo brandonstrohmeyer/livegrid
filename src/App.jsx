@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback, useLayoutEffect } from 'react'
 import version from './version.js'
 import { Sidebar, Menu, MenuItem } from 'react-pro-sidebar'
-import { MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose } from 'react-icons/md'
+import { MdAdminPanelSettings, MdFullscreen, MdFullscreenExit, MdSettings, MdBuild, MdPlayArrow, MdWarning, MdLink, MdHelpOutline, MdNotificationsActive, MdNotificationsPaused, MdMenu, MdClose, MdDelete, MdContentCopy } from 'react-icons/md'
 import { GiFullMotorcycleHelmet } from 'react-icons/gi'
 import { FaInstagram } from 'react-icons/fa'
 import { FaEnvelope } from 'react-icons/fa'
@@ -62,7 +62,14 @@ const functionEndpoint = (proxyPath, functionName) => {
 }
 
 const cachedEventsEndpoint = functionEndpoint('cached-events', 'cachedEvents')
+const adminEventsEndpoint = functionEndpoint('admin-events', 'adminEvents')
 const sheetUrlQueryParamNames = ['sheetUrl', 'sheet', 'scheduleUrl', 'schedule']
+const eventQueryParamNames = ['event', 'eventId', 'event_id']
+const eventSourceLabels = {
+  hod: 'HOD',
+  manual: 'Manual',
+  nasa: 'NASA'
+}
 
 const sheetsEndpoint = (path) => {
   if (!functionsBaseUrl) {
@@ -96,6 +103,29 @@ async function callSheetsApi(path, { method = 'GET', body } = {}) {
   return payload
 }
 
+async function callAdminEvents({ method = 'GET', body, authToken } = {}) {
+  const response = await fetch(adminEventsEndpoint, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+    },
+    body: body ? JSON.stringify(body) : undefined
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(payload?.error || `Admin events request failed (${response.status})`)
+  }
+  return payload
+}
+
+function getCachedEventLabel(event) {
+  if (event?.source === 'manual') return event.title || 'Event'
+  if (event?.label) return event.label
+  if (event?.source === 'hod') return `[HOD-MA] ${event.title}`
+  return `[NASA-SE] ${event?.title || 'Event'}`
+}
+
 export function getSheetUrlFromQuery(search) {
   if (!search || typeof search !== 'string') return ''
 
@@ -127,6 +157,24 @@ export function getSheetUrlFromQuery(search) {
     return extractSpreadsheetId(candidate) ? candidate : ''
   } catch (err) {
     log.warn('schedule_query.parse_failed', undefined, err)
+    return ''
+  }
+}
+
+export function getEventIdFromQuery(search) {
+  if (!search || typeof search !== 'string') return ''
+
+  try {
+    const params = new URLSearchParams(search)
+    const rawValue = eventQueryParamNames
+      .map(name => params.get(name))
+      .find(value => typeof value === 'string' && value.trim())
+
+    if (!rawValue) return ''
+    const candidate = rawValue.trim()
+    return /^[a-zA-Z0-9:_-]+$/.test(candidate) ? candidate : ''
+  } catch (err) {
+    log.warn('event_query.parse_failed', undefined, err)
     return ''
   }
 }
@@ -433,7 +481,8 @@ export default function App() {
   // Check URL parameters for demo mode BEFORE any state initialization
   const urlParams = new URLSearchParams(window.location.search)
   const querySheetUrl = getSheetUrlFromQuery(window.location.search)
-  const isDemoMode = !querySheetUrl && (urlParams.get('demo') === 'true' || urlParams.get('demo') === '1')
+  const queryEventId = querySheetUrl ? '' : getEventIdFromQuery(window.location.search)
+  const isDemoMode = !querySheetUrl && !queryEventId && (urlParams.get('demo') === 'true' || urlParams.get('demo') === '1')
   
   // Calculate demo offsets once if needed
   const getDemoOffsets = () => {
@@ -480,7 +529,8 @@ export default function App() {
     () => DEFAULT_SCHEDULE_PARSER_ID
   )
   const [storedCustomUrl, setCustomUrl] = useSyncedPreference('customUrl', () => querySheetUrl || '')
-  const customUrl = querySheetUrl || storedCustomUrl
+  const [queryEventSheetUrl, setQueryEventSheetUrl] = useState('')
+  const customUrl = querySheetUrl || queryEventSheetUrl || (queryEventId ? '' : storedCustomUrl)
   const [autoScrollEnabled, setAutoScrollEnabled] = useSyncedPreference('autoScrollEnabled', () => true)
   const [staleThresholdMinutes, setStaleThresholdMinutes] = useSyncedPreference(
     'staleThresholdMinutes',
@@ -493,6 +543,7 @@ export default function App() {
   const [showHelpSection, setShowHelpSection] = useState(false)
   const [showAccountSection, setShowAccountSection] = useState(false)
   const [showNotificationsSection, setShowNotificationsSection] = useState(false)
+  const [showAdminSection, setShowAdminSection] = useState(false)
   const [accountPanelMaxHeight, setAccountPanelMaxHeight] = useState(null)
   const [runGroupsExpanded, setRunGroupsExpanded] = useState(false)
   const [mobileCurrentExpanded, setMobileCurrentExpanded] = useState(false)
@@ -508,11 +559,26 @@ export default function App() {
   const [hodEvents, setHodEvents] = useState([])
   const [hodLoading, setHodLoading] = useState(false)
   const [hodError, setHodError] = useState(null)
+  const [manualEvents, setManualEvents] = useState([])
+  const [manualLoading, setManualLoading] = useState(false)
+  const [manualError, setManualError] = useState(null)
   const [selectedRssEventId, setSelectedRssEventId] = useState('')
   const [selectedHodEventId, setSelectedHodEventId] = useState('')
+  const [selectedManualEventId, setSelectedManualEventId] = useState('')
   const [directSheetEvent, setDirectSheetEvent] = useState(null)
   const [directSheetEventResolving, setDirectSheetEventResolving] = useState(false)
   const [eventsLookupReady, setEventsLookupReady] = useState(false)
+  const [adminAccess, setAdminAccess] = useState('signed_out')
+  const [adminForm, setAdminForm] = useState({
+    title: '',
+    sheetUrl: '',
+    startDate: '',
+    endDate: ''
+  })
+  const [adminSubmitting, setAdminSubmitting] = useState(false)
+  const [adminDeletingEventId, setAdminDeletingEventId] = useState('')
+  const [adminFormMessage, setAdminFormMessage] = useState(null)
+  const [adminCopiedEventId, setAdminCopiedEventId] = useState('')
   const eventsFetchStartedRef = useRef(false)
   const directSheetEventRequestRef = useRef(0)
   const sheetSelectionRef = useRef({ url: '', spreadsheetId: '', sheetId: null, sheetTitle: '', spreadsheetTitle: '' })
@@ -632,14 +698,37 @@ export default function App() {
     }
   }, [sidebarOpen])
 
+  useEffect(() => {
+    if (!adminCopiedEventId) return undefined
+    const timeoutId = window.setTimeout(() => setAdminCopiedEventId(''), 1800)
+    return () => window.clearTimeout(timeoutId)
+  }, [adminCopiedEventId])
+
   const staleThresholdMs = useMemo(() => Math.max(1, staleThresholdMinutes) * 60000, [staleThresholdMinutes])
   const staleThresholdLabel = useMemo(() => (
     staleThresholdMinutes === 1 ? '1 minute' : `${staleThresholdMinutes} minutes`
   ), [staleThresholdMinutes])
   const allCachedEvents = useMemo(() => ([
     ...rssEvents,
-    ...hodEvents
-  ]), [rssEvents, hodEvents])
+    ...hodEvents,
+    ...manualEvents
+  ]), [rssEvents, hodEvents, manualEvents])
+  const adminManualEvents = useMemo(() => (
+    [...manualEvents].sort((a, b) => {
+      const dateCompare = String(a.startDateKey || a.startDate || '').localeCompare(String(b.startDateKey || b.startDate || ''))
+      if (dateCompare) return dateCompare
+      return String(a.title || '').localeCompare(String(b.title || ''))
+    })
+  ), [manualEvents])
+  const adminDiscoveredEvents = useMemo(() => (
+    [...allCachedEvents].sort((a, b) => {
+      const dateCompare = String(a.startDateKey || a.startDate || '').localeCompare(String(b.startDateKey || b.startDate || ''))
+      if (dateCompare) return dateCompare
+      const sourceCompare = String(a.source || '').localeCompare(String(b.source || ''))
+      if (sourceCompare) return sourceCompare
+      return String(a.title || a.label || '').localeCompare(String(b.title || b.label || ''))
+    })
+  ), [allCachedEvents])
   const selectedSpreadsheetId = useMemo(() => extractSpreadsheetId(customUrl), [customUrl])
   const currentDirectSheetEvent = useMemo(() => {
     if (!directSheetEvent || !selectedSpreadsheetId) return null
@@ -657,29 +746,40 @@ export default function App() {
       ? allCachedEvents
       : [...allCachedEvents, currentDirectSheetEvent]
   }, [allCachedEvents, currentDirectSheetEvent, customUrl, selectedSpreadsheetId])
+  const querySelectedEvent = useMemo(() => {
+    if (!queryEventId) return null
+    return allKnownEvents.find(ev => ev?.id === queryEventId || ev?.eventId === queryEventId) || null
+  }, [allKnownEvents, queryEventId])
   const combinedEvents = useMemo(() => (
     allKnownEvents
       .filter(ev => !isCachedEventPast(ev, now))
       .map(ev => ({
         ...ev,
-        label: ev.label || (ev.source === 'hod' ? `[HOD-MA] ${ev.title}` : `[NASA-SE] ${ev.title}`)
+        label: getCachedEventLabel(ev)
       }))
   ), [allKnownEvents, now])
   const selectedEventId = useMemo(
-    () => selectedRssEventId || selectedHodEventId || '',
-    [selectedRssEventId, selectedHodEventId]
+    () => selectedRssEventId || selectedHodEventId || selectedManualEventId || '',
+    [selectedRssEventId, selectedHodEventId, selectedManualEventId]
   )
   const hasSelectedSchedule = useMemo(() => {
     if (customUrl) return true
     if (isLocalDemoScheduleActive) return true
     return false
   }, [customUrl, isLocalDemoScheduleActive])
-  const eventMatchResult = useMemo(() => (
-    matchCachedEventForSheet(allKnownEvents, {
+  const eventMatchResult = useMemo(() => {
+    if (querySelectedEvent) {
+      return {
+        event: querySelectedEvent,
+        matchType: 'eventId',
+        spreadsheetId: querySelectedEvent.spreadsheetId || extractSpreadsheetId(querySelectedEvent.sheetUrl || '')
+      }
+    }
+    return matchCachedEventForSheet(allKnownEvents, {
       customUrl,
       spreadsheetId: selectedSpreadsheetId
     })
-  ), [allKnownEvents, customUrl, selectedSpreadsheetId])
+  }, [allKnownEvents, customUrl, querySelectedEvent, selectedSpreadsheetId])
   const matchedEvent = eventMatchResult.event || null
   const anchoredScheduleInfo = useMemo(() => {
     if (matchedEvent?.dateResolved) {
@@ -863,6 +963,7 @@ export default function App() {
   }, [
     sidebarOpen,
     showAccountSection,
+    showAdminSection,
     showHelpSection,
     showNotificationsSection,
     viewportHeightPx,
@@ -925,9 +1026,11 @@ export default function App() {
 
   useEffect(() => {
     if (!querySheetUrl || storedCustomUrl === querySheetUrl) return
+    setQueryEventSheetUrl('')
     setCustomUrl(querySheetUrl)
     setSelectedRssEventId('')
     setSelectedHodEventId('')
+    setSelectedManualEventId('')
     setSelectedCsvFile('')
     setDebugMode(false)
     setClockOffset(0)
@@ -935,6 +1038,16 @@ export default function App() {
     setClockOffsetInput('0')
     setDayOffsetInput('0')
   }, [querySheetUrl, setCustomUrl, setSelectedCsvFile, storedCustomUrl])
+
+  useEffect(() => {
+    if (!queryEventId || querySheetUrl || !eventsLookupReady || !querySelectedEvent?.sheetUrl) return
+    if (queryEventSheetUrl === querySelectedEvent.sheetUrl && selectedEventId === querySelectedEvent.id) return
+
+    selectEventForSchedule(querySelectedEvent, {
+      trackSelection: false,
+      updateQueryEventSheetUrl: true
+    })
+  }, [eventsLookupReady, queryEventId, queryEventSheetUrl, querySelectedEvent, querySheetUrl, selectedEventId])
 
   useEffect(() => {
     if (!customUrl || !matchedEvent || matchedEvent.source !== 'nasa') {
@@ -950,6 +1063,14 @@ export default function App() {
       return
     }
     setSelectedHodEventId(matchedEvent.id || '')
+  }, [customUrl, matchedEvent])
+
+  useEffect(() => {
+    if (!customUrl || !matchedEvent || matchedEvent.source !== 'manual') {
+      setSelectedManualEventId('')
+      return
+    }
+    setSelectedManualEventId(matchedEvent.id || '')
   }, [customUrl, matchedEvent])
 
   useEffect(() => {
@@ -1008,15 +1129,15 @@ export default function App() {
   
   // Preferences sync is handled via context
 
-  // Load cached event metadata when the event picker opens or a saved sheet needs resolution.
+  // Load cached event metadata when the event picker opens, a saved sheet needs resolution, or admins inspect events.
   useEffect(() => {
-    if (!optionsExpanded && !customUrl) return
+    if (!optionsExpanded && !customUrl && !(adminAccess === 'allowed' && showAdminSection)) return
 
     if (!eventsFetchStartedRef.current) {
       eventsFetchStartedRef.current = true
       fetchCachedEvents()
     }
-  }, [optionsExpanded, customUrl])
+  }, [adminAccess, optionsExpanded, showAdminSection, customUrl])
   
   // Toggle body class for debug mode overflow handling.
   useEffect(() => {
@@ -1122,7 +1243,39 @@ export default function App() {
     setSheetName('')
     setSelectedRssEventId('')
     setSelectedHodEventId('')
-  }, [setCustomUrl, setSelectedHodEventId, setSelectedRssEventId, setSheetName])
+    setSelectedManualEventId('')
+  }, [setCustomUrl, setSelectedHodEventId, setSelectedManualEventId, setSelectedRssEventId, setSheetName])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!user) {
+      setAdminAccess('signed_out')
+      setShowAdminSection(false)
+      setAdminFormMessage(null)
+      return undefined
+    }
+
+    setAdminAccess('checking')
+    getAuthToken()
+      .then(authToken => {
+        if (!authToken) throw new Error('Authentication required')
+        return callAdminEvents({ authToken })
+      })
+      .then(() => {
+        if (cancelled) return
+        setAdminAccess('allowed')
+      })
+      .catch(error => {
+        if (cancelled) return
+        setAdminAccess('denied')
+        setShowAdminSection(false)
+        log.info('admin.access_denied', { reason: error?.message || 'unknown' })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [getAuthToken, user])
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined
@@ -1394,8 +1547,10 @@ export default function App() {
     try {
       setRssLoading(true)
       setHodLoading(true)
+      setManualLoading(true)
       setRssError(null)
       setHodError(null)
+      setManualError(null)
 
       const response = await fetch(cachedEventsEndpoint)
       if (!response.ok) {
@@ -1405,17 +1560,21 @@ export default function App() {
       const events = Array.isArray(payload?.events) ? payload.events : []
       setRssEvents(events.filter(ev => ev.source === 'nasa'))
       setHodEvents(events.filter(ev => ev.source === 'hod'))
+      setManualEvents(events.filter(ev => ev.source === 'manual'))
       setEventsLookupReady(true)
       setRssLoading(false)
       setHodLoading(false)
+      setManualLoading(false)
     } catch (err) {
       log.error('events.cache_load_failed', undefined, err)
       const message = 'Could not load cached events. You can still paste a Google Sheets URL manually.'
       setRssError(message)
       setHodError(message)
+      setManualError(message)
       setEventsLookupReady(true)
       setRssLoading(false)
       setHodLoading(false)
+      setManualLoading(false)
     }
   }
 
@@ -2154,33 +2313,45 @@ export default function App() {
     }
   }
   
-  // Handle selection of an event from the combined event list
-  function handleEventSelect(event) {
-    const eventId = event.target.value
+  function selectEventForSchedule(selectedEvent, {
+    trackSelection = true,
+    updateQueryEventSheetUrl = false
+  } = {}) {
+    const eventId = selectedEvent?.id || ''
     if (!eventId) {
       setSelectedRssEventId('')
       setSelectedHodEventId('')
+      setSelectedManualEventId('')
       return
     }
 
-    const nasaMatch = rssEvents.find(ev => ev.id === eventId)
-    if (nasaMatch) {
+    if (selectedEvent.source === 'nasa') {
       setSelectedRssEventId(eventId)
       setSelectedHodEventId('')
-      setCustomUrl(nasaMatch.sheetUrl)
-    } else {
-      const hodMatch = hodEvents.find(ev => ev.id === eventId)
-      if (!hodMatch) return
+      setSelectedManualEventId('')
+    } else if (selectedEvent.source === 'hod') {
       setSelectedHodEventId(eventId)
       setSelectedRssEventId('')
-      setCustomUrl(hodMatch.sheetUrl)
+      setSelectedManualEventId('')
+    } else if (selectedEvent.source === 'manual') {
+      setSelectedManualEventId(eventId)
+      setSelectedRssEventId('')
+      setSelectedHodEventId('')
     }
+    if (updateQueryEventSheetUrl) {
+      setQueryEventSheetUrl(selectedEvent.sheetUrl || '')
+    } else if (queryEventSheetUrl) {
+      setQueryEventSheetUrl('')
+    }
+    setCustomUrl(selectedEvent.sheetUrl)
 
-    reportEventSelected({
-      authState: user ? 'signed_in' : 'anonymous',
-      source: nasaMatch ? 'nasa' : 'hod',
-      eventId
-    })
+    if (trackSelection) {
+      reportEventSelected({
+        authState: user ? 'signed_in' : 'anonymous',
+        source: selectedEvent.source || 'unknown',
+        eventId
+      })
+    }
 
     // Exit demo/debug mode and reset offsets when switching to a live sheet
     if (debugMode) {
@@ -2190,6 +2361,100 @@ export default function App() {
       setSelectedCsvFile('')
     }
   }
+
+  // Handle selection of an event from the combined event list
+  function handleEventSelect(event) {
+    const eventId = event.target.value
+    if (!eventId) {
+      selectEventForSchedule(null)
+      return
+    }
+
+    const selectedEvent = allKnownEvents.find(ev => ev.id === eventId)
+    if (!selectedEvent) return
+    selectEventForSchedule(selectedEvent)
+  }
+
+  async function handleAdminEventSubmit(event) {
+    event.preventDefault()
+    setAdminSubmitting(true)
+    setAdminFormMessage(null)
+    try {
+      const authToken = await getAuthToken()
+      if (!authToken) throw new Error('Sign in again before creating an event.')
+      const payload = await callAdminEvents({
+        method: 'POST',
+        authToken,
+        body: adminForm
+      })
+      const createdEvent = payload?.event || null
+      await fetchCachedEvents()
+      if (createdEvent?.id && createdEvent?.sheetUrl) {
+        setSelectedManualEventId(createdEvent.id)
+        setSelectedRssEventId('')
+        setSelectedHodEventId('')
+        setCustomUrl(createdEvent.sheetUrl)
+      }
+      setAdminForm(prev => ({
+        ...prev,
+        title: '',
+        sheetUrl: '',
+        startDate: '',
+        endDate: ''
+      }))
+      setAdminFormMessage({ type: 'success', text: 'Persistent event created.' })
+    } catch (error) {
+      log.error('admin.event_create_failed', undefined, error)
+      setAdminFormMessage({ type: 'error', text: error?.message || 'Could not create event.' })
+    } finally {
+      setAdminSubmitting(false)
+    }
+  }
+
+  async function handleAdminEventDelete(eventId) {
+    const manualEvent = manualEvents.find(ev => ev.id === eventId)
+    if (!manualEvent?.id) return
+    if (typeof window !== 'undefined' && !window.confirm(`Delete "${manualEvent.title || 'this event'}"?`)) return
+
+    setAdminDeletingEventId(eventId)
+    setAdminFormMessage(null)
+    try {
+      const authToken = await getAuthToken()
+      if (!authToken) throw new Error('Sign in again before deleting an event.')
+      await callAdminEvents({
+        method: 'DELETE',
+        authToken,
+        body: { id: eventId }
+      })
+      await fetchCachedEvents()
+      if (selectedManualEventId === eventId) {
+        setSelectedManualEventId('')
+      }
+      setAdminFormMessage({ type: 'success', text: 'Persistent event deleted.' })
+    } catch (error) {
+      log.error('admin.event_delete_failed', undefined, error)
+      setAdminFormMessage({ type: 'error', text: error?.message || 'Could not delete event.' })
+    } finally {
+      setAdminDeletingEventId('')
+    }
+  }
+
+  async function handleAdminEventIdCopy(eventId) {
+    if (!eventId || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return
+    try {
+      await navigator.clipboard.writeText(eventId)
+      setAdminCopiedEventId(eventId)
+    } catch (error) {
+      log.warn('admin.event_id_copy_failed', { eventId }, error)
+    }
+  }
+
+  const adminEventFields = [
+    { key: 'title', label: 'Event title', type: 'text', placeholder: 'Event name' },
+    { key: 'sheetUrl', label: 'Spreadsheet URL', type: 'url', placeholder: 'https://docs.google.com/spreadsheets/d/...' },
+    { key: 'startDate', label: 'Start date', type: 'date', placeholder: '' },
+    { key: 'endDate', label: 'End date', type: 'date', placeholder: '' }
+  ]
   
   // Dynamic sizing based on content density
   const upcomingCount = Object.entries(nextSessionsByGroup).length
@@ -2209,6 +2474,7 @@ export default function App() {
   const sidebarContentPadding = '12px'
   const sidebarScrollPadding = '16px'
   const mainContentPaddingBottom = `calc(${mainPaddingBottomPx}px + ${safeAreaPaddingExpr})`
+  const isAdminViewActive = adminAccess === 'allowed' && showAdminSection
   const sidebarMenuItemStyles = useMemo(() => ({
     button: {
       '&:hover': {
@@ -2232,6 +2498,426 @@ export default function App() {
       color: '#b4c6dd'
     }
   }), [sidebarOpen])
+
+  function renderAdminConsole() {
+    return (
+      <main
+        style={{
+          width: '100%',
+          flex: '1 1 auto',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'flex-start',
+          paddingTop: isMobile ? '48px' : '36px'
+        }}
+      >
+        <section
+          style={{
+            width: '100%',
+            maxWidth: '760px',
+            background: '#f8fafc',
+            border: '1px solid #d8dee9',
+            borderRadius: '8px',
+            boxShadow: '0 1px 3px rgba(15,23,42,0.08)',
+            padding: isMobile ? '18px' : '24px',
+            boxSizing: 'border-box'
+          }}
+        >
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            marginBottom: '20px'
+          }}>
+            <div>
+              <div style={{fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: '#64748b', fontWeight: 700}}>
+                Admin
+              </div>
+              <h1 style={{margin: '4px 0 0 0', fontSize: isMobile ? '1.55rem' : '1.9rem', color: '#1f2937'}}>
+                Persistent Event
+              </h1>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowAdminSection(false)}
+              aria-label="Close admin console"
+              style={{
+                width: '40px',
+                height: '40px',
+                borderRadius: '8px',
+                border: '1px solid #cbd5e1',
+                background: '#fff',
+                color: '#334155',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              <MdClose size={18} />
+            </button>
+          </div>
+
+          <form onSubmit={handleAdminEventSubmit}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+              gap: '14px'
+            }}>
+              {adminEventFields.map(field => (
+                <label
+                  key={field.key}
+                  style={{
+                    display: 'block',
+                    fontSize: '0.86rem',
+                    fontWeight: 700,
+                    color: '#334155',
+                    gridColumn: field.key === 'sheetUrl' ? '1 / -1' : undefined
+                  }}
+                >
+                  {field.label}
+                  <input
+                    type={field.type}
+                    value={adminForm[field.key]}
+                    onChange={e => setAdminForm(prev => ({ ...prev, [field.key]: e.target.value }))}
+                    placeholder={field.placeholder}
+                    required
+                    style={{
+                      width: '100%',
+                      marginTop: '6px',
+                      padding: '10px 11px',
+                      borderRadius: '6px',
+                      border: '1px solid #cbd5e1',
+                      background: '#fff',
+                      color: '#111827',
+                      boxSizing: 'border-box',
+                      fontSize: '0.95rem'
+                    }}
+                  />
+                </label>
+              ))}
+            </div>
+
+            {adminFormMessage && (
+              <div
+                style={{
+                  marginTop: '16px',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  fontSize: '0.88rem',
+                  color: adminFormMessage.type === 'error' ? '#991b1b' : '#166534',
+                  border: adminFormMessage.type === 'error' ? '1px solid #fecaca' : '1px solid #bbf7d0',
+                  background: adminFormMessage.type === 'error' ? '#fef2f2' : '#f0fdf4'
+                }}
+              >
+                {adminFormMessage.text}
+              </div>
+            )}
+
+            <div style={{display: 'flex', justifyContent: 'flex-end', marginTop: '18px'}}>
+              <button
+                type="submit"
+                disabled={adminSubmitting}
+                style={{
+                  minWidth: '140px',
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  background: adminSubmitting ? '#94a3b8' : '#5e81ac',
+                  color: '#f8fafc',
+                  fontWeight: 700,
+                  cursor: adminSubmitting ? 'wait' : 'pointer'
+                }}
+              >
+                {adminSubmitting ? 'Creating...' : 'Create event'}
+              </button>
+            </div>
+          </form>
+
+          <div
+            style={{
+              marginTop: '28px',
+              paddingTop: '22px',
+              borderTop: '1px solid #d8dee9'
+            }}
+          >
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              marginBottom: '12px'
+            }}>
+              <h2 style={{margin: 0, fontSize: '1rem', color: '#1f2937'}}>
+                Discovered Events
+              </h2>
+              {(rssLoading || hodLoading || manualLoading) && (
+                <span style={{fontSize: '0.82rem', color: '#64748b'}}>
+                  Loading...
+                </span>
+              )}
+            </div>
+
+            {!manualError && !rssError && !hodError && !rssLoading && !hodLoading && !manualLoading && adminDiscoveredEvents.length === 0 && (
+              <div style={{
+                padding: '14px 12px',
+                borderRadius: '8px',
+                border: '1px solid #d8dee9',
+                background: '#fff',
+                color: '#64748b',
+                fontSize: '0.9rem'
+              }}>
+                No discovered events.
+              </div>
+            )}
+
+            {adminDiscoveredEvents.length > 0 && (
+              <div style={{display: 'grid', gap: '10px'}}>
+                {adminDiscoveredEvents.map(discoveredEvent => {
+                  const discoveredEventId = discoveredEvent.id || ''
+                  const dateRange = formatEventDateRange(
+                    discoveredEvent.startDateKey || discoveredEvent.startDate,
+                    discoveredEvent.endDateKey || discoveredEvent.endDate || discoveredEvent.startDateKey || discoveredEvent.startDate
+                  )
+                  const sourceLabel = eventSourceLabels[discoveredEvent.source] || discoveredEvent.source || 'Event'
+                  const copied = adminCopiedEventId === discoveredEventId
+                  return (
+                    <div
+                      key={discoveredEventId || `${discoveredEvent.source}-${discoveredEvent.eventId}-${discoveredEvent.sheetUrl}`}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1fr) auto',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '12px',
+                        borderRadius: '8px',
+                        border: '1px solid #d8dee9',
+                        background: '#fff'
+                      }}
+                    >
+                      <div style={{minWidth: 0}}>
+                        <div style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          alignItems: 'center',
+                          gap: '8px',
+                          color: '#1f2937',
+                          fontWeight: 700
+                        }}>
+                          <span style={{
+                            minWidth: 0,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}>
+                            {discoveredEvent.title || discoveredEvent.label || 'Untitled event'}
+                          </span>
+                          <span style={{
+                            flex: '0 0 auto',
+                            padding: '2px 6px',
+                            borderRadius: '6px',
+                            background: '#e5e7eb',
+                            color: '#475569',
+                            fontSize: '0.72rem',
+                            fontWeight: 800,
+                            textTransform: 'uppercase'
+                          }}>
+                            {sourceLabel}
+                          </span>
+                        </div>
+                        <div style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '8px',
+                          marginTop: '4px',
+                          color: '#64748b',
+                          fontSize: '0.83rem'
+                        }}>
+                          {dateRange && <span>{dateRange}</span>}
+                          {discoveredEvent.spreadsheetId && <span>{discoveredEvent.spreadsheetId}</span>}
+                        </div>
+                        {discoveredEventId && (
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            minWidth: 0,
+                            marginTop: '8px'
+                          }}>
+                            <code style={{
+                              display: 'block',
+                              minWidth: 0,
+                              maxWidth: '100%',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              userSelect: 'all',
+                              padding: '5px 7px',
+                              borderRadius: '6px',
+                              background: '#f1f5f9',
+                              color: '#334155',
+                              fontSize: '0.78rem'
+                            }}>
+                              {discoveredEventId}
+                            </code>
+                          </div>
+                        )}
+                      </div>
+                      {discoveredEventId && (
+                        <button
+                          type="button"
+                          onClick={() => handleAdminEventIdCopy(discoveredEventId)}
+                          aria-label={`Copy event ID for ${discoveredEvent.title || discoveredEvent.label || 'event'}`}
+                          title={copied ? 'Copied' : 'Copy event ID'}
+                          style={{
+                            width: isMobile ? '100%' : '40px',
+                            height: '40px',
+                            borderRadius: '8px',
+                            border: copied ? '1px solid #bbf7d0' : '1px solid #cbd5e1',
+                            background: copied ? '#f0fdf4' : '#fff',
+                            color: copied ? '#166534' : '#334155',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                        >
+                          <MdContentCopy size={18} />
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div
+            style={{
+              marginTop: '28px',
+              paddingTop: '22px',
+              borderTop: '1px solid #d8dee9'
+            }}
+          >
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              marginBottom: '12px'
+            }}>
+              <h2 style={{margin: 0, fontSize: '1rem', color: '#1f2937'}}>
+                Manual Events
+              </h2>
+              {manualLoading && (
+                <span style={{fontSize: '0.82rem', color: '#64748b'}}>
+                  Loading...
+                </span>
+              )}
+            </div>
+
+            {manualError && (
+              <div style={{
+                padding: '10px 12px',
+                borderRadius: '8px',
+                border: '1px solid #fecaca',
+                background: '#fef2f2',
+                color: '#991b1b',
+                fontSize: '0.88rem'
+              }}>
+                {manualError}
+              </div>
+            )}
+
+            {!manualError && !manualLoading && adminManualEvents.length === 0 && (
+              <div style={{
+                padding: '14px 12px',
+                borderRadius: '8px',
+                border: '1px solid #d8dee9',
+                background: '#fff',
+                color: '#64748b',
+                fontSize: '0.9rem'
+              }}>
+                No manual events.
+              </div>
+            )}
+
+            {!manualError && adminManualEvents.length > 0 && (
+              <div style={{display: 'grid', gap: '10px'}}>
+                {adminManualEvents.map(manualEvent => {
+                  const dateRange = formatEventDateRange(
+                    manualEvent.startDateKey || manualEvent.startDate,
+                    manualEvent.endDateKey || manualEvent.endDate || manualEvent.startDateKey || manualEvent.startDate
+                  )
+                  const deleting = adminDeletingEventId === manualEvent.id
+                  return (
+                    <div
+                      key={manualEvent.id}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: isMobile ? '1fr' : '1fr auto',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '12px',
+                        borderRadius: '8px',
+                        border: '1px solid #d8dee9',
+                        background: '#fff'
+                      }}
+                    >
+                      <div style={{minWidth: 0}}>
+                        <div style={{
+                          color: '#1f2937',
+                          fontWeight: 700,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap'
+                        }}>
+                          {manualEvent.title || 'Untitled event'}
+                        </div>
+                        <div style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '8px',
+                          marginTop: '4px',
+                          color: '#64748b',
+                          fontSize: '0.83rem'
+                        }}>
+                          {dateRange && <span>{dateRange}</span>}
+                          {manualEvent.spreadsheetId && <span>{manualEvent.spreadsheetId}</span>}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleAdminEventDelete(manualEvent.id)}
+                        disabled={deleting || adminSubmitting}
+                        aria-label={`Delete ${manualEvent.title || 'manual event'}`}
+                        title="Delete manual event"
+                        style={{
+                          width: isMobile ? '100%' : '40px',
+                          height: '40px',
+                          borderRadius: '8px',
+                          border: '1px solid #fecaca',
+                          background: deleting ? '#f1f5f9' : '#fff',
+                          color: deleting ? '#94a3b8' : '#b91c1c',
+                          cursor: deleting || adminSubmitting ? 'wait' : 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        <MdDelete size={18} />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+      </main>
+    )
+  }
   
   return (
     <div style={{ display: 'flex', height: viewportHeightStyle, minHeight: viewportMinHeightStyle }}>
@@ -2348,7 +3034,10 @@ export default function App() {
             {/* Settings */}
             <MenuItem
               icon={<MdSettings size={20} />}
-              onClick={() => setOptionsExpanded(!optionsExpanded)}
+              onClick={() => {
+                setShowAdminSection(false)
+                setOptionsExpanded(!optionsExpanded)
+              }}
             >
               Settings
             </MenuItem>
@@ -2365,6 +3054,7 @@ export default function App() {
                   setShowNotificationsSection(true)
                   setShowAccountSection(false)
                   setShowHelpSection(false)
+                  setShowAdminSection(false)
                   return
                 }
                 setShowNotificationsSection(prev => {
@@ -2372,6 +3062,7 @@ export default function App() {
                   if (next) {
                     if (showAccountSection) setShowAccountSection(false)
                     if (showHelpSection) setShowHelpSection(false)
+                    if (showAdminSection) setShowAdminSection(false)
                   }
                   return next
                 })
@@ -2487,6 +3178,7 @@ export default function App() {
                   setShowAccountSection(true)
                   setShowHelpSection(false)
                   setShowNotificationsSection(false)
+                  setShowAdminSection(false)
                   return
                 }
                 setShowAccountSection(prev => {
@@ -2494,6 +3186,7 @@ export default function App() {
                   if (next) {
                     if (showHelpSection) setShowHelpSection(false)
                     if (showNotificationsSection) setShowNotificationsSection(false)
+                    if (showAdminSection) setShowAdminSection(false)
                   }
                   return next
                 })
@@ -2592,6 +3285,22 @@ export default function App() {
               </>
             )}
           </div>
+          {adminAccess === 'allowed' && (
+            <Menu menuItemStyles={sidebarMenuItemStyles}>
+              <MenuItem
+                icon={<MdAdminPanelSettings size={20} />}
+                onClick={() => {
+                  setShowAdminSection(prev => !prev)
+                  setShowAccountSection(false)
+                  setShowHelpSection(false)
+                  setShowNotificationsSection(false)
+                  if (isMobile) setSidebarOpen(false)
+                }}
+              >
+                Admin
+              </MenuItem>
+            </Menu>
+          )}
           </div>
           <div style={{flex: '0 0 auto', display: 'flex', flexDirection: 'column', marginTop: 'auto'}}>
           {/* Help Toggle + Drawer */}
@@ -2609,6 +3318,7 @@ export default function App() {
                   setShowHelpSection(true)
                   setShowAccountSection(false)
                   setShowNotificationsSection(false)
+                  setShowAdminSection(false)
                   return
                 }
                 setShowHelpSection(prev => {
@@ -2616,6 +3326,7 @@ export default function App() {
                   if (next) {
                     if (showAccountSection) setShowAccountSection(false)
                     if (showNotificationsSection) setShowNotificationsSection(false)
+                    if (showAdminSection) setShowAdminSection(false)
                   }
                   return next
                 })
@@ -2865,7 +3576,7 @@ export default function App() {
         paddingBottom: mainContentPaddingBottom,
         // backgroundColor: '#2e3440',
         minHeight: viewportMinHeightStyle,
-        height: showDebugPanel ? 'auto' : viewportHeightStyle, // Auto height when debug panel is open
+        height: showDebugPanel || isAdminViewActive ? 'auto' : viewportHeightStyle,
         overflow: 'visible',
         display: 'flex',
         flexDirection: 'column',
@@ -2912,6 +3623,8 @@ export default function App() {
         </button>
       )}
 
+      {isAdminViewActive ? renderAdminConsole() : (
+        <>
       {/* Header with Clock and Info Panel */}
       <div style={{
         display: 'flex',
@@ -3282,6 +3995,19 @@ export default function App() {
                     marginBottom: '6px'
                   }}>
                     {hodError}
+                  </div>
+                )}
+                {!manualLoading && manualError && (
+                  <div style={{
+                    fontSize: '0.8rem',
+                    color: '#c62828',
+                    background: '#ffebee',
+                    border: '1px solid #ef5350',
+                    borderRadius: '4px',
+                    padding: '8px',
+                    marginBottom: '6px'
+                  }}>
+                    {manualError}
                   </div>
                 )}
                 {combinedEvents.length > 0 && (
@@ -3688,6 +4414,8 @@ export default function App() {
           </section>
         ) : null}
       </div>
+        </>
+      )}
       </div>
     </div>
   )

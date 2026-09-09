@@ -18,6 +18,67 @@ Aliases: `sheet`, `scheduleUrl`, `schedule`.
 When building the URL, encode the Google Sheets URL so any `#gid=...` fragment
 and query string values stay inside the parameter value.
 
+### event
+
+Prefills the selected schedule from a cached event id. This keeps the selected
+event identity and date range intact, even when multiple events use the same
+Google spreadsheet.
+
+Example:
+
+```text
+https://livegrid.stro.io/?event=manual%3Amanual-event-id
+```
+
+Aliases: `eventId`, `event_id`.
+
+If both `sheetUrl` and `event` are present, `sheetUrl` takes precedence.
+
+## Cloud Functions
+
+### GET /api/admin-events
+
+Checks whether the signed-in Firebase user can access the admin console.
+Requires `Authorization: Bearer <Firebase ID token>`.
+
+Admins are users with a Firebase custom claim of `livegridAdmin: true` or
+`admin: true`, or users listed in the Functions env vars
+`LIVEGRID_ADMIN_UIDS` / `LIVEGRID_ADMIN_EMAILS`.
+
+### POST /api/admin-events
+
+Creates or updates a persistent event in `eventCache` using the same public
+shape returned by auto-discovered events.
+
+Body:
+
+```json
+{
+  "title": "Event title",
+  "sheetUrl": "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit#gid=123",
+  "startDate": "2026-05-01",
+  "endDate": "2026-05-02"
+}
+```
+
+The stored event uses `source: "manual"`, `dateSource: "admin"`,
+`dateResolved: true`, and the standard `startDateKey` / `endDateKey` format.
+
+### DELETE /api/admin-events
+
+Removes a persistent manual event from the shared cache.
+Requires `Authorization: Bearer <Firebase ID token>`.
+
+Body:
+
+```json
+{
+  "id": "manual:manual-event-id"
+}
+```
+
+Only events with `source: "manual"` and `isPersistent: true` can be deleted.
+
 ## Utility Functions (scheduleUtils.js)
 
 ### parseTimeToToday(timeStr, dayOffset = 0)
